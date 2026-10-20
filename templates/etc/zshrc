@@ -17,7 +17,7 @@ alias less='vim.x -T builtin_x68k -R'   # less の代用 (読み取り専用 vim
 alias awk='gawk.x'
 # スクリーンセーバー GraySaver.X (常駐。キー / マウス操作が無いと動く)。例: saver -t5 star / saver -c0 / saver -r (解除)
 #   サブルーチン: star (星が手前へ) rstar / rstar1 (奥へ) block1 (ブロック崩し) melt1 (メルトダウン)。省略すると暗くするだけ
-#   Z では AUTOEXEC.BAT から常駐させると zsh 起動時にアドレスエラーになる。zsh から起動すること
+#   AUTOEXEC.BAT で -t5 rstar を常駐させている。saver を再実行すると設定を変えられる
 function saver {
   A:/usr/lib/graysaver/GraySaver.x "$@"
 }

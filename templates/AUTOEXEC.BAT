@@ -29,5 +29,7 @@ SET GCC_NO_XCLIB=yes
 SET HLK=-L A:/usr/lib
 REM --- 起動時の自動接続 (zshrc の netauto が見る。Pi の pppd が居なければ 10 秒で諦める) ---
 SET NETAUTO_BOOT=1
+REM --- GraySaver.X: 5 分操作が無いと星が奥へ流れる (zsh の saver で変更、saver -r で解除) ---
+\USR\LIB\GRAYSAVER\GraySaver.x -t5 rstar
 REM --- ログインシェル (抜けると COMMAND.X に戻る) ---
 \USR\BIN\zsh.x -l
