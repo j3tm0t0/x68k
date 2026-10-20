@@ -3,6 +3,8 @@ PROMPT='%~%# '
 HISTSIZE=100
 HISTFILE=~/.zhistory
 SAVEHIST=50
+# この zsh は HISTFILE が無いと作らず、ヒストリーを保存しない。空ファイルを用意しておく
+[ -f $HISTFILE ] || : >> $HISTFILE
 setopt autolist automenu autocd extendedglob nonomatch \
        histignoredups x68keyboardhack ignorecases
 bindkey -e
