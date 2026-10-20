@@ -1,0 +1,23 @@
+# /etc/zshenv  -- zsh 2.5.03 X6_07 (Human68k) 共通環境
+path=(. A:/usr/bin A:/bin A:/sys A:/etc A:/xc/bin A:/xc/cc A:/usr/gcc295)
+# 子プロセスへ渡す PATH の区切りは Human68k 流の ';' にする (gcc の cc1 検索などで必要)
+PATHSEPCHARS=';'
+export TERM=x68000
+export TERMCAP=A:/etc/termcap
+export COLUMNS
+export LINES
+export EDITOR=vim.x
+export temp=A:/tmp
+export MAKE_SHELL=A:/usr/bin/zsh.x
+export SHELL=A:/usr/bin/zsh.x
+# C コンパイラ: gcc (真里子版 1.42) は LIBC 1.1.32A + HAS.X + HLK.X を使う
+export include=A:/usr/include
+export lib=A:/usr/lib
+export GCC_AS=has.x
+export GCC_LINK=hlk.x
+export GCC_LIB=.a
+export GCC_NO_XCLIB=yes
+# gcc295 のリンカ (HLK evolution) は環境変数 HLK を既定オプションとして読む
+export HLK='-L A:/usr/lib'
+# >/dev/null を nul に読み替える
+setopt devnulltonul

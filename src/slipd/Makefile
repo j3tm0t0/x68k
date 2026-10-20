@@ -1,0 +1,16 @@
+# slipd.x -- elf2x68k でクロスビルド
+CROSS  = m68k-xelf-
+CC     = $(CROSS)gcc
+CFLAGS = -m68000 -O2 -fomit-frame-pointer -ffreestanding -fno-builtin -Wall -Wno-array-bounds -finput-charset=utf-8 -fexec-charset=cp932
+
+slipd.x: start.o slipd.o
+	$(CC) -o $@ $^ -nostartfiles -nostdlib -lgcc -s
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c $<
+%.o: %.S
+	$(CC) -m68000 -c $<
+
+clean:
+	rm -f *.o slipd.x slipd.x.elf*
+.PHONY: clean

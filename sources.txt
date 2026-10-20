@@ -1,0 +1,79 @@
+# dest(relative to dl/)  url  sha256
+# --- Sharp (無償公開, 非商用のみ / 有償配布禁止) ---
+human/HUMN302I.LZH http://retropc.net/x68000/software/sharp/human302/HUMN302I.LZH da68be5c5cbea871ecb5588010a4d3fe52f26c8c686401027cecc0d1a27dca1a
+# --- shells ---
+zsh/ZSHX607B.LZH https://archive.org/download/zshx607b_x68k/ZSHX607B.LZH 1e5848c3480d55661dd9c659829a04f379651711d83eaf68c51d4ec2a026789a
+zsh/ZSHX607M.LZH https://archive.org/download/zshx607b_x68k/ZSHX607M.LZH 7e151d04308dae3de7e5a5ebdc0b6579ddef7357a92549042d0dce5b9fbddbe4
+fish/fish080.lzh http://retropc.net/x68000/software/tools/itatoolbox/fish/fish080.lzh 614888413e5396c94721ed75fc18d3d7d45b8850e20b71605b0768ef01c21785
+ksh/KSHX26F.LZH http://retropc.net/x68000/software/tools/shell/ksh/KSHX26F.LZH eb22d6c2baf45441f6e451f5798b9cbe43780deeaa638931ea9275a33c2ed1a9
+# --- editor ---
+vim/vim3x687.lzh https://archive.org/download/vim3x687_x68k/vim3x687.lzh 5cb85d44370b91293dce3aeff1ea0f5ed50e4e3c98c389e5e080d53670bfce33
+# --- system / filename extension ---
+misc/tw136c14.lzh http://retropc.net/x68000/software/disk/filename/twentyone/tw136c14.lzh a1d25601c0d4d8dcaf01650be66658a80bf8e73f9136c50b96cc9349d0dca02c
+# --- GNU tools ---
+misc/gawk2154.tgz http://retropc.net/x68000/software/develop/awk/gawk2154/gawk2154.tgz 9c2219d644fc02e0480e5d1df10b94f8dc361ac899bc949acc7e297452a3f1a8
+misc/MAKEHU11.ZIP http://retropc.net/x68000/software/develop/make/gmake379/MAKEHU11.ZIP 5ba42235b628d545a81a9243591a557c2982cd945be271128b5a4d509ca62592
+misc/tgz13x16.tgz http://retropc.net/x68000/software/tools/archiver/tgz/tgz13x16.tgz 322f793cf1c17fede2007a0870f3545062363949a1e3bcd37d84b2d657c59716
+misc/LHA_X662.x http://retropc.net/x68000/software/tools/archiver/lha/LHA_X662.x 7801d19a0f351aeb26dc6121774fd68f15dfbdf25b97a3bb53851d058eb86753
+# --- ITA TOOLBOX (UNIX 互換コマンド群) ---
+ita/cat15.lzh http://retropc.net/x68000/software/tools/itatoolbox/cat/cat15.lzh 7adf2646a23b4ab34080d2abfd65439bb0647f5a1012705d400daac51dfd6e6a
+ita/chmod14.lzh http://retropc.net/x68000/software/tools/itatoolbox/chmod/chmod14.lzh 5d9e2087fafd43c448af592041b61e0f5d53df79e3865141152941dedbf1c1ae
+ita/colrm10.lzh http://retropc.net/x68000/software/tools/itatoolbox/colrm/colrm10.lzh 25ee8ff0fece800dd8dfeaab486dcb1a28e578b54a4047ac97f807b8aa57fe89
+ita/comm10.lzh http://retropc.net/x68000/software/tools/itatoolbox/comm/comm10.lzh 8cc40cba90ff5f9f1ad19ac33715abc4d5cda57792828d0f12ef9f4b4672d342
+ita/cp28.lzh http://retropc.net/x68000/software/tools/itatoolbox/cp/cp28.lzh e46cedd093bebad43135d31b56dae12df8957bbc9717da245c79c3cbbea17a4a
+ita/CUT11.LZH http://retropc.net/x68000/software/tools/itatoolbox/cut/CUT11.LZH 4456d43a238c2cd7c08372399467226a44de9e32d7750f9ca9e7a437e118ca5b
+ita/date11.lzh http://retropc.net/x68000/software/tools/itatoolbox/date/date11.lzh ae887be84fb3f1f8674ebe8e5f9c1816dc52658f063e60490f80424fc068ddcc
+ita/du12.lzh http://retropc.net/x68000/software/tools/itatoolbox/du/du12.lzh 582c762faba40d1c8395825fe45d43e2a53a26af45ae6e27eb31624a63f93725
+ita/expan10a.lzh http://retropc.net/x68000/software/tools/itatoolbox/expand/expan10a.lzh 8c89301d2473fb8d65bfb1811e113fd334bc5bd5e8ed07ad46d1ccbc891a866b
+ita/fold10a.lzh http://retropc.net/x68000/software/tools/itatoolbox/fold/fold10a.lzh def925a7d8ce6d7d0e7bcf940ac3c2d9f78902c64a971cc5fa1ae3ccd73c5f7e
+ita/head15.lzh http://retropc.net/x68000/software/tools/itatoolbox/head/head15.lzh f7c91854dab1c4c1fe6b813442de5bf3ab526ea29348915ee43e2f79e4b7b291
+ita/join10.lzh http://retropc.net/x68000/software/tools/itatoolbox/join/join10.lzh b811147d9be8dda7939798a03d58b66c586768b8bd5f0447f4086139760ad5ec
+ita/ls15.lzh http://retropc.net/x68000/software/tools/itatoolbox/ls/ls15.lzh b9c9ca569f79fbc4abd22d1d7d428c14c7edc3103ba5d7b977e4655b46f8c066
+ita/mkdir14.lzh http://retropc.net/x68000/software/tools/itatoolbox/mkdir/mkdir14.lzh 9c216a8923f1e22c6b3c0086be360d85bca7cc467735dcba08eec104e0e3a318
+ita/mv19.lzh http://retropc.net/x68000/software/tools/itatoolbox/mv/mv19.lzh f2cbd240e976deed09b01b67c2ad807a741e7b8b57de729f5996755318e00b1d
+ita/paste10a.lzh http://retropc.net/x68000/software/tools/itatoolbox/paste/paste10a.lzh 2aab8b884e494e5812093918b1db29b02a359f7fa42ff9395d0273e8ab09eddd
+ita/rev10a.lzh http://retropc.net/x68000/software/tools/itatoolbox/rev/rev10a.lzh d446f744ae5c51bd5941fc4bd7d4785cccaf1d70d5af6b2d670490c66237919d
+ita/rm14.lzh http://retropc.net/x68000/software/tools/itatoolbox/rm/rm14.lzh 2667c923ca6acd2bdc01f2ed2d68e434dd3d2b110a33c780337715f01f61de5b
+ita/rmdir14.lzh http://retropc.net/x68000/software/tools/itatoolbox/rmdir/rmdir14.lzh eeb7a232ab055dfb6c3ffe1481e503d946b7cc4d7d39a414e3e901f0ce072d8d
+ita/split11.lzh http://retropc.net/x68000/software/tools/itatoolbox/split/split11.lzh 8adbfa3597764cc4f7b7d1f34c38d7855ef5ce575be049a6933159b03443f7b9
+ita/string12.lzh http://retropc.net/x68000/software/tools/itatoolbox/strings/string12.lzh 67cb1fbcf5741e69478c356aa9bb0ad0acfe69a9412afab0ed1d97bca438564f
+ita/strip13.lzh http://retropc.net/x68000/software/tools/itatoolbox/strip/strip13.lzh 91f32cd08481c925d3aa5fe4b2694ad0214ea9cb390da5066f152ccbfce67489
+ita/TAIL14.LZH http://retropc.net/x68000/software/tools/itatoolbox/tail/TAIL14.LZH e3201bffb98ff950207c182befbd3ddb3e137e585bf49c7f2269937bc3e1a944
+ita/tee10.lzh http://retropc.net/x68000/software/tools/itatoolbox/tee/tee10.lzh 4ccb141c2b84181366c1c68a941ed497da3ad97d1ecfbe8082b90e78a358bd39
+ita/touch15.lzh http://retropc.net/x68000/software/tools/itatoolbox/touch/touch15.lzh 03e63dbebb039d2dc41cc7e50637c9db65e5a6b6d7cbe34e24f648dedaebc3fd
+ita/tr12.lzh http://retropc.net/x68000/software/tools/itatoolbox/tr/tr12.lzh d8967ea5d3dd9369b2b4ab93aca16aa213ab8b2248a8ff9c096800274ba294eb
+ita/unexp10a.lzh http://retropc.net/x68000/software/tools/itatoolbox/unexpand/unexp10a.lzh 649083dc870ba97807ac4df4c8b25fb741a290a24648816b7f8eac51dc59584e
+ita/uniq10.lzh http://retropc.net/x68000/software/tools/itatoolbox/uniq/uniq10.lzh b5ed9cc987035c525af7757cfbf003cc892b9f05d1a4f9b9aba9a3260bc60039
+ita/wc11a.lzh http://retropc.net/x68000/software/tools/itatoolbox/wc/wc11a.lzh 0b3d3eed213f1b1bf207baa9aa5bed56111aa9f505eff0a84c58c13aafb13c16
+# --- keyboard (KeyWitch: キー配置変更 / US 配列対応) ---
+misc/KEYWB213.LZH http://retropc.net/x68000/software/system/key/keywitch/KEYWB213.LZH ab78511385785c03576248e0e4b5f8e256b72b3588c07ed01ffa72bc69b034e0
+# --- terminal (RS-232C 経由で UNIX ホストにログインする) ---
+misc/MUTERM.LZH http://retropc.net/x68000/software/tools/terminal/muterm/MUTERM.LZH 7c353dc98c7d4243a1515eff0205d734b15f09367e1fb4382888f66bbd1073d1
+# --- C compilers ---
+# XC 2.1 (シャープ純正, 無償公開・非商用のみ): システムディスク 1 (AS/LK/AR/DB/SCD) とシステムディスク 2 (CC.X, INCLUDE, LIB)
+cc/XC2101.LZH http://retropc.net/x68000/software/sharp/xc21/XC2101.LZH d272c60b720c3268da9e01d6e9fe1e7fd01c0471b0a7a60ef4a9445dc5988ba5
+cc/XC2102_02.LZH http://retropc.net/x68000/software/sharp/xc21/XC2102_02.LZH e49c3c15e47d01db59a51ac3cffa6c06accf54fbcbd741cd7a801d87fdb80f9e
+# GCC 1.42 真里子版 + HAS.X + HLK.X (既定の gcc)
+cc/GCC142.LZH http://retropc.net/x68000/software/develop/c/gcc_mariko/GCC142.LZH cf9af215fc265346640a552909e1cebd3ead9a6976449933c3626251f74497f9
+cc/has309.lzh http://retropc.net/x68000/software/develop/as/has/has309.lzh 3378cc3cdb46c50b6e0a489b68b159c6545df4f06ebec3e8e2848d99c9f2c1e0
+cc/HLK301B.LZH http://retropc.net/x68000/software/develop/lk/hlk/HLK301B.LZH 447438f1c52f03c967c09fe3a18416c308f8b61cdb27666458511133d8558979
+# GCC 2.95.2 beta4 (gcc295) + GCC2 付属の g2as/g2lk
+cc/G295b04D.ZIP http://retropc.net/x68000/software/develop/c/gcc_2_95_2/G295b04D.ZIP 7e36806d5cbe377b44934a4bc406831c92a51d917c2181c6f07a4a4b8949dccd
+cc/G295b04C.ZIP http://retropc.net/x68000/software/develop/c/gcc_2_95_2/G295b04C.ZIP 7b93c625415869197bfb82eff8f8761b86cd9dc2ae4c1509b6fa36085d71f4ce
+cc/G3_20.LZH http://retropc.net/x68000/software/develop/c/gcc2/G3_20.LZH ca9efd19029d37cf45e97c4b6e475e30729c69873b90318455933fead3572ebb
+# LIBC 1.1.32 + DON 版パッチ 4 (gcc 用の libc / ヘッダ)
+cc/libc32b.tgz http://retropc.net/x68000/software/develop/lib/libc1132a/libc32b.tgz b8cd31a9f8b2fec1c79d357e96d27d8ddc3e981f0926dd45b144157773a5beb7
+cc/libcd4.tgz http://retropc.net/x68000/software/develop/lib/libcdon/libcd4.tgz 199066ba932a9b567838ec9e6358125efe823dd5371c73f01ee733793389133a
+# HLK evolution (gcc295 のリンカ g2lk として使用)
+cc/hlkev15.zip http://retropc.net/x68000/software/develop/lk/hlkev/hlkev15.zip 6c9cdd030336d54a854686a39feed6d3a1aae40133616817036407c6d429086f
+# --- PPP / TCP/IP (RS-232C 経由で Raspberry Pi などと TCP/IP 接続する。ping / telnet / ftp) ---
+net/BSIO021.LZH http://retropc.net/x68000/software/system/rs232c/bsio/BSIO021.LZH 536d05a4240f980182a983e481d8588ba313f9f906a85b84ffdc9fec7a3044af
+net/tmsio031.lzh https://argrath.ub32.org/x680x0/archive/tmsio031.lzh 2d620ec6fc298592da57a35c599d92b7508f41e0438c85fb4b868801f0bd61b6
+net/pppxr5.lzh https://argrath.ub32.org/x680x0/archive/pppxr5.lzh 4c8b931be77ddf73c9e7617bcea6f942a4225a20a40fdc94b67462c673a042c6
+net/xipb5.lzh http://retropc.net/x68000/software/internet/tcpip/xip/xipb5.lzh 4d35da4a66b50d863a9c84ec230d61d98ae544edce4f7a21b1df69b60293cc84
+net/TCPPACKA.LZH http://retropc.net/x68000/software/internet/kg/tcppacka/TCPPACKA.LZH ff8e18638b5349d175954f885a9bdb469395ba84a17382441f6b4e6543b3e91b
+# ESP/X PACK-B: ソケットライブラリ (libnetwork.a) + ヘッダ。rcmd.x (src/rcmd) のビルドに使う
+net/TCPPACKB.LZH http://retropc.net/x68000/software/internet/kg/tcppackb/TCPPACKB.LZH 0e5f25b2892da15c3297f060c7fba411b93c24cdb07f682baf552d3de9ebd22f
+# --- GNU sed / grep (Human68k 移植版が無いので elf2x68k でクロスビルドする: scripts/xbuild.sh) ---
+gnu/sed-4.9.tar.xz https://ftp.gnu.org/gnu/sed/sed-4.9.tar.xz 6e226b732e1cd739464ad6862bd1a1aba42d7982922da7a53519631d24975181
+gnu/grep-3.11.tar.xz https://ftp.gnu.org/gnu/grep/grep-3.11.tar.xz 1db2aedde89d0dea42b16d9528f894c8d15dae4e190b59aecc78f5a951276eab

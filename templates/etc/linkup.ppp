@@ -1,0 +1,6 @@
+# /etc/linkup.ppp -- ppp.x がリンク確立時に実行するコマンド (IIJ-PPP の ppp.linkup)
+# ラベルは割り当てられた自分の IP アドレスか MYADDR (任意)。
+# keep: ppp.x をそのまま常駐させる ("PPP process kept." と表示してシェルに戻る)。
+#       これが無いと接続直後に Idle timer expired で切れる。
+MYADDR:
+ keep

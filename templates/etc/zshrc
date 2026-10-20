@@ -1,0 +1,130 @@
+# /etc/zshrc  -- 対話シェル設定 (zsh 2.5.03 X6_07)
+PROMPT='%~%# '
+HISTSIZE=100
+HISTFILE=~/.zhistory
+SAVEHIST=50
+setopt autolist automenu autocd extendedglob nonomatch \
+       histignoredups x68keyboardhack ignorecases
+bindkey -e
+alias ls='ls -F'
+alias ll='ls -alF'
+alias la='ls -aF'
+alias vi='vim.x -T builtin_x68k'
+alias vim='vim.x -T builtin_x68k'
+alias less='vim.x -T builtin_x68k -R'   # less の代用 (読み取り専用 vim。/ で検索、:q で終了)
+alias awk='gawk.x'
+alias h='history'
+alias dir='ls -alF'
+# C コンパイラ: gcc = 真里子版 1.42 (そのまま gcc.x), gcc295 = GCC 2.95.2, cc = XC 2.1 (純正)
+#   gcc295 は 68020 以上専用 (X68030 / XEiJ の X68030 モード)。X68000 (Z) では SIGBUS で落ちる
+function gcc {
+  gcc.x "$@" -lgcc2
+}
+#   (zsh 2.5 X68k 版は `VAR=値 コマンド` の一時代入が親シェルに残るバグがあるので、明示的に戻す)
+function gcc295 {
+  A:/usr/gcc295/gcc.x -IA:/usr/gcc295/include "$@"
+}
+function cc {
+  export include=A:/xc/include lib=A:/xc/lib
+  A:/xc/cc/cc.x "$@"
+  export include=A:/usr/include lib=A:/usr/lib
+}
+# PPP / TCP/IP (RS-232C 直結の Raspberry Pi に templates/raspi/ppp-x68k.sh を起動しておく)
+#   netup [tmsio|bsio] : RS-232C ドライバ → xip.x (TCP/IP) → ppp.x -dial raspi (/etc/conf.ppp) → DNS 設定
+#   netdown            : PPP 切断・常駐解除 → xip.x -r
+#   bsio.x は軽いが RTS/CTS 固定なので、3 線接続の X68000 Z では tmsio.x を既定にする
+#   netup [速度] [tmsio|bsio] : Raspberry Pi (ppp-x68k.sh, 同じ速度で起動) と PPP をつなぐ
+#     netup        : 9600bps / 標準の RSDRV.SYS + IOCS _SET232C (rsspeed.x)
+#     netup 9600 tmsio : tmsio.x (受信バッファ 32KB)。Z では UART の速度が SRAM の既定値のままになる
+#     netup 19200  : 標準の RSDRV.SYS + IOCS _SET232C (rsspeed.x)
+#     netup 38400  : 同上。X68000 Z では負荷がかかると固まった (受信の取りこぼし)
+#   ppp.x の速度は /etc/conf.ppp の raspi<速度> ラベル (raspi9600 / raspi19200 / raspi38400) で合わせる
+function x68build {   # x68build <name> : /usr/src/<name> を make して /usr/bin に入れる (無ければ)
+  [ -x /usr/bin/$1.x ] || (cd /usr/src/$1 && make install)
+}
+#   NETMODE=slip (AUTOEXEC.BAT が設定。CONFIG.SYS に slip.sys を組み込んだとき) なら SLIP でつなぐ。
+#   SLIP は交渉が無いので pppwait では相手を確かめず、xip.x と ifconfig だけで上げる (Pi 側は MODE=slip)
+function netup {
+  local speed=${1:-9600} drv=$2
+  if [ "$NETMODE" = slip ]; then
+    [ -n "$NETUP_DONE" ] && xip.x -r >nul 2>&1
+    x68build rsspeed
+    case "$speed" in 19200) rsspeed.x 4c08 ;; 38400) rsspeed.x 4c09 ;; *) rsspeed.x 4c07 ;; esac
+    xip.x -w ${NETWIN:-4096} -n ${NETNICE:-2} || return 1
+    # ppp.x が接続時にしていた設定と同じ (ESP/X は相手 1 台の経路を netmask の切り替えで作る)
+    ifconfig.x lp0 up
+    local my=${SLIPMY:-192.168.68.2} peer=${SLIPPEER:-192.168.68.1}   # XEiJ の試験では 192.168.69.x
+    ifconfig.x ep0 up $my
+    ifconfig.x ep0 netmask 128.0.0.0
+    inetdconf.x +router $peer
+    ifconfig.x ep0 netmask 255.255.255.255
+    inetdconf.x +dns 8.8.8.8
+    # 受信の開始は設定が済んでから (設定前の xip.x にパケットを渡すと xip.x が壊れた)。
+    # slipd.x = シリアルと slip.sys の間でパケットを運ぶスレッド (xip.x の設定が済んでから)。
+    # 初回は常駐し、2 回目以降は受信の再開だけをする
+    slipd.x
+    NETUP_DONE=1
+    echo "netup: SLIP $speed bps  $my <-> $peer"
+    return 0
+  fi
+  # 既定は標準ドライバ + IOCS で速度を明示的に設定する。tmsio は速度を SRAM の既定値まかせにするので、
+  # Z のセットアップユーティリティなどで既定値が変わるとつながらなくなった (2026-10-20)
+  [ -z "$drv" ] && drv=rsdrv
+  # 前の接続の常駐が残っていると、ppp.x -dial が接続せずに前の ppp.x を解放してしまう
+  # ("PPP process released")。ppp.x / xip.x は常駐していなければ何もしないので、先に外しておく
+  [ -n "$NETUP_DONE" ] && { ppp.x >nul 2>&1; xip.x -r >nul 2>&1; }
+  case "$drv" in
+    tmsio) tmsio.x -b32 ;;
+    bsio)  bsio.x ;;
+    *)     tmsio.x -r >nul 2>&1   # 自動接続などで tmsio が残っていたら外す
+           x68build rsspeed
+           case "$speed" in 19200) rsspeed.x 4c08 ;; 38400) rsspeed.x 4c09 ;; *) rsspeed.x 4c07 ;; esac ;;
+  esac
+  # ppp.x は相手が居ないと Phase: Dead で固まる (BREAK も効かない) ので、先に pppd の LCP を受信して確かめる。
+  # 待っている間は ESC / BREAK / Ctrl-C で中止できる (NETWAIT=秒 で待ち時間を変更、既定 30)
+  x68build pppwait
+  if ! pppwait.x ${NETWAIT:-30}; then
+    echo "netup: Raspberry Pi の pppd (sudo SPEED=$speed ~/ppp-x68k.sh) が待ち受けていない。中止"
+    return 1
+  fi
+  # NETWIN = TCP ウィンドウ (xip.x -w、既定 4096)、NETNICE = xip.x の高速化係数 (-n 2..31、大きいほど速いが固まることがある)
+  xip.x -w ${NETWIN:-4096} -n ${NETNICE:-2}
+  ppp.x -dial raspi$speed && NETUP_DONE=1
+  inetdconf.x +dns 8.8.8.8
+}
+function netdown {   # 常駐している ppp.x / xip.x を外す (netup した印が無くても外す)
+  [ "$NETMODE" = slip ] || ppp.x
+  xip.x -r   # slip.sys は xip.x が外れると受信を止める (slipd.x のスレッドは残る)
+  unset NETUP_DONE
+}
+# rcmd [-p port] : Raspberry Pi からコマンドを実行させるサーバ (src/rcmd)。初回は自動ビルド
+#   Pi から `x68 @restart` を送ると rcmd.x が $temp/rcmd.rst を作って終わり、ここで起動し直す (make install 後の入れ替え用)
+#   (X68k 版 zsh 2.5 では rcmd.x の終了コードを $? で受け取れなかったのでファイルで知らせる)
+function rcmd {
+  x68build rcmd || return 1
+  rm -f $temp/rcmd.rst
+  rcmd.x "$@"
+  while [ -f $temp/rcmd.rst ]; do
+    rm -f $temp/rcmd.rst
+    echo "rcmd: restart"
+    rcmd.x "$@"
+  done
+}
+# キーボード配列の切り替え (KeyWitch): uskey = US 配列, jiskey = 元に戻す
+alias uskey='KeyWitch.x -x -e /etc/keywitch/us.env'
+alias jiskey='KeyWitch.x -r'
+# 起動時の自動接続: Raspberry Pi の pppd (ppp-x68k.sh) が待ち受けていれば netup して rcmd -d を起動する。
+#   待つのは NETAUTO 秒 (既定 10、0 で無効)。ESC / BREAK で中止すると普通の zsh になる。rcmd を ESC で止めても zsh に戻る。
+#   ログインシェルで 1 回だけ (子の zsh や rcmd が起動する zsh -c では動かない)
+function netauto {
+  [ "${NETAUTO:-10}" = 0 ] && return
+  NETWAIT=${NETAUTO:-10}   # zsh 2.5 の X68k 版は VAR=値 関数 の一時代入が怪しいので明示的に設定
+  netup $NETSPEED && rcmd -d -v
+  unset NETWAIT
+}
+echo "x68kcli: zsh 2.5.03 / vim 3.0 / ITA TOOLBOX / gawk / make / tar / lha / gcc gcc295 cc / netup  (exit で COMMAND.X へ)"
+# 起動直後のログインシェルだけ自動接続する (AUTOEXEC.BAT が NETAUTO_BOOT=1 を設定)
+if [ -n "$NETAUTO_BOOT" ]; then
+  unset NETAUTO_BOOT
+  netauto
+fi

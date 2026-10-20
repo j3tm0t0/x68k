@@ -1,0 +1,12 @@
+# downloaded archives, tools, staging and build outputs are never committed
+/dl/
+/tools/
+/stage/
+/build/
+*.hds
+*.hdf
+*.xdf
+.DS_Store
+/work/
+/capture/
+__pycache__/

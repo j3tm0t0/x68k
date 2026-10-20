@@ -1,0 +1,21 @@
+# /etc/systemd/system/ppp-x68k.service -- X68000 (Z) と PPP で待ち受ける pppd (ppp-x68k.sh) を常駐させる
+#   sudo install -m755 ppp-x68k.sh /usr/local/sbin/ppp-x68k.sh
+#   sudo install -m644 ppp-x68k.service /etc/systemd/system/ppp-x68k.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now ppp-x68k
+#   速度などは /etc/default/ppp-x68k に SPEED=9600 / MTU=1500 / DEV=/dev/ttyS0 のように書く
+#   シリアルログインに戻すとき: sudo systemctl disable --now ppp-x68k && sudo systemctl start serial-getty@ttyS0
+[Unit]
+Description=PPP server for X68000 (Z) on the serial port
+After=network.target
+Conflicts=serial-getty@ttyS0.service
+After=serial-getty@ttyS0.service
+
+[Service]
+EnvironmentFile=-/etc/default/ppp-x68k
+Environment=NO_GETTY_RESTORE=1
+ExecStart=/usr/local/sbin/ppp-x68k.sh
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
