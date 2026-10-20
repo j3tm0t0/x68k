@@ -167,15 +167,15 @@ Raspberry Pi 側は `templates/raspi/ppp-x68k.service` で常駐させる (手�
 X68000 Z 側は zsh から:
 
 ```sh
-netup            # tmsio.x -b32 → xip.x → ppp.x -dial raspi → inetdconf +dns 8.8.8.8
+netup [速度]     # RSDRV + rsspeed.x (IOCS _SET232C) → pppwait.x → xip.x → ppp.x -dial raspi<速度> → inetdconf +dns 8.8.8.8
 ping -n -c 3 8.8.8.8   # 外に出られれば成功 (-n: 逆引き DNS を回線に流さない)
 telnet raspi     # Pi にログイン (telnetd を入れておく)。ftp raspi も可
 netdown          # ppp.x (切断・常駐解除) → xip.x -r
 ```
 
-`netup bsio` で bsio.x に切り替えられる。`ppp.x` の `show modem` で `speed: 38400($9)` と表示される (Web の作例にある `set speed $C` は 14400bps)。
+`netup 9600 tmsio` / `netup 9600 bsio` で tmsio.x / bsio.x に切り替えられる。`ppp.x` の `show modem` で `speed: 38400($9)` と表示される (Web の作例にある `set speed $C` は 14400bps)。
 **X68000 Z では tmsio が SCC に書く速度が UART に反映されず、常に 9600bps で通信する** (Pi 側 38400 で待つと Z からのデータが化ける。
-IOCS `_SET232C` で先に 38400 にする `rsspeed.x 4c09` を試したが、その後 tmsio を載せると 1 バイトも出なくなった)。そのため `ppp-x68k.sh` の既定は 9600。
+IOCS `_SET232C` で先に 38400 にする `rsspeed.x 4c09` を試したが、その後 tmsio を載せると 1 バイトも出なくなった)。そのため netup の既定は標準 RSDRV.SYS + rsspeed.x (Z でも 19200 / 38400 が通る)。
 実機 X68000 (RS-232C) なら 38400 が使え、ftp 3KB/s 台の報告がある。X68000 Z 実機で `netup` → `ping 8.8.8.8` が通ることを確認済み (9600bps)。
 XEiJ では上記 TCP/IP 接続 (`-model=SUPER` を付ける。既定の X68030 25MHz では ppp.x が切断時に固まる: 添付 qa.doc の高速機問題) + `scripts/xeijppp.py 127.0.0.1 54321 raspi3 build/ppp.log` (ssh 経由で Pi の `pppd notty` に橋渡し) で PPP が張れる (ping 8.8.8.8 応答、netdown で両側とも正常終了) ことを確認済み。X68000 Z 実機では tmsio で送受信できる (9600bps のみ)。bsio は未検証。
 

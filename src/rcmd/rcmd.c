@@ -198,7 +198,7 @@ static int receive_file(int s, char *args, int debug)
     el = 1;
   /* 転送ログは常に出す (debug でなくても) */
   {
-    long bps = got * 800 / el;   /* bit/s (el は 1/100 秒) */
+    long bps = got * 100 / el * 8;   /* bit/s (el は 1/100 秒。got * 800 だと 2.6MB で桁あふれ) */
     printf("rcmd: put %s %ld/%ld bytes in %d.%02ds (%ld B/s = %ld.%ld kbps)\n", path, got, size,
            el / 100, el % 100, got * 100 / el, bps / 1000, bps % 1000 / 100);
   }
@@ -344,7 +344,7 @@ int main(int argc, char **argv)
       int cs;
       long sent = send_file(c, tmpout, &cs);
       if (sent >= 1024 || debug) {   /* ある程度の量を返したときは送信速度も出す */
-        long bps = cs > 0 ? sent * 800 / cs : 0L;   /* bit/s */
+        long bps = cs > 0 ? sent * 100 / cs * 8 : 0L;   /* bit/s */
         printf("rcmd: sent %ld bytes in %d.%02ds (%ld B/s = %ld.%ld kbps)\n", sent, cs / 100, cs % 100,
                cs > 0 ? sent * 100 / cs : 0L, bps / 1000, bps % 1000 / 100);
       }

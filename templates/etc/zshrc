@@ -29,15 +29,13 @@ function cc {
   A:/xc/cc/cc.x "$@"
   export include=A:/usr/include lib=A:/usr/lib
 }
-# PPP / TCP/IP (RS-232C 直結の Raspberry Pi に templates/raspi/ppp-x68k.sh を起動しておく)
-#   netup [tmsio|bsio] : RS-232C ドライバ → xip.x (TCP/IP) → ppp.x -dial raspi (/etc/conf.ppp) → DNS 設定
-#   netdown            : PPP 切断・常駐解除 → xip.x -r
-#   bsio.x は軽いが RTS/CTS 固定なので、3 線接続の X68000 Z では tmsio.x を既定にする
-#   netup [速度] [tmsio|bsio] : Raspberry Pi (ppp-x68k.sh, 同じ速度で起動) と PPP をつなぐ
-#     netup        : 9600bps / 標準の RSDRV.SYS + IOCS _SET232C (rsspeed.x)
-#     netup 9600 tmsio : tmsio.x (受信バッファ 32KB)。Z では UART の速度が SRAM の既定値のままになる
-#     netup 19200  : 標準の RSDRV.SYS + IOCS _SET232C (rsspeed.x)
-#     netup 38400  : 同上。X68000 Z では負荷がかかると固まった (受信の取りこぼし)
+# SLIP / PPP で TCP/IP (RS-232C 直結の Raspberry Pi に templates/raspi/ppp-x68k.service を常駐させておく)
+#   netup [速度] [tmsio|bsio] : RS-232C の速度設定 → xip.x (TCP/IP) → SLIP (slipd.x) / PPP (ppp.x) → DNS 設定
+#     速度の既定は AUTOEXEC.BAT の NETSPEED (make image の NETSPEED=、既定 38400)。Pi 側の SPEED= と揃える
+#     ドライバの既定は標準の RSDRV.SYS + IOCS _SET232C (rsspeed.x)。X68000 Z は IOCS 経由の設定だけ UART に効く
+#     tmsio / bsio は PPP のときだけ。tmsio.x は Z では UART の速度が SRAM の既定値のままになり、
+#     bsio.x は RTS/CTS 固定 (3 線接続では未検証)
+#   netdown : PPP 切断・常駐解除 (PPP のとき) → xip.x -r
 #   ppp.x の速度は /etc/conf.ppp の raspi<速度> ラベル (raspi9600 / raspi19200 / raspi38400) で合わせる
 function x68build {   # x68build <name> : /usr/src/<name> を make して /usr/bin に入れる (無ければ)
   [ -x /usr/bin/$1.x ] || (cd /usr/src/$1 && make install)
@@ -45,7 +43,8 @@ function x68build {   # x68build <name> : /usr/src/<name> を make して /usr/b
 #   NETMODE=slip (AUTOEXEC.BAT が設定。CONFIG.SYS に slip.sys を組み込んだとき) なら SLIP でつなぐ。
 #   SLIP は交渉が無いので pppwait では相手を確かめず、xip.x と ifconfig だけで上げる (Pi 側は MODE=slip)
 function netup {
-  local speed=${1:-9600} drv=$2
+  local speed=${1:-$NETSPEED} drv=$2
+  [ -z "$speed" ] && speed=38400
   if [ "$NETMODE" = slip ]; then
     [ -n "$NETUP_DONE" ] && xip.x -r >nul 2>&1
     x68build rsspeed

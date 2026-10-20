@@ -132,7 +132,7 @@ mkdir -p stage/USR/SRC/ESPX && cp -R work/tcpb/src/. stage/USR/SRC/ESPX/
 # 自作ツールのソース (src/<name>/) -> /USR/SRC/<NAME>。X68000 上で make してビルドする (zsh の netup / rcmd が初回に自動ビルド)
 #   rcmd    : リモートコマンド実行サーバ (ESP/X ソケット)
 #   rsspeed : IOCS _SET232C 直接呼び出し (X68000 Z で UART を 38400 にする)
-#   (src/slip と src/xshim は Mac 側で elf2x68k でクロスビルドするもの。X68000 上では作れないので入れない)
+#   (src/slip, src/slipd, src/xshim は Mac 側で elf2x68k でクロスビルドするもの。X68000 上では作れないので入れない)
 for n in rcmd pppwait rsspeed; do
   u=$(echo "$n" | tr '[:lower:]' '[:upper:]')
   mkdir -p "stage/USR/SRC/$u"
