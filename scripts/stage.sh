@@ -104,6 +104,14 @@ cp work/muterm/MUTERM.X stage/USR/BIN/muterm.x
 crlf templates/MUTERM.CNF stage/USR/BIN/MUTERM.CNF
 mkdir -p stage/USR/DOC/MUTERM && cp work/muterm/MUTERM.DOC work/muterm/MUTERM.MAN work/muterm/ESC.DOC stage/USR/DOC/MUTERM/
 
+# --- スクリーンセーバー: GraySaver.X 1.23 (M.Kamada) + 外部サブルーチン (星 / ブロック崩し / メルトダウン) ---
+# GraySaver はサブルーチンを自分のディレクトリからも探すので、まとめて /usr/lib/graysaver に置く (zshrc の saver 関数で起動)
+x dl/misc/GRAYS123.LZH graysaver; x dl/misc/GSSMPL1.LZH graysaver2
+mkdir -p stage/USR/LIB/GRAYSAVER stage/USR/DOC/GRAYSAVER
+cp work/graysaver/GraySaver.x work/graysaver/star.x work/graysaver/rstar.x work/graysaver/rstar1.x \
+   work/graysaver2/BLOCK1.X work/graysaver2/MELT1.X stage/USR/LIB/GRAYSAVER/
+cp work/graysaver/GraySaver.doc work/graysaver2/GSSMPL1.DOC stage/USR/DOC/GRAYSAVER/
+
 # --- PPP / TCP/IP (RS-232C 経由で Raspberry Pi などと TCP/IP 接続する) ---
 # RS-232C ドライバ: tmsio.x 0.31 (フロー制御をソフトで選べる。X68000 Z の 3 線接続向け既定) / bsio.x 0.21 (軽量だが RTS/CTS 固定)
 x dl/net/tmsio031.lzh tmsio; x dl/net/BSIO021.LZH bsio

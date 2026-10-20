@@ -45,6 +45,9 @@ ita/tr12.lzh http://retropc.net/x68000/software/tools/itatoolbox/tr/tr12.lzh d89
 ita/unexp10a.lzh http://retropc.net/x68000/software/tools/itatoolbox/unexpand/unexp10a.lzh 649083dc870ba97807ac4df4c8b25fb741a290a24648816b7f8eac51dc59584e
 ita/uniq10.lzh http://retropc.net/x68000/software/tools/itatoolbox/uniq/uniq10.lzh b5ed9cc987035c525af7757cfbf003cc892b9f05d1a4f9b9aba9a3260bc60039
 ita/wc11a.lzh http://retropc.net/x68000/software/tools/itatoolbox/wc/wc11a.lzh 0b3d3eed213f1b1bf207baa9aa5bed56111aa9f505eff0a84c58c13aafb13c16
+# --- screen saver (GraySaver.X: 垂直帰線割り込みで動き、実行中のプログラムを止めない) ---
+misc/GRAYS123.LZH http://retropc.net/x68000/software/system/screensaver/graysaver/GRAYS123.LZH 150da5494d784ee48a79fd2ec3958f067a87a402d6dfe7b3162a02aec488ae05
+misc/GSSMPL1.LZH http://retropc.net/x68000/software/system/screensaver/graysaver/GSSMPL1.LZH ed17c7541507f9905c62a5ddb6525b343ab318d78d876288d1eb3d5fa56437d5
 # --- keyboard (KeyWitch: キー配置変更 / US 配列対応) ---
 misc/KEYWB213.LZH http://retropc.net/x68000/software/system/key/keywitch/KEYWB213.LZH ab78511385785c03576248e0e4b5f8e256b72b3588c07ed01ffa72bc69b034e0
 # --- terminal (RS-232C 経由で UNIX ホストにログインする) ---
