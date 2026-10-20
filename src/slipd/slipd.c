@@ -151,17 +151,22 @@ static void thread(void)
  * 応答を読む位置は毎回 8 ずつ下げる (X68000 Z 側でディスクの読み込みがキャッシュされるため。scsiremote.sys と同じ方法) */
 #define ZID     6
 #define ZWLBA   0x100000
-#define ZRLBA   0x180000
-#define ZRSPAN  0x80000
+/* 応答を読む帯。Z 側の Linux は読み込みをキャッシュするので、帯が狭いと一巡したところで古い応答が返り、
+   それきり交換できなくなった (0x80000 セクタの帯で 65536 回 = 20ms 間隔で約 22 分、2026-10-21)。
+   Z のメモリより広い 2GB を回る (ファームの NETPIPE_RLBA / NETPIPE_REND と同じ) */
+#define ZRLBA   0x400000
+#define ZRSPAN  0x3ffff8
 #define ZSECTS  8
 #define ZDATA   (ZSECTS * 512 - 16)
 #define ZMAGIC  0x58364e50              /* "X6NP" */
-#define ZIDLE   2                       /* 何も無いときの問い合わせ間隔 (1/100 秒) */
+#define ZIDLE   2                       /* やり取りの直後の問い合わせ間隔 (1/100 秒) */
+#define ZIDLE2  5                       /* 2 秒やり取りが無ければこの間隔に延ばす (帯を回る速さも落とす) */
 
 struct zhdr { uint32_t magic, seq; uint16_t len, more; uint32_t stat; };
 static uint8_t zreq[ZSECTS * 512] __attribute__((aligned(4)));
 static uint8_t zres[ZSECTS * 512] __attribute__((aligned(4)));
 static uint32_t zseq;
+static uint32_t zmyip;                  /* -z の後ろの IP アドレス。0 でなければ Pico がブリッジする (Z が LAN 上の 1 台になる) */
 static int zsect = ZRLBA;
 static struct { char tag[8]; uint32_t xchg, retry, err, drops; } zstat = { "SLPDZSTA" };
 /* 調査用のトレース (交換ごとに 時刻 1/100 秒, 送信バイト, 受信バイト, 渡したパケット数)。"SLPDTRAC" の後ろ: 位置, 記録 256 件 */
@@ -170,7 +175,7 @@ static struct { char tag[8]; uint32_t pos; struct { int32_t t; uint16_t tx, rx; 
 
 static int zstep(int d)
 {
-  zsect = ZRLBA + ((zsect - ZRLBA - d) & (ZRSPAN - 8));
+  zsect = ZRLBA + (unsigned)(zsect - ZRLBA + ZRSPAN - d) % ZRSPAN;   /* d は 8 の倍数で ZRSPAN 未満 */
   return zsect;
 }
 
@@ -183,7 +188,7 @@ static int zxchg(int txlen, int *more)
   q->seq = ++zseq;
   q->len = txlen;
   q->more = ZDATA;
-  q->stat = 0;
+  q->stat = zmyip;
   if (_iocs_s_writeext(ZWLBA, (16 + txlen + 511) / 512, ZID, 1, zreq) != 0)
     return -1;
   for (try = 0; ; try++) {
@@ -214,7 +219,7 @@ static int ticks(void)
 
 static void zthread(void)
 {
-  int last = 0, hot = 0;
+  int last = 0, hot = 0, act = 0;
   for (;;) {
     int n = 0, now, r, more = 0, i;
     long c;
@@ -222,7 +227,7 @@ static void zthread(void)
     while (n < ZDATA && (c = call_etd(etd, 17, 0)) >= 0)
       zreq[16 + n++] = c;
     now = ticks();
-    if (n == 0 && hot == 0 && (unsigned)(now - last) < ZIDLE) {
+    if (n == 0 && hot == 0 && (unsigned)(now - last) < ((unsigned)(now - act) < 200 ? ZIDLE : ZIDLE2)) {
       _dos_change_pr();
       continue;
     }
@@ -241,6 +246,7 @@ static void zthread(void)
         slip_in(zres[16 + i]);
       if (n || r) {
         int k = ztrace.pos++ % ZTRACE;
+        act = now;
         ztrace.e[k].t = now;
         ztrace.e[k].tx = n;
         ztrace.e[k].rx = r;
@@ -259,8 +265,27 @@ int slipd_main(void)
   {
     unsigned char *p = cmd_line + 1;     /* 先頭 1 バイトは長さ */
     for (; *p; p++)
-      if (p[0] == '-' && (p[1] | 0x20) == 'z')
+      if (p[0] == '-' && (p[1] | 0x20) == 'z') {
+        /* -z a.b.c.d: ブリッジ (Pico が Wi-Fi の LAN で a.b.c.d を名乗る)。-z だけなら UDP で Pi と運ぶ */
+        unsigned char *q = p + 2;
+        uint32_t ip = 0, v = 0;
+        int dots = 0, digits = 0;
         zmode = 1;
+        while (*q == ' ')
+          q++;
+        for (; (*q >= '0' && *q <= '9') || *q == '.'; q++) {
+          if (*q == '.') {
+            ip = (ip << 8) | v;
+            v = digits = 0;
+            dots++;
+          } else {
+            v = v * 10 + (*q - '0');
+            digits++;
+          }
+        }
+        if (dots == 3 && digits && v < 256)
+          zmyip = (ip << 8) | v;
+      }
   }
   ssp = _dos_super(0);
   etd = find_slip();
@@ -298,7 +323,8 @@ int slipd_main(void)
     if (r < 0)
       _dos_print("slipd: スレッドを起こせません\r\n");
   }
-  _dos_print(zmode ? "slipd: SLIP thread started (SCSI ID 6 netpipe)\r\n" : "slipd: SLIP thread started\r\n");
+  _dos_print(!zmode ? "slipd: SLIP thread started\r\n" : zmyip ? "slipd: SLIP thread started (SCSI ID 6 netpipe, bridge)\r\n"
+                    : "slipd: SLIP thread started (SCSI ID 6 netpipe, UDP)\r\n");
   {
     /* 常駐する大きさは BSS (スレッドのスタック) まで含める。a1 (prg_end) だと BSS が入らず、
        解放された領域をスレッドが使い続けて gcc などが壊れた */
