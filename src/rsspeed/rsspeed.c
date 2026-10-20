@@ -11,7 +11,11 @@
  */
 #include <stdio.h>
 #include <stdlib.h>
+#ifdef __ELF__
+#include <x68k/iocs.h>      /* elf2x68k (Mac でクロスビルド: dev イメージの AUTOEXEC.BAT 用) */
+#else
 #include <iocslib.h>
+#endif
 
 int main(int argc, char **argv)
 {

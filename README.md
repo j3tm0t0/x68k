@@ -31,6 +31,8 @@ make ls             # イメージ内のファイル一覧
 (A: はイメージを作り直すと上書きされるので、残したいファイルや `~/.zhistory` は別ドライブの HOME に置くとよい)。
 `KEYMAP=us make image` にすると CONFIG.SYS で KeyWitch を US 配列設定 (`\ETC\KEYWITCH\us.env`) で常駐させる。
 既定の `jis` でも zsh から `uskey` / `jiskey` で切り替えられる。XEiJ はホスト側でキー配置を変換するので `jis` のままでよい。
+`make image PROFILE=dev` は開発用の `build/x68kdev.hds` を作る。中身は同じで、起動時の自動接続・rcmd・GraySaver を動かさず、
+COMMAND.X のコンソールを RS-232C (38400bps) に出す (`CTTY AUX`)。Pi 側は `ppp-x68k` を止めて `screen /dev/ttyS0 38400` で操作し、Z の画面に戻すには `CTTY CON`。
 
 起動すると CONFIG.SYS → AUTOEXEC.BAT → TwentyOne 常駐 → `zsh -l` と進み、`A:/%` プロンプトになる。
 `exit` で COMMAND.X に戻る。fish / ksh は `fish.x` / `ksh.x -l` で起動 (`-l` で /etc/profile を読む)。

@@ -39,6 +39,13 @@ if [ "${NET:-slip}" = slip ]; then
 fi
 crlf work/CONFIG.SYS        stage/CONFIG.SYS
 sed -e "s/@NETMODE@/${NET:-slip}/" -e "s/@NETSPEED@/${NETSPEED:-38400}/" -e "s|@HOMEDIR@|${HOMEDIR:-A:/home}|" templates/AUTOEXEC.BAT > work/AUTOEXEC.BAT
+# PROFILE=dev: 開発用。自動接続 / rcmd / GraySaver を起動せず、COMMAND.X のコンソールを RS-232C (38400bps) に出す
+#   (Pi の screen /dev/ttyS0 38400 で操作する。Z の画面に戻すには CTTY CON。ダイアログは Z の画面に出る)
+if [ "${PROFILE:-cli}" = dev ]; then
+  awk '/NETAUTO_BOOT|自動接続|GraySaver/ {next}
+       /^REM --- ログインシェル/ {print "REM --- dev: コンソールを RS-232C (38400bps) にする。戻すには CTTY CON ---"; print "\\USR\\BIN\\rsspeed.x 4C09"; print "CTTY AUX"; skip=1; next}
+       skip && /zsh\.x/ {skip=0; next} {print}' work/AUTOEXEC.BAT > work/AUTOEXEC.dev && mv work/AUTOEXEC.dev work/AUTOEXEC.BAT
+fi
 crlf work/AUTOEXEC.BAT stage/AUTOEXEC.BAT
 crlf templates/STARTUP.ENV  stage/STARTUP.ENV
 for f in zshenv zshrc fishrc profile; do sjis templates/etc/$f stage/ETC/$f; done
@@ -198,6 +205,7 @@ for f in build/x/sed.x build/x/grep.x; do [ -s "$f" ] && cp "$f" stage/USR/BIN/;
 # slip.sys (SLIP ドライバ。CONFIG.SYS で ppp.sys の代わりに組み込む: NET=slip make image)
 [ -s build/x/slip.sys ] && cp build/x/slip.sys stage/SYS/slip.sys
 [ -s build/x/slipd.x ] && cp build/x/slipd.x stage/USR/BIN/slipd.x
+[ -s build/x/rsspeed.x ] && cp build/x/rsspeed.x stage/USR/BIN/rsspeed.x
 
 # --- ITA TOOLBOX ---
 mkdir -p stage/USR/DOC/ITA
