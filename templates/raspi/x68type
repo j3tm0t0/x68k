@@ -1,0 +1,6 @@
+#!/bin/bash
+# x68type "コマンド" : X68000 のシリアルコンソール (CTTY AUX) に 1 文字ずつ送り、最後に CR を送る。
+#   38400bps で一気に送ると X68000 側の受信が溢れてコンソールが止まる (2026-10-21) ので、1 文字ごとに待つ
+s=$1
+for ((i=0; i<${#s}; i++)); do printf '%s' "${s:$i:1}" > /dev/ttyS0; sleep ${X68TYPE_DELAY:-0.03}; done
+printf '\r' > /dev/ttyS0

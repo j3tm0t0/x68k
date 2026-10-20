@@ -164,6 +164,9 @@ static uint8_t zres[ZSECTS * 512] __attribute__((aligned(4)));
 static uint32_t zseq;
 static int zsect = ZRLBA;
 static struct { char tag[8]; uint32_t xchg, retry, err, drops; } zstat = { "SLPDZSTA" };
+/* 調査用のトレース (交換ごとに 時刻 1/100 秒, 送信バイト, 受信バイト, 渡したパケット数)。"SLPDTRAC" の後ろ: 位置, 記録 256 件 */
+#define ZTRACE  256
+static struct { char tag[8]; uint32_t pos; struct { int32_t t; uint16_t tx, rx; uint16_t pk, pad; } e[ZTRACE]; } ztrace = { "SLPDTRAC" };
 
 static int zstep(int d)
 {
@@ -232,8 +235,18 @@ static void zthread(void)
       continue;
     }
     stat.tx += n;
-    for (i = 0; i < r; i++)
-      slip_in(zres[16 + i]);
+    {
+      uint32_t rx0 = stat.rx;
+      for (i = 0; i < r; i++)
+        slip_in(zres[16 + i]);
+      if (n || r) {
+        int k = ztrace.pos++ % ZTRACE;
+        ztrace.e[k].t = now;
+        ztrace.e[k].tx = n;
+        ztrace.e[k].rx = r;
+        ztrace.e[k].pk = stat.rx - rx0;
+      }
+    }
     /* やり取りがあった直後は間を置かずに問い合わせる (TCP の応答や続きがすぐ来る) */
     hot = more ? 1 : (n || r) ? 20 : hot ? hot - 1 : 0;
     _dos_change_pr();

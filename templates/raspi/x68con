@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+# x68con: X68000 のシリアルコンソールのログ (/tmp/x68con.log) を追いかけて表示する (Shift_JIS -> UTF-8、NUL は捨てる)
+import codecs, os, sys, time
+path = sys.argv[1] if len(sys.argv) > 1 else "/tmp/x68con.log"
+dec = codecs.getincrementaldecoder("cp932")("replace")
+f = open(path, "rb"); f.seek(0, 2)
+while True:
+    b = f.read(4096)
+    if b:
+        sys.stdout.write(dec.decode(b.replace(b"\0", b"")).replace("\r", "")); sys.stdout.flush()
+        continue
+    if os.path.getsize(path) < f.tell():      # 切り詰められた
+        f.seek(0)
+    time.sleep(0.2)
