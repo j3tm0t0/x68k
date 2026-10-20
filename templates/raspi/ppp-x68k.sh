@@ -5,6 +5,8 @@
 #   sudo SPEED=19200 ./ppp-x68k.sh    # X68000 側を NETSPEED=19200 で作ったとき
 #   sudo MODE=ppp SPEED=9600 ./ppp-x68k.sh   # X68000 側が ppp.sys (NET=ppp) のとき
 #   DEV=/dev/ttyUSB0 sudo ./ppp-x68k.sh
+#   sudo MODE=pico ./ppp-x68k.sh      # シリアルの代わりに Pico W (x68kzremotedrv の netpipe) から UDP で受ける
+#                                     # (X68000 側は slipd.x -z。slipudp.py が UDP 6868 を pty にして slattach に渡す)
 #   SLIP は slattach (net-tools) とカーネルの slip モジュールを使う。systemd で常駐させるなら ppp-x68k.service
 #   (設定は /etc/default/ppp-x68k に MODE= / SPEED= / MTU=)
 # 前提:
@@ -14,8 +16,8 @@
 #   - X68000 側は /etc/conf.ppp の raspi: ラベル (192.168.68.2) と対になる
 set -eu
 DEV=${DEV:-/dev/ttyS0}
-MODE=${MODE:-slip}        # slip | ppp
-[ "$MODE" = slip ] && IFN=sl0 || IFN=ppp0
+MODE=${MODE:-slip}        # slip | pico | ppp
+[ "$MODE" = ppp ] && IFN=ppp0 || IFN=sl0
 SPEED=${SPEED:-38400}     # X68000 側の netup <速度> (make image の NETSPEED=) と同じにする
 MTU=${MTU:-1500}          # 296 に絞ると ESP/X の TCP が rcmd 接続 1 回で止まった (MSS 256 を扱えない疑い)
 LOCAL=${LOCAL:-192.168.68.1}     # Raspberry Pi 側 (PPP)
@@ -24,6 +26,7 @@ REMOTE=${REMOTE:-192.168.68.2}   # X68000 側
 GETTY="serial-getty@$(basename "$DEV").service"
 restore() {
   [ -n "${TS_PID:-}" ] && kill "$TS_PID" 2>/dev/null
+  [ -n "${UDP_PID:-}" ] && kill "$UDP_PID" 2>/dev/null
   [ -n "${SL_PID:-}" ] && kill "$SL_PID" 2>/dev/null
   # systemd のサービス (ppp-x68k.service) から動かすときは getty を戻さない (Restart で再起動するため)
   if [ -z "${NO_GETTY_RESTORE:-}" ]; then
@@ -32,7 +35,17 @@ restore() {
   fi
 }
 trap restore EXIT INT TERM
-systemctl stop "$GETTY" 2>/dev/null || true
+if [ "$MODE" = pico ]; then
+  # UDP <-> pty の中継を立て、その pty をシリアルの代わりに slattach に渡す (シリアルは X68000 のコンソール用に空けておく)
+  DEV=/run/x68k-slip
+  python3 "$(dirname "$(readlink -f "$0")")/slipudp.py" "$DEV" "${PORT:-6868}" &
+  UDP_PID=$!
+  for i in 1 2 3 4 5; do [ -e "$DEV" ] && break; sleep 1; done
+  NO_GETTY_RESTORE=1
+  MODE=slip
+else
+  systemctl stop "$GETTY" 2>/dev/null || true
+fi
 # X68000 → Pi → 外: フォワード + NAT (再起動で消える。恒久化するなら sysctl.conf / nftables に)
 sysctl -q -w net.ipv4.ip_forward=1
 iptables -t nat -C POSTROUTING -s "$REMOTE" -j MASQUERADE 2>/dev/null ||

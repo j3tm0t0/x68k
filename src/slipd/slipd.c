@@ -19,6 +19,7 @@
 
 extern long call_etd(void *entry, long cmd, void *arg);
 extern char *mem_ptr;
+extern unsigned char *cmd_line;
 
 #define MTU     1500
 #define BURST   512                     /* 1 周で読み書きする最大バイト数 (ほかのスレッドに譲るため) */
@@ -90,45 +91,50 @@ static void *find_slip(void)
   return 0;
 }
 
+/* SLIP (RFC 1055) を 1 バイトずつほどき、IPv4 として正しい形のパケットだけを slip.sys に渡す */
+static void slip_in(int b)
+{
+  static int pos, esc, bad;
+  if (b == 0xc0) {                      /* END: パケットの区切り */
+    uint8_t *ip = frame + 14;
+    /* IPv4 として正しい形のものだけ渡す (版 = 4, ヘッダ長 >= 20, 全長 = 受け取った長さ)。
+       Linux の sl0 は IPv6 (ルータ要請など) も送ってくることがあり、xip.x に IPv4 として渡すと壊れた */
+    if (pos >= 20 && !bad && (ip[0] >> 4) == 4 && (ip[0] & 15) >= 5 && ((ip[2] << 8) | ip[3]) == pos) {
+      long arg[2];
+      arg[0] = pos;
+      arg[1] = (long)frame;
+      if (call_etd(etd, 16, arg) > 0)
+        stat.rx++;
+    } else if (pos)
+      stat.bad++;
+    pos = esc = bad = 0;
+    return;
+  }
+  if (b == 0xdb) {                      /* ESC */
+    esc = 1;
+    return;
+  }
+  if (esc) {
+    b = b == 0xdc ? 0xc0 : b == 0xdd ? 0xdb : b;
+    esc = 0;
+  }
+  if (pos < MTU)
+    frame[14 + pos++] = b;
+  else
+    bad = 1;
+}
+
 /* スレッド本体 (スーパーバイザモード: slip.sys を DOS を通さずに直接呼べ、途中でスレッドが切り替わらない)。
  * 読み書きするものが無ければ _CHANGE_PR で譲る (_SLEEP_PR で眠ると、そのうち起こされなくなった) */
 static void thread(void)
 {
-  int pos = 0, esc = 0, bad = 0;
   for (;;) {
     int n, did = 0;
     long c;
     stat.loops++;
     for (n = 0; n < BURST && _iocs_isns232c(); n++) {
-      int b = _iocs_inp232c() & 0xff;
+      slip_in(_iocs_inp232c() & 0xff);
       did = 1;
-      if (b == 0xc0) {                  /* END: パケットの区切り */
-        uint8_t *ip = frame + 14;
-        /* IPv4 として正しい形のものだけ渡す (版 = 4, ヘッダ長 >= 20, 全長 = 受け取った長さ)。
-           Linux の sl0 は IPv6 (ルータ要請など) も送ってくることがあり、xip.x に IPv4 として渡すと壊れた */
-        if (pos >= 20 && !bad && (ip[0] >> 4) == 4 && (ip[0] & 15) >= 5 && ((ip[2] << 8) | ip[3]) == pos) {
-          long arg[2];
-          arg[0] = pos;
-          arg[1] = (long)frame;
-          if (call_etd(etd, 16, arg) > 0)
-            stat.rx++;
-        } else if (pos)
-          stat.bad++;
-        pos = esc = bad = 0;
-        continue;
-      }
-      if (b == 0xdb) {                  /* ESC */
-        esc = 1;
-        continue;
-      }
-      if (esc) {
-        b = b == 0xdc ? 0xc0 : b == 0xdd ? 0xdb : b;
-        esc = 0;
-      }
-      if (pos < MTU)
-        frame[14 + pos++] = b;
-      else
-        bad = 1;
     }
     for (n = 0; n < BURST && _iocs_osns232c() && (c = call_etd(etd, 17, 0)) >= 0; n++) {
       _iocs_out232c(c);
@@ -140,9 +146,110 @@ static void thread(void)
   }
 }
 
+/* -z: シリアルの代わりに x68kzremotedrv (Raspberry Pi Pico W) の SCSI ID 6 で運ぶ (netpipe)。
+ * 1 回の交換で、要求 (見出し 16 バイト + 送信データ) を ZWLBA に書き、応答 (見出し + 受信データ) を ZRLBA 帯から読む。
+ * 応答を読む位置は毎回 8 ずつ下げる (X68000 Z 側でディスクの読み込みがキャッシュされるため。scsiremote.sys と同じ方法) */
+#define ZID     6
+#define ZWLBA   0x100000
+#define ZRLBA   0x180000
+#define ZRSPAN  0x80000
+#define ZSECTS  8
+#define ZDATA   (ZSECTS * 512 - 16)
+#define ZMAGIC  0x58364e50              /* "X6NP" */
+#define ZIDLE   2                       /* 何も無いときの問い合わせ間隔 (1/100 秒) */
+
+struct zhdr { uint32_t magic, seq; uint16_t len, more; uint32_t stat; };
+static uint8_t zreq[ZSECTS * 512] __attribute__((aligned(4)));
+static uint8_t zres[ZSECTS * 512] __attribute__((aligned(4)));
+static uint32_t zseq;
+static int zsect = ZRLBA;
+static struct { char tag[8]; uint32_t xchg, retry, err, drops; } zstat = { "SLPDZSTA" };
+
+static int zstep(int d)
+{
+  zsect = ZRLBA + ((zsect - ZRLBA - d) & (ZRSPAN - 8));
+  return zsect;
+}
+
+/* 1 回交換する。戻り値: 受信データ長 (応答の more に残りの長さ), 失敗なら -1 */
+static int zxchg(int txlen, int *more)
+{
+  struct zhdr *q = (struct zhdr *)zreq, *r = (struct zhdr *)zres;
+  int try, n;
+  q->magic = ZMAGIC;
+  q->seq = ++zseq;
+  q->len = txlen;
+  q->more = ZDATA;
+  q->stat = 0;
+  if (_iocs_s_writeext(ZWLBA, (16 + txlen + 511) / 512, ZID, 1, zreq) != 0)
+    return -1;
+  for (try = 0; ; try++) {
+    if (_iocs_s_readext(zstep(8), 1, ZID, 1, zres) != 0)
+      return -1;
+    if (r->magic == ZMAGIC && r->seq == zseq)
+      break;
+    zstat.retry++;
+    if (try >= 3)
+      return -1;
+    zstep(0x10000 - 8);                 /* キャッシュに残っていた: 大きく飛ばす */
+  }
+  n = r->len;
+  if (n > ZDATA)
+    return -1;
+  if (16 + n > 512 && _iocs_s_readext(zsect + 1, (16 + n - 1) / 512, ZID, 1, zres + 512) != 0)
+    return -1;
+  zstat.xchg++;
+  zstat.drops = r->stat;
+  *more = r->more;
+  return n;
+}
+
+static int ticks(void)
+{
+  return _iocs_ontime().sec;            /* 1/100 秒 (0 時に戻る) */
+}
+
+static void zthread(void)
+{
+  int last = 0, hot = 0;
+  for (;;) {
+    int n = 0, now, r, more = 0, i;
+    long c;
+    stat.loops++;
+    while (n < ZDATA && (c = call_etd(etd, 17, 0)) >= 0)
+      zreq[16 + n++] = c;
+    now = ticks();
+    if (n == 0 && hot == 0 && (unsigned)(now - last) < ZIDLE) {
+      _dos_change_pr();
+      continue;
+    }
+    last = now;
+    r = zxchg(n, &more);
+    if (r < 0) {
+      zstat.err++;
+      while ((unsigned)(ticks() - now) < 100)   /* Pico が居ない・つながらない: 1 秒待つ */
+        _dos_change_pr();
+      continue;
+    }
+    stat.tx += n;
+    for (i = 0; i < r; i++)
+      slip_in(zres[16 + i]);
+    /* やり取りがあった直後は間を置かずに問い合わせる (TCP の応答や続きがすぐ来る) */
+    hot = more ? 1 : (n || r) ? 20 : hot ? hot - 1 : 0;
+    _dos_change_pr();
+  }
+}
+
 int slipd_main(void)
 {
-  int ssp = _dos_super(0);
+  int ssp, zmode = 0;
+  {
+    unsigned char *p = cmd_line + 1;     /* 先頭 1 バイトは長さ */
+    for (; *p; p++)
+      if (p[0] == '-' && (p[1] | 0x20) == 'z')
+        zmode = 1;
+  }
+  ssp = _dos_super(0);
   etd = find_slip();
   if (!etd) {
     if (ssp > 0) _dos_super(ssp);
@@ -154,7 +261,7 @@ int slipd_main(void)
     _dos_print("slipd: 受信を再開しました (常駐済み)\r\n");
     return 0;
   }
-  if (!grow_rsdrv())
+  if (!zmode && !grow_rsdrv())
     _dos_print("slipd: RSDRV.SYS の受信バッファを広げられません (1KB のまま)\r\n");
   if (ssp > 0) _dos_super(ssp);
   prc.length = sizeof mbox;
@@ -164,7 +271,7 @@ int slipd_main(void)
     /* スリープ時間 0 で作ったスレッドはメッセージが届くまで眠ったまま (wait_flg = 0xff) なので、
        作ったらすぐ 1 通送って起こす (xip.x も _SEND_PR でスレッドを起こしている) */
     int tid = _dos_open_pr("slipd", 2, (int)(ustack + sizeof ustack), (int)((char *)sstack + sizeof sstack),
-                           0x2000, (int)thread, &prc, 0);
+                           0x2000, (int)(zmode ? zthread : thread), &prc, 0);
     static char msg[4];
     static struct dos_prcptr me;        /* _GET_PR は情報をここに書く (NULL を渡すとアドレス 0 を壊す) */
     int myid, r;
@@ -178,7 +285,7 @@ int slipd_main(void)
     if (r < 0)
       _dos_print("slipd: スレッドを起こせません\r\n");
   }
-  _dos_print("slipd: SLIP thread started\r\n");
+  _dos_print(zmode ? "slipd: SLIP thread started (SCSI ID 6 netpipe)\r\n" : "slipd: SLIP thread started\r\n");
   {
     /* 常駐する大きさは BSS (スレッドのスタック) まで含める。a1 (prg_end) だと BSS が入らず、
        解放された領域をスレッドが使い続けて gcc などが壊れた */
