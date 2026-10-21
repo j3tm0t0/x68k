@@ -33,9 +33,6 @@ if [ "$FAST" = "1" ]; then
   if patch -d "$SRC" -p1 --dry-run -f < "$CRYPTO68K/curve25519.patch" >/dev/null 2>&1; then
     patch -d "$SRC" -p1 < "$CRYPTO68K/curve25519.patch"
   fi
-  # 回避: patch の keygen ブロックのローカル変数 _P が newlib <ctype.h> の _P (=020) と衝突する。
-  # _P を _Pb に改名 (vt100 agent に報告済み。向こうが直したら不要)。BSD sed は \b 非対応なので perl。
-  perl -i -pe 's/\b_P\b/_Pb/g' "$SRC/curve25519.c"
   EXTRA_DEF="-DFAST_FIELD"
   [ "${FAST_C:-0}" != "1" ] && EXTRA_DEF="$EXTRA_DEF -DUSE_ASM"   # mul68k.o は make clean 後に組む
 fi
