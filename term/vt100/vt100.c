@@ -214,11 +214,21 @@ static void cursor_xor(int col, int row)
 }
 
 /* ================= スクロール (VRAM をラスタ単位でずらす) ================= */
-/* 32bit 単位でコピーする (src<dst のときは後ろから)。VRAM は 4 プレーン別々に。 */
+/* 32bit 単位でコピーする (src<dst のときは後ろから)。VRAM は 4 プレーン別々に。
+ * 実機では上方向 (dst<src) のとき IOCS TXRASCOPY を使う。1 ラスタ = 4 走査線なので
+ * 走査線番号は 4 の倍数で渡る (行は 16 走査線 = 4 ラスタ)。d1=(src<<8)|dst, d2=ラスタ数,
+ * d3=プレーンマスク(0xF)。実機で row5->row3 のコピーを確認済み。
+ * 下方向 (dst>src) は降順フラグが未検証なので 32bit 転送のままにする。 */
 static void vram_move_lines(int dst_line, int src_line, int nlines)
 {
   int p;
   long bytes = (long)nlines * VBYTES;
+#ifndef VT_HOSTTEST
+  if (dst_line < src_line && (dst_line & 3) == 0 && (src_line & 3) == 0 && (nlines & 3) == 0) {
+    _iocs_txrascpy(((src_line / 4) << 8) | (dst_line / 4), nlines / 4, 0x000f);
+    return;
+  }
+#endif
   for (p = 0; p < 4; p++) {
     volatile unsigned char *base = TVRAM + (unsigned long)p * PLANE;
     volatile unsigned long *d = (volatile unsigned long *)(base + (long)dst_line * VBYTES);

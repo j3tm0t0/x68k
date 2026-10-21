@@ -1,6 +1,6 @@
-vtcat.x
-vtcat.x.elf*
-vthost
+*.x
+*.x.elf*
 *.o
+vthost
 tests/venv/
 tests/fixtures/*.out
