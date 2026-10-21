@@ -16,9 +16,10 @@ REM --- PPP / TCP/IP (ppp.x は %PPP%\conf.ppp、xip.x は %SYSROOT%\etc を読�
 SET PPP=A:\ETC
 SET SYSROOT=A:\
 SET HOST=x68k
-REM NETMODE=slip / NETSPEED は make image の NET= / NETSPEED= で埋め込む (zshrc の netup が見る)
+REM NETMODE / NETSPEED / NETZIP は make image の NET= / NETSPEED= / NETZIP= で埋め込む (zshrc の netup が見る)
 SET NETMODE=@NETMODE@
 SET NETSPEED=@NETSPEED@
+SET NETZIP=@NETZIP@
 REM --- C コンパイラ (gcc 真里子版 + LIBC + HAS/HLK) ---
 SET include=A:/usr/include
 SET lib=A:/usr/lib

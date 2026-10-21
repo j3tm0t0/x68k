@@ -4,12 +4,15 @@ PROFILE ?= cli
 IMG ?= $(if $(filter dev,$(PROFILE)),build/x68kdev.hds,build/x68kcli.hds)
 SIZE_MB ?= 100
 # 行末コメントを書くと値に空白が残るので、説明は上の行に書く
-# NET: slip (slip.sys + slipd.x) / ppp (ppp.sys + ppp.x)。NETSPEED: 起動時の自動接続 (netup) の速度
+# NET: slip (slip.sys + slipd.x) / ppp (ppp.sys + ppp.x) / npd (npd.sys + npd.x: Pico W の netpipe のブリッジだけ)。
+#   NETSPEED: 起動時の自動接続 (netup) の速度
+#   NETZIP: NET=npd のときの Z の IP アドレス (Pico W が LAN で名乗る。DHCP の範囲外を使う)
 #   (Pi 側の /etc/default/ppp-x68k の MODE / SPEED と揃える)
 # KEYMAP: us にすると KeyWitch を US 配列設定で CONFIG.SYS に組み込む
 # HOMEDIR: HOME。イメージを作り直しても残したいなら別のドライブ (B:/home など) にする
 NET ?= slip
 NETSPEED ?= 38400
+NETZIP ?=
 KEYMAP ?= jis
 HOMEDIR ?= A:/home
 # XIPMSS: xip.x の TCP の MSS (元は 512)。1 パケットごとに 100～150ms かかるので、大きいほど速い
@@ -28,7 +31,7 @@ fetch:            ## sources.txt のアーカイブを dl/ に取得 (sha256 検
 
 stage: tools fetch      ## アーカイブを展開して stage/ を作る (elf2x68k があれば sed/grep もクロスビルド)
 	scripts/xbuild.sh
-	PROFILE=$(PROFILE) KEYMAP=$(KEYMAP) NET=$(NET) NETSPEED=$(NETSPEED) HOMEDIR=$(HOMEDIR) XIPMSS=$(XIPMSS) scripts/stage.sh
+	PROFILE=$(PROFILE) KEYMAP=$(KEYMAP) NET=$(NET) NETSPEED=$(NETSPEED) NETZIP=$(NETZIP) HOMEDIR=$(HOMEDIR) XIPMSS=$(XIPMSS) scripts/stage.sh
 
 image: tools stage ## $(IMG) を生成
 	IMG=$(IMG) SIZE_MB=$(SIZE_MB) scripts/build.sh

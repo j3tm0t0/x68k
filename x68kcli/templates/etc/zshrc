@@ -48,6 +48,8 @@ function cc {
 #   netup bridge [IP] : Pico W が IP (既定 $NETZIP) を代わりに名乗り、Z を LAN 上の 1 台にする (Pi も NAT も不要)。
 #                ルーターは $NETGW (既定 192.168.1.1)、DNS は $NETDNS (既定は $NETGW)。IP は DHCP の範囲外を使う
 #     pico / bridge と RS-232C の切り替え、bridge の IP の変更は再起動が要る (slipd.x のスレッドが最初の設定のまま残る)
+#   NETMODE=npd (CONFIG.SYS に npd.sys) なら netup は常に bridge で、npd.x が SLIP なしで運ぶ (slipd.x の約 1.6 倍速い)。
+#     pico (UDP) は使えない
 #   netdown : PPP 切断・常駐解除 (PPP のとき) → xip.x -r
 #   ppp.x の速度は /etc/conf.ppp の raspi<速度> ラベル (raspi9600 / raspi19200 / raspi38400) で合わせる
 function x68build {   # x68build <name> : /usr/src/<name> を make して /usr/bin に入れる (無ければ)
@@ -56,12 +58,21 @@ function x68build {   # x68build <name> : /usr/src/<name> を make して /usr/b
 #   NETMODE=slip (AUTOEXEC.BAT が設定。CONFIG.SYS に slip.sys を組み込んだとき) なら SLIP でつなぐ。
 #   SLIP は交渉が無いので pppwait では相手を確かめず、xip.x と ifconfig だけで上げる (Pi 側は MODE=slip)
 function netup {
-  local speed=${1:-$NETSPEED} drv=$2
+  local speed=${1:-$NETSPEED} drv=$2 mode=$1 zip=$2
   [ -z "$speed" ] && speed=38400
-  if [ "$1" = pico ] || [ "$1" = bridge ]; then
+  if [ "$NETMODE" = npd ]; then
+    [ "$mode" = pico ] && { echo "netup: npd.sys では pico (UDP) は使えない (slip.sys のイメージで)"; return 1; }
+    # netup / netup 192.168.1.68 / netup bridge [IP]。netauto は netup $NETSPEED と呼ぶので、点の無いものは IP とみなさない
+    if [ "$mode" != bridge ]; then
+      zip=
+      case "$1" in *.*) zip=$1 ;; esac
+    fi
+    mode=bridge
+  fi
+  if [ "$mode" = pico ] || [ "$mode" = bridge ]; then
     local my peer dns
-    if [ "$1" = bridge ]; then
-      my=${2:-$NETZIP} peer=${NETGW:-192.168.1.1}
+    if [ "$mode" = bridge ]; then
+      my=${zip:-$NETZIP} peer=${NETGW:-192.168.1.1}
       dns=${NETDNS:-$peer}
       [ -z "$my" ] && { echo "netup: bridge には IP が要る (netup bridge 192.168.1.68、または NETZIP=)"; return 1; }
     else
@@ -75,9 +86,9 @@ function netup {
     inetdconf.x +router $peer
     ifconfig.x ep0 netmask 255.255.255.255
     inetdconf.x +dns $dns
-    if [ "$1" = bridge ]; then slipd.x -z $my; else slipd.x -z; fi
+    if [ "$NETMODE" = npd ]; then npd.x $my; elif [ "$mode" = bridge ]; then slipd.x -z $my; else slipd.x -z; fi
     NETUP_DONE=1
-    echo "netup: $1  $my (router $peer)"
+    echo "netup: $mode  $my (router $peer)"
     return 0
   fi
   if [ "$NETMODE" = slip ]; then
@@ -127,7 +138,7 @@ function netup {
   inetdconf.x +dns 8.8.8.8
 }
 function netdown {   # 常駐している ppp.x / xip.x を外す (netup した印が無くても外す)
-  [ "$NETMODE" = slip ] || ppp.x
+  [ "$NETMODE" = slip ] || [ "$NETMODE" = npd ] || ppp.x
   xip.x -r   # slip.sys は xip.x が外れると受信を止める (slipd.x のスレッドは残る)
   unset NETUP_DONE
 }
