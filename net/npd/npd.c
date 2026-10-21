@@ -101,6 +101,8 @@ static uint32_t zmyip;                  /* Z の IP アドレス。Pico がこ�
 static int zsect = ZRLBA;
 static int zidle = ZIDLE;
 static struct { char tag[8]; uint32_t xchg, retry, err, drops; } zstat = { "SLPDZSTA" };
+/* 交換の失敗の内訳 (書き込み, 読み込み, 古い応答ばかり, 長さが変, 残りのセクタの読み込み) */
+static struct { char tag[8]; uint32_t wr, rd, stale, len, rd2; } zerr = { "SLPDZERR" };
 /* 調査用のトレース (交換ごとに 時刻 1/100 秒, 送信バイト, 受信バイト, 渡したパケット数)。"SLPDTRAC" の後ろ: 位置, 記録 256 件 */
 #define ZTRACE  256
 static struct { char tag[8]; uint32_t pos; struct { int32_t t; uint16_t tx, rx; uint16_t pk, pad; } e[ZTRACE]; } ztrace = { "SLPDTRAC" };
@@ -169,26 +171,51 @@ static int zxchg(int txlen, int *more, int first)
   q->len = txlen;
   q->more = ZDATA;
   q->stat = zmyip;
-  if (zwrite(ZWLBA, (16 + txlen + 511) / 512, zreq) != 0)
-    return -1;
-  for (try = 0; ; try++) {
-    if (zread(zstep(8), first, zres) != 0)
+  /* 書き込みに失敗したら 1 回だけ書き直す (届いていて二度送ることになっても、TCP が重複を捨てる) */
+  if (zwrite(ZWLBA, (16 + txlen + 511) / 512, zreq) != 0) {
+    zerr.wr++;
+    if (zwrite(ZWLBA, (16 + txlen + 511) / 512, zreq) != 0)
       return -1;
+  }
+  /* Pico は次の要求が来るまで応答を持っているので、読み込みに失敗しても同じ応答を読み直せる。
+     以前は 1 回の失敗で交換ごと捨てていて、送ったパケットと受け取るはずのパケットが失われ、TCP の再送を待った */
+  for (try = 0; ; try++) {
+    if (zread(zstep(8), first, zres) != 0) {
+      zerr.rd++;
+      if (try >= 64)
+        return -1;
+      continue;
+    }
     if (r->magic == q->magic && r->seq == zseq)
       break;
     zstat.retry++;
-    if (try >= 64)
+    if (try >= 64) {
+      zerr.stale++;
       return -1;
-    /* キャッシュに残っていた古い応答: 16MB 飛ばして読み直す。リセットを繰り返すと、前の回までに読んだ範囲
-       (100MB を超えることもある) がキャッシュに残っていて、3 回で諦めると抜け出せず交換が全滅した。
-       キャッシュに当たる読み込みは USB を通らないので、何度読み直しても安い */
-    zstep(0x8000 - 8);
+    }
+    /* キャッシュに残っていた古い応答: 読み出し領域のどこか別の場所 (番号と回数から作る疑似乱数) に飛んで読み直す。
+       リセットを繰り返すと、前の回までに読んだ範囲 (100MB を超えることもある) がキャッシュに残っている。
+       以前は 16MB ずつ飛んでいて、480MB の領域では 30 回で同じ場所に戻るので、64 回試しても 30 か所しか見ず、
+       それが全部キャッシュ済みだと抜け出せなかった。キャッシュに当たる読み込みは USB を通らないので安い */
+    {
+      uint32_t h = (zseq ^ ((uint32_t)try << 20)) * 2654435761u;
+      zsect = ZRLBA + 8 + (h >> 8) % (ZRSPAN / 8 - 1) * 8;   /* 次の zstep(8) で 8 下がる */
+    }
   }
   n = r->len;
-  if (n > ZDATA)
+  if (n > ZDATA) {
+    zerr.len++;
     return -1;
-  if (16 + n > first * 512 && zread(zsect + first, (16 + n - 1) / 512 + 1 - first, zres + first * 512) != 0)
-    return -1;
+  }
+  /* 残りのセクタの読み込みに失敗したら、同じ位置をもう一度読む (場所を変えると別の応答になりうる) */
+  if (16 + n > first * 512) {
+    int k;
+    for (k = 0; zread(zsect + first, (16 + n - 1) / 512 + 1 - first, zres + first * 512) != 0; k++) {
+      zerr.rd2++;
+      if (k >= 3)
+        return -1;
+    }
+  }
   zstat.xchg++;
   zstat.drops = r->stat;
   *more = r->more;
@@ -227,7 +254,7 @@ static int ticks(void)
 
 static void zthread(void)
 {
-  int last = 0, hot = 0, act = 0;
+  int last = 0, hot = 0, act = 0, zfails = 0;
   for (;;) {
     int n, now, r, more = 0;
     stat.loops++;
@@ -247,11 +274,15 @@ static void zthread(void)
     last = now;
     r = zxchg(n, &more, (unsigned)(now - act) < 20 ? ZSECTS : 1);
     if (r < 0) {
+      /* 送るはずだったレコードは失われる (TCP が再送する)。続けて失敗したときだけ 1 秒待つ
+         (Pico が居ない・つながらない、"X6NR" を知らない古いファーム) */
       zstat.err++;
-      while ((unsigned)(ticks() - now) < 100)   /* Pico が居ない・つながらない ("X6NR" を知らない古いファームも): 1 秒待つ */
-        _dos_change_pr();
+      if (++zfails >= 2)
+        while ((unsigned)(ticks() - now) < 100)
+          _dos_change_pr();
       continue;
     }
+    zfails = 0;
     stat.tx += n;
     {
       uint32_t rx0 = stat.rx;

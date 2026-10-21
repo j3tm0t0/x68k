@@ -1,4 +1,4 @@
-/* sst.x: slip.sys / npd.sys の統計 (ETD 9: rx, tx, drop) と slipd.x / npd.x のカウンタを表示する */
+/* sst.x: slip.sys / npd.sys の統計 (ETD 9: rx, tx, drop) と slipd.x / npd.x のカウンタ (SLPDSTAT / SLPDZSTA / SLPDZERR) を表示する */
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -29,7 +29,8 @@ int main(void)
   call_etd(e, 9, st);
   printf("%s rx=%lu tx=%lu drop=%lu ip_handler=%08lx\n", ((char *)e)[-4] == 'N' ? "npd.sys" : "slip.sys", st[0], st[1], st[2], call_etd(e, 6, (long[]){0x0800}));
   for (p = (uint32_t *)0x6800; p < (uint32_t *)0x200000; p++)
-    if ((p[0] == 0x534c5044 && (p[1] == 0x53544154 || p[1] == 0x5a535441)) && (void *)p != (void *)main)
-      printf("%06lx %.8s %lu %lu %lu %lu\n", (unsigned long)p, (char *)p, p[2], p[3], p[4], p[5]);
+    if ((p[0] == 0x534c5044 && (p[1] == 0x53544154 || p[1] == 0x5a535441 || p[1] == 0x5a455252)) && (void *)p != (void *)main)
+      printf("%06lx %.8s %lu %lu %lu %lu %lu\n", (unsigned long)p, (char *)p, p[2], p[3], p[4], p[5],
+             p[1] == 0x5a455252 ? p[6] : 0);   /* SLPDZERR (npd.x): 書き込み, 読み込み, 古い応答, 長さ, 残りの読み込み */
   return 0;
 }
