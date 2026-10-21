@@ -37,6 +37,11 @@ fi
 if [ "${NET:-slip}" = slip ]; then
   sed -i.bak 's/^DEVICE    = \\SYS\\ppp.sys/DEVICE    = \\SYS\\slip.sys/' work/CONFIG.SYS && rm -f work/CONFIG.SYS.bak
 fi
+# PROFILE=dev: RSDRV.SYS の直後に contee.sys (画面の出力を RS-232C にも流す) を組み込み、
+#   以降のドライバの組み込みメッセージや画面で止まったときの表示をシリアルで見られるようにする
+if [ "${PROFILE:-cli}" = dev ] && [ -s build/x/contee.sys ]; then
+  awk '{print} /^DEVICE    = \\SYS\\RSDRV\.SYS/ {print "DEVICE    = \\SYS\\contee.sys"}' work/CONFIG.SYS > work/CONFIG.dev && mv work/CONFIG.dev work/CONFIG.SYS
+fi
 crlf work/CONFIG.SYS        stage/CONFIG.SYS
 sed -e "s/@NETMODE@/${NET:-slip}/" -e "s/@NETSPEED@/${NETSPEED:-38400}/" -e "s|@HOMEDIR@|${HOMEDIR:-A:/home}|" templates/AUTOEXEC.BAT > work/AUTOEXEC.BAT
 # PROFILE=dev: 開発用。自動接続 / rcmd / GraySaver を起動せず、COMMAND.X のコンソールを RS-232C (38400bps) に出す
@@ -211,6 +216,7 @@ for f in build/x/sed.x build/x/grep.x; do [ -s "$f" ] && cp "$f" stage/USR/BIN/;
 # slip.sys (SLIP ドライバ。CONFIG.SYS で ppp.sys の代わりに組み込む: NET=slip make image)
 [ -s build/x/slip.sys ] && cp build/x/slip.sys stage/SYS/slip.sys
 [ -s build/x/slipd.x ] && cp build/x/slipd.x stage/USR/BIN/slipd.x
+[ -s build/x/contee.sys ] && cp build/x/contee.sys stage/SYS/contee.sys
 [ -s build/x/rsspeed.x ] && cp build/x/rsspeed.x stage/USR/BIN/rsspeed.x
 
 # --- ITA TOOLBOX ---

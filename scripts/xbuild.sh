@@ -43,3 +43,5 @@ build grep dl/gnu/grep-3.11.tar.xz src/grep.x "--disable-perl-regexp" "-DDT_BLK=
 make -s -C src/slip slip.sys >/dev/null && cp src/slip/slip.sys build/x/slip.sys && echo "xbuild: build/x/slip.sys"
 m68k-xelf-gcc -O2 src/rsspeed/rsspeed.c -o build/x/rsspeed.x && rm -f build/x/rsspeed.x.elf && echo "xbuild: build/x/rsspeed.x"
 make -s -C src/slipd slipd.x >/dev/null && cp src/slipd/slipd.x build/x/slipd.x && echo "xbuild: build/x/slipd.x"
+# contee.sys (画面の出力を RS-232C にも流す。PROFILE=dev の CONFIG.SYS で組み込む, src/contee)
+make -s -C src/contee contee.sys >/dev/null 2>&1 && cp src/contee/contee.sys build/x/contee.sys && echo "xbuild: build/x/contee.sys"
