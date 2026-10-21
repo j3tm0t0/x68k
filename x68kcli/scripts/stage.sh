@@ -145,11 +145,11 @@ cp work/ppp/conf.ppp stage/USR/DOC/PPP/conf_ppp.org
 #   TCP/IP 本体は inetd.x の改良版 xip.x を使う (inetd.x も参考に残す)
 x dl/net/TCPPACKA.LZH tcpa; x dl/net/xipb5.lzh xip
 cp work/tcpa/bin/*.x stage/USR/BIN/
-# XIPMSS (既定 1460): MSS をパッチした xip.x を入れる (改変済みのバイナリは配布せず、ここで元の xip.x から作る)
+# XIPMSS (既定 1460) / XIPTIMER (既定 1、掃除の間引き): パッチした xip.x を入れる (改変済みのバイナリは配布せず、ここで元の xip.x から作る)
 if [ "${XIPMSS:-1460}" = 512 ]; then
   cp work/xip/xip.x stage/USR/BIN/
 else
-  python3 ../net/patchxip.py work/xip/xip.x stage/USR/BIN/xip.x --mss "${XIPMSS:-1460}"
+  python3 ../net/patchxip.py work/xip/xip.x stage/USR/BIN/xip.x --mss "${XIPMSS:-1460}" $([ "${XIPTIMER:-1}" = 1 ] && echo --timer)
 fi
 cp work/tcpa/etc/protocols work/tcpa/etc/services stage/ETC/
 mkdir -p stage/USR/DOC/ESPX stage/USR/DOC/XIP
