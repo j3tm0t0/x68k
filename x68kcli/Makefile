@@ -20,8 +20,9 @@ HOMEDIR ?= A:/home
 XIPMSS ?= 1460
 # XIPTIMER: 1 なら xip.x のタイマーの表の掃除を 0.1 秒に 1 回に間引く (Pico W netpipe + npd で 36 → 40〜45KB/s)
 XIPTIMER ?= 1
-# XIPLOCK: fix なら xip.x の名前付きロックを速くし、競合を直した版に替える (harness/xiptest、patchxip.py --lockfix)
-XIPLOCK ?=
+# XIPLOCK: fix なら xip.x の名前付きロックを速くし、競合を直した版に替える (harness/xiptest、patchxip.py --lockfix)。
+#   Z の npd で 40〜45 → 45〜47KB/s、20 分 44MB で失敗 0。空にすると元のロックのまま
+XIPLOCK ?= fix
 
 .PHONY: all tools fetch stage image run agent ls clean distclean
 

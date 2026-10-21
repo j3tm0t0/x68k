@@ -183,7 +183,7 @@ Z の Linux は SCSI の読み込みをキャッシュし、X68000 をリセッ�
 | TCP/IP | `xip.x` β5 (計測技研 ESP/X `inetd.x` の改良版。`/etc/hosts` `networks` `protocols` `services` を読む) |
 | コマンド | ESP/X PACK-A (TCPPACKA): `ping.x` `telnet.x` `ftp.x` `inetdconf.x` `ifconfig.x` `netstat.x` `arp.x` |
 
-CONFIG.SYS には `PROCESS = 16 10 50` (xip/ppp がバックグラウンドプロセスを作る) と `DEVICE = \SYS\ppp.sys`、
+CONFIG.SYS には `PROCESS = 16 10 20` (xip/ppp がバックグラウンドプロセスを作る。タイムスライスは 50 より 20 の方が ping が速く、速度は同じ) と `DEVICE = \SYS\ppp.sys`、
 AUTOEXEC.BAT には `PPP=A:\ETC` (conf.ppp の場所) / `SYSROOT=A:\` (etc の親) / `HOST=x68k` を設定済み。
 アドレスは `/etc/conf.ppp` の `raspi:` ラベルで X68000 = 192.168.68.2、Raspberry Pi = 192.168.68.1 (`/etc/hosts` も同じ)。
 

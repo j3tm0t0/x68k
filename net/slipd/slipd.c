@@ -9,7 +9,7 @@
  *
  *   slipd.x     : 常駐してスレッド "slipd" を作る (2 回目以降は受信の受け入れを再開するだけ)。xip.x の設定 (ifconfig /
  *                 inetdconf) が済んでから起動する (netup がそうする)
- *   必要: CONFIG.SYS の PROCESS 指定 (x68kcli は PROCESS = 16 10 50)
+ *   必要: CONFIG.SYS の PROCESS 指定 (x68kcli は PROCESS = 16 10 20)
  * (Pico W の netpipe のブリッジを SLIP なしで速く運ぶのは net/npd の npd.sys / npd.x)
  */
 #define __DOS_INLINE__
