@@ -1,5 +1,5 @@
 --- a/curve25519.c	2026-10-22 03:34:16
-+++ b/curve25519.c	2026-10-22 04:18:18
++++ b/curve25519.c	2026-10-22 04:20:05
 @@ -165,8 +165,15 @@
    FOR(i,16) o[i]=a[i]-b[i];
  }
@@ -52,12 +52,12 @@
    z[31]=(n[31]&127)|64;
    z[0]&=248;
 +#if defined(FAST_FIELD)
-+  { int _i, _isbase = (p[0]==9); gf _P[4],_nn,_dd;
-+    for(_i=1;_i<32;_i++) _isbase &= (p[_i]==0);
-+    if (_isbase) {                 /* keygen: [z]*9 を Edwards comb + Montgomery 写像で */
-+      scalarbase_fast(_P, z);
-+      A(_nn,_P[2],_P[1]); Z(_dd,_P[2],_P[1]); inv25519(_dd,_dd); M(_nn,_nn,_dd);
-+      pack25519(q,_nn); return;
++  { int kgi, kgbase = (p[0]==9); gf kgP[4],kgn,kgd;
++    for(kgi=1;kgi<32;kgi++) kgbase &= (p[kgi]==0);
++    if (kgbase) {                 /* keygen: [z]*9 を Edwards comb + Montgomery 写像で */
++      scalarbase_fast(kgP, z);
++      A(kgn,kgP[2],kgP[1]); Z(kgd,kgP[2],kgP[1]); inv25519(kgd,kgd); M(kgn,kgn,kgd);
++      pack25519(q,kgn); return;
 +    } }
 +#endif
    unpack25519(x,p);
