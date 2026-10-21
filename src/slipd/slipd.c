@@ -92,6 +92,46 @@ static void *find_slip(void)
 }
 
 /* SLIP (RFC 1055) を 1 バイトずつほどき、IPv4 として正しい形のパケットだけを slip.sys に渡す */
+/* 送受信したパケットの先頭を残す ("SLPDTAP_"、ztap.x で表示)。どこで消えているかを Z の上で見るため */
+#define ZTAP    64
+static struct { char tag[8]; uint32_t pos; struct { int32_t t; uint8_t dir, pad; uint16_t len; uint8_t b[28]; } e[ZTAP]; } ztap = { "SLPDTAP_" };
+
+static int ticks(void);
+
+static void tap(int dir, const uint8_t *p, int len)
+{
+  int k = ztap.pos++ % ZTAP, i;
+  ztap.e[k].t = ticks();
+  ztap.e[k].dir = dir;
+  ztap.e[k].len = len;
+  for (i = 0; i < 28; i++)
+    ztap.e[k].b[i] = i < len ? p[i] : 0;
+}
+
+/* 送る SLIP バイト列をほどいて、1 パケットごとに tap する */
+static void tap_tx(int b)
+{
+  static uint8_t pk[28];
+  static int pos, esc;
+  if (b == 0xc0) {
+    if (pos)
+      tap('T', pk, pos);
+    pos = esc = 0;
+    return;
+  }
+  if (b == 0xdb) {
+    esc = 1;
+    return;
+  }
+  if (esc) {
+    b = b == 0xdc ? 0xc0 : b == 0xdd ? 0xdb : b;
+    esc = 0;
+  }
+  if (pos < 28)
+    pk[pos] = b;
+  pos++;
+}
+
 static void slip_in(int b)
 {
   static int pos, esc, bad;
@@ -103,10 +143,13 @@ static void slip_in(int b)
       long arg[2];
       arg[0] = pos;
       arg[1] = (long)frame;
+      tap('R', ip, pos);
       if (call_etd(etd, 16, arg) > 0)
         stat.rx++;
-    } else if (pos)
+    } else if (pos) {
+      tap('B', ip, pos);
       stat.bad++;
+    }
     pos = esc = bad = 0;
     return;
   }
@@ -225,8 +268,10 @@ static void zthread(void)
     int n = 0, now, r, more = 0, i;
     long c;
     stat.loops++;
-    while (n < ZDATA && (c = call_etd(etd, 17, 0)) >= 0)
+    while (n < ZDATA && (c = call_etd(etd, 17, 0)) >= 0) {
       zreq[16 + n++] = c;
+      tap_tx(c & 0xff);
+    }
     now = ticks();
     if (n == 0 && hot == 0 && (unsigned)(now - last) < ((unsigned)(now - act) < 200 ? ZIDLE : ZIDLE2)) {
       _dos_change_pr();
@@ -303,6 +348,14 @@ int slipd_main(void)
   if (!zmode && !grow_rsdrv())
     _dos_print("slipd: RSDRV.SYS の受信バッファを広げられません (1KB のまま)\r\n");
   if (ssp > 0) _dos_super(ssp);
+  if (zmode) {
+    /* 番号と読み始める位置を毎回変える。Z 側の読み込みキャッシュは X68000 をリセットしても残るので、
+       1 から数え直すと、前の回の応答 (番号も合う) を読んでしまい、古いパケットが流れ込んだ */
+    uint32_t h = ((uint32_t)_dos_getdate() << 17) ^ (uint32_t)_dos_gettim2() ^ ((uint32_t)_iocs_ontime().sec << 7);
+    h *= 2654435761u;
+    zseq = h;
+    zsect = ZRLBA + (h >> 8) % (ZRSPAN / 8) * 8;
+  }
   prc.length = sizeof mbox;
   prc.buf_ptr = mbox;
   prc.your_id = 0xffff;                 /* 受け箱は空 (0 のままだと「使用中」とみなされ _SEND_PR が届かない) */
