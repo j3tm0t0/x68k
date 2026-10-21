@@ -16,6 +16,11 @@ CROSS=m68k-xelf-
 FAST="${FAST:-0}"
 CRYPTO68K="${CRYPTO68K:-$HERE/../crypto68k}"
 
+# パッチ適用前に必ず素の状態に戻す (前回のパッチが残っていると更新版が当たらない)。
+TARBALL="$HERE/work/dropbear-$VER.tar.bz2"
+if [ -f "$TARBALL" ]; then
+  rm -rf "$SRC"; tar xjf "$TARBALL" -C "$HERE/work"
+fi
 [ -d "$SRC" ] || { echo "build: $SRC が無い。先に ./fetch.sh" >&2; exit 1; }
 
 cp "$HERE/localoptions.h" "$SRC/localoptions.h"
@@ -24,10 +29,13 @@ cp "$HERE/x68k_shim.c"    "$SRC/x68k_shim.c"
 EXTRA_DEF="" ; EXTRA_OBJ=""
 if [ "$FAST" = "1" ]; then
   [ -f "$CRYPTO68K/field_fast.h" ] || { echo "build: FAST=1 だが $CRYPTO68K が無い (branch vt100 の net/ssh/crypto68k)" >&2; exit 1; }
-  cp "$CRYPTO68K/field_fast.h" "$SRC/field_fast.h"
+  cp "$CRYPTO68K"/*.h "$SRC/"   # field_fast.h / comb.h / basetable.h 等
   if patch -d "$SRC" -p1 --dry-run -f < "$CRYPTO68K/curve25519.patch" >/dev/null 2>&1; then
     patch -d "$SRC" -p1 < "$CRYPTO68K/curve25519.patch"
   fi
+  # 回避: patch の keygen ブロックのローカル変数 _P が newlib <ctype.h> の _P (=020) と衝突する。
+  # _P を _Pb に改名 (vt100 agent に報告済み。向こうが直したら不要)。BSD sed は \b 非対応なので perl。
+  perl -i -pe 's/\b_P\b/_Pb/g' "$SRC/curve25519.c"
   EXTRA_DEF="-DFAST_FIELD"
   [ "${FAST_C:-0}" != "1" ] && EXTRA_DEF="$EXTRA_DEF -DUSE_ASM"   # mul68k.o は make clean 後に組む
 fi
