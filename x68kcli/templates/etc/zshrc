@@ -79,7 +79,12 @@ function netup {
       my=192.168.68.2 peer=192.168.68.1 dns=8.8.8.8
     fi
     [ -n "$NETUP_DONE" ] && xip.x -r >nul 2>&1
-    xip.x -w ${NETWIN:-4096} -n ${NETNICE:-2} || return 1
+    # npd では ウィンドウ 16KB (+5%)。16KB 以上はヒープ (既定 256KB) が足りずに固まるので 1MB にする
+    if [ "$NETMODE" = npd ]; then
+      xip.x -w ${NETWIN:-16384} -n ${NETNICE:-2} -+-h:${NETHEAP:-1048576} || return 1
+    else
+      xip.x -w ${NETWIN:-4096} -n ${NETNICE:-2} || return 1
+    fi
     ifconfig.x lp0 up
     ifconfig.x ep0 up $my
     ifconfig.x ep0 netmask 128.0.0.0
