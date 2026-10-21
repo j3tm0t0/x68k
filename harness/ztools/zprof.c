@@ -12,14 +12,27 @@
 int main(int argc, char **argv);
 static const unsigned char xipsig[12] = { 'T', 'C', 'P', '/', 'I', 'P', 0x01, 0x00, 0x48, 0xe7, 0x80, 0x80 };
 
+/* 動いている npd.x / slipd.x の "SLPDPROF" を探す。メモリにはディスクバッファや前の起動の残骸のコピーも残っていて、
+ * 以前は最初に見つけたものに書き込み、残骸の場所を使っていた別のものを壊して Z が固まった。
+ * _GET_PR でスレッド "npd" (または "slipd") の受け箱 (その .bss にある) の番地を得て、それより前の 128KB の中で
+ * いちばん近いもの (同じプログラムの .data) を使う */
 static uint32_t *find_prof(void)
 {
-  uint32_t *p;
-  for (p = (uint32_t *)0x6800; p < (uint32_t *)0x200000; p++)
-    if (p[0] == 0x534c5044 && p[1] == 0x50524f46 &&   /* "SLPD" "PROF" */
-        !((unsigned char *)p > (unsigned char *)main && (unsigned char *)p < (unsigned char *)main + 0x10000))
-      return p;
-  return 0;
+  static struct dos_prcptr info;
+  uint32_t *p, *best = 0, lim = 0;
+  int id;
+  for (id = 0; id < 32 && !lim; id++) {
+    if (_dos_get_pr(id, &info) < 0)
+      continue;
+    if (!strcmp((char *)info.name, "npd") || !strcmp((char *)info.name, "slipd"))
+      lim = (uint32_t)info.buf_ptr;
+  }
+  if (!lim)
+    return 0;
+  for (p = (uint32_t *)(lim > 0x26800 ? lim - 0x20000 : 0x6800); p < (uint32_t *)lim; p++)
+    if (p[0] == 0x534c5044 && p[1] == 0x50524f46)     /* "SLPD" "PROF" */
+      best = p;
+  return best;
 }
 
 /* 見つかったものをすべて表示し、最初のものを返す (ディスクのバッファに xip.x の中身が残っていることもある) */
@@ -56,7 +69,7 @@ int main(int argc, char **argv)
   _dos_super(0);
   z = find_prof();
   if (!z) {
-    printf("zprof: slipd.x (SLPDPROF) が常駐していない\n");
+    printf("zprof: npd.x / slipd.x (スレッド npd / slipd と SLPDPROF) が見つからない\n");
     return 1;
   }
   if (argc >= 2 && !strcmp(argv[1], "on")) {
