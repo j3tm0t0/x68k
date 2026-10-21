@@ -1,36 +1,23 @@
-/* nacl25519.c -- dropbear 2022.83 の curve25519.c (TweetNaCl 版) の核を取り出し、
- * ホスト/X68000 両方でビルドできるようにしたもの。FAST_FIELD を定義すると M を
- * 自前の高速版 M_fast に差し替える (差分テスト用)。元コードは public domain / dropbear MIT。
- *   提供: crypto_hash(SHA-512), genrandom (テスト用の決定的乱数)。 */
+/* nacl25519.c -- dropbear 2022.83 の curve25519.c (TweetNaCl 版) の核。ホスト/X68000 両対応。
+ * FAST_FIELD で M/S/inv25519/pow2523 を field_fast.h の高速版に差し替える (差分テスト用)。
+ * 元コードは public domain / dropbear MIT。提供: crypto_hash(SHA-512), genrandom(決定的)。 */
 #include <stdint.h>
 #include <string.h>
 #include "tests/sha512.h"
-
 #define DROPBEAR_CURVE25519 1
 #define DROPBEAR_ED25519 1
 #define DROPBEAR_SIGNKEY_VERIFY 1
-
 #define FOR(i,n) for (i = 0;i < n;++i)
 #define sv static void
-
 typedef unsigned char u8;
 typedef uint32_t u32;
 typedef unsigned long long u64;
 typedef long long i64;
 typedef i64 gf[16];
-
-#ifdef FAST_FIELD
-static void M_fast(gf o,const gf a,const gf b);
-static void S_fast(gf o,const gf a);
-#endif
-
 static u64 g_rng_state = 0x123456789abcdef0ULL;
 void genrandom_seed(u64 s){ g_rng_state = s ? s : 1; }
-static void genrandom(u8 *buf, unsigned int len){
-  unsigned int i;
-  for(i=0;i<len;i++){ g_rng_state = g_rng_state*6364136223846793005ULL+1442695040888963407ULL;
-    buf[i]=(u8)(g_rng_state>>56); }
-}
+static void genrandom(u8 *buf, unsigned int len){ unsigned int i;
+  for(i=0;i<len;i++){ g_rng_state=g_rng_state*6364136223846793005ULL+1442695040888963407ULL; buf[i]=(u8)(g_rng_state>>56);} }
 
 #if DROPBEAR_CURVE25519 || DROPBEAR_ED25519
 
@@ -188,6 +175,10 @@ sv S(gf o,const gf a)
 
 sv inv25519(gf o,const gf i)
 {
+#ifdef FAST_FIELD
+  inv_fast(o,i);
+  return;
+#endif
   gf c;
   int a;
   FOR(a,16) c[a]=i[a];
@@ -201,6 +192,10 @@ sv inv25519(gf o,const gf i)
 #if DROPBEAR_ED25519 && DROPBEAR_SIGNKEY_VERIFY
 sv pow2523(gf o,const gf i)
 {
+#ifdef FAST_FIELD
+  pow2523_fast(o,i);
+  return;
+#endif
   gf c;
   int a;
   FOR(a,16) c[a]=i[a];

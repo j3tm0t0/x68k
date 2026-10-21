@@ -11,15 +11,35 @@ dropbear (`curve25519.c`, TweetNaCl 版) は 2^255-19 の体を `gf = i64[16]` (
 
 ## 速度 (XEiJ、`-model=SUPER` = 68000 10MHz。`_iocs_ontime` によるエミュレート時間 = 実機相当)
 
-| 版 | X25519 scalarmult 1 回 | 対 元 |
+X25519 scalarmult 1 回:
+
+| 版 | 時間 | 対 元 |
 |---|---|---|
 | 元 (TweetNaCl, `__muldi3`) | 118 s | 1x |
 | C 版 `M_fast`/`S_fast` (MULU + car25519 排除 + 二乗専用) | 22 s | 5.4x |
-| **+ 68000 asm comba 乗算 (`mul68k.s`)** | **10 s** | **12x** |
+| + 68000 asm comba 乗算 (`mul68k.s`) | 10 s | 12x |
+| **+ 逆元/√ を加算鎖に (254S+252M → 254S+11M)** | **9.1 s** | **13x** |
 
-MULU だけで理論下限が ~3 s (scalarmult 1 回で約 60 万回の MULU) なので、10s はその約 3 倍。
-これ以上は comba のアキュムレート最適化 (積の演算子スキャン化・レジスタ常駐) で ~5〜6 s が狙える
-程度 (radix 2^16・10MHz の限界域)。ハンドシェイクは 10MHz でおおよそ分オーダー → 1 分弱に下がる。
+操作別 (asm 版、`tests/bench_ops.c`):
+
+| 操作 | 時間 | 構成 |
+|---|---|---|
+| X25519 shared (scalarmult) | 9.1 s | Montgomery ラダー 255 段 |
+| X25519 keygen (base=9) | 9.0 s | 同上 (固定基点だが汎用ラダー) |
+| Ed25519 sign | 19 s | Edwards scalarbase + SHA-512 |
+| **Ed25519 verify** | **37 s** | Edwards scalarmult 2 本 + √ + 逆元 |
+
+MULU だけで scalarmult 1 回の理論下限が ~3 s。10MHz でハンドシェイク (keygen+shared+verify ≈
+55 s) は、Z 実機 (XEiJ SUPER の 2〜3 倍遅い) で ~130〜160 s → OpenSSH の 120 s LoginGraceTime に
+ぎりぎり届かない。**あと ~2 倍**には固定基点の事前計算が要る (下記)。
+
+## 残りの最適化 (未実装、効果の大きい順)
+- **固定基点テーブル (comb/窓) で Ed25519 の `scalarbase`**: sign と verify の [S]B はベース B が固定なので
+  倍数表を前計算すれば倍加を大幅に省ける (4〜8 倍)。verify を ~37 s → 20 s 台、sign を ~19 s → ~5 s に。
+  ハンドシェイクが Z 実機で 120 s を切る見込み。表は符号付き窓で小さく保つ。
+- **Straus の 2 重スカラー**: verify の [S]B − [h]A を 1 本のラダーで (倍加を共有)。
+- **comba のアキュムレート最適化** (演算子スキャン・レジスタ常駐): M を 10MHz で ~5〜6 s へ。
+いずれも同じ検証 (cryptography 差分 + asm は Unicorn) で進められる。
 
 ## 中身
 

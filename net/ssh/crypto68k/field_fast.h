@@ -59,7 +59,7 @@ extern void fe_mul16(uint16_t r[32], const uint16_t a[16], const uint16_t b[16])
 extern void fe_sqr16(uint16_t r[32], const uint16_t a[16]);
 #endif
 
-/* 符号付き gf を [0,2^16) の u16[16] に正規化 (値は mod p 不変)。 */
+/* 符号付き gf を [0,2^16) の u16[16] に正規化 (int32、値は mod p 不変)。 */
 static void norm_in_u16(uint16_t out[16], const gf in)
 {
   int32_t c = 0, v;
@@ -135,3 +135,50 @@ static void S_fast(gf o, const gf a)
   reduce_cols(o, t);
 }
 #endif
+
+/* ===== 逆元・pow2523 を加算鎖で (TweetNaCl の素朴な 254S+252M を 254S+11M に) ===== */
+/* いずれも M_fast/S_fast を直接使う (field_fast.h 内で定義済み)。結果は元と同一。 */
+static void sqn(gf o, const gf a, int n)   /* o = a^(2^n) */
+{
+  int i;
+  S_fast(o, a);
+  for (i = 1; i < n; i++) S_fast(o, o);
+}
+
+static void inv_fast(gf o, const gf z)     /* o = z^(2^255-21) = z^-1 */
+{
+  gf t0, t1, t2, t3;
+  S_fast(t0, z);                      /* 2 */
+  S_fast(t1, t0); S_fast(t1, t1);     /* 8 */
+  M_fast(t1, z, t1);                  /* 9 */
+  M_fast(t0, t0, t1);                 /* 11 */
+  S_fast(t2, t0);                     /* 22 */
+  M_fast(t1, t1, t2);                 /* 2^5-1 */
+  sqn(t2, t1, 5);   M_fast(t1, t2, t1);   /* 2^10-1 */
+  sqn(t2, t1, 10);  M_fast(t2, t2, t1);   /* 2^20-1 */
+  sqn(t3, t2, 20);  M_fast(t2, t3, t2);   /* 2^40-1 */
+  sqn(t2, t2, 10);  M_fast(t1, t2, t1);   /* 2^50-1 */
+  sqn(t2, t1, 50);  M_fast(t2, t2, t1);   /* 2^100-1 */
+  sqn(t3, t2, 100); M_fast(t2, t3, t2);   /* 2^200-1 */
+  sqn(t2, t2, 50);  M_fast(t1, t2, t1);   /* 2^250-1 */
+  sqn(t1, t1, 5);   M_fast(o, t1, t0);    /* 2^255-21 */
+}
+
+static void pow2523_fast(gf o, const gf z) /* o = z^(2^252-3) */
+{
+  gf t0, t1, t2;
+  S_fast(t0, z);                      /* 2 */
+  S_fast(t1, t0); S_fast(t1, t1);     /* 8 */
+  M_fast(t1, z, t1);                  /* 9 */
+  M_fast(t0, t0, t1);                 /* 11 */
+  S_fast(t0, t0);                     /* 22 */
+  M_fast(t0, t1, t0);                 /* 2^5-1 */
+  sqn(t1, t0, 5);   M_fast(t0, t1, t0);   /* 2^10-1 */
+  sqn(t1, t0, 10);  M_fast(t1, t1, t0);   /* 2^20-1 */
+  sqn(t2, t1, 20);  M_fast(t1, t2, t1);   /* 2^40-1 */
+  sqn(t1, t1, 10);  M_fast(t0, t1, t0);   /* 2^50-1 */
+  sqn(t1, t0, 50);  M_fast(t1, t1, t0);   /* 2^100-1 */
+  sqn(t2, t1, 100); M_fast(t1, t2, t1);   /* 2^200-1 */
+  sqn(t1, t1, 50);  M_fast(t0, t1, t0);   /* 2^250-1 */
+  sqn(t0, t0, 2);   M_fast(o, t0, z);     /* 2^252-3 */
+}
