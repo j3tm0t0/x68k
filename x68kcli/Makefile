@@ -20,6 +20,8 @@ HOMEDIR ?= A:/home
 XIPMSS ?= 1460
 # XIPTIMER: 1 なら xip.x のタイマーの表の掃除を 0.1 秒に 1 回に間引く (Pico W netpipe + npd で 36 → 40〜45KB/s)
 XIPTIMER ?= 1
+# XIPLOCK: fix なら xip.x の名前付きロックを速くし、競合を直した版に替える (harness/xiptest、patchxip.py --lockfix)
+XIPLOCK ?=
 
 .PHONY: all tools fetch stage image run agent ls clean distclean
 
@@ -33,7 +35,7 @@ fetch:            ## sources.txt のアーカイブを dl/ に取得 (sha256 検
 
 stage: tools fetch      ## アーカイブを展開して stage/ を作る (elf2x68k があれば sed/grep もクロスビルド)
 	scripts/xbuild.sh
-	PROFILE=$(PROFILE) KEYMAP=$(KEYMAP) NET=$(NET) NETSPEED=$(NETSPEED) NETZIP=$(NETZIP) HOMEDIR=$(HOMEDIR) XIPMSS=$(XIPMSS) XIPTIMER=$(XIPTIMER) scripts/stage.sh
+	PROFILE=$(PROFILE) KEYMAP=$(KEYMAP) NET=$(NET) NETSPEED=$(NETSPEED) NETZIP=$(NETZIP) HOMEDIR=$(HOMEDIR) XIPMSS=$(XIPMSS) XIPTIMER=$(XIPTIMER) XIPLOCK=$(XIPLOCK) scripts/stage.sh
 
 image: tools stage ## $(IMG) を生成
 	IMG=$(IMG) SIZE_MB=$(SIZE_MB) scripts/build.sh

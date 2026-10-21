@@ -149,7 +149,7 @@ cp work/tcpa/bin/*.x stage/USR/BIN/
 if [ "${XIPMSS:-1460}" = 512 ]; then
   cp work/xip/xip.x stage/USR/BIN/
 else
-  python3 ../net/patchxip.py work/xip/xip.x stage/USR/BIN/xip.x --mss "${XIPMSS:-1460}" $([ "${XIPTIMER:-1}" = 1 ] && echo --timer)
+  python3 ../net/patchxip.py work/xip/xip.x stage/USR/BIN/xip.x --mss "${XIPMSS:-1460}" $([ "${XIPTIMER:-1}" = 1 ] && echo --timer) $([ "${XIPLOCK:-}" = fix ] && echo --lockfix)
 fi
 cp work/tcpa/etc/protocols work/tcpa/etc/services stage/ETC/
 mkdir -p stage/USR/DOC/ESPX stage/USR/DOC/XIP
