@@ -80,6 +80,8 @@ static void reduce_fold(gf o, const uint16_t r[32])
   for (i = 0; i < 16; i++) { v = t[i] + c; o[i] = (uint16_t)v; c = v >> 16; }
   v = (uint32_t)(uint16_t)o[0] + 38u * c; o[0] = (uint16_t)v; c = v >> 16;
   for (i = 1; i < 16 && c; i++) { v = (uint32_t)(uint16_t)o[i] + c; o[i] = (uint16_t)v; c = v >> 16; }
+  if (c) { v = (uint32_t)(uint16_t)o[0] + 38u * c; o[0] = (uint16_t)v; c = v >> 16;   /* 残余キャリーの再畳み込み (reduce_cols と同じ) */
+           for (i = 1; i < 16 && c; i++) { v = (uint32_t)(uint16_t)o[i] + c; o[i] = (uint16_t)v; c = v >> 16; } }
 }
 
 static void M_fast(gf o, const gf a, const gf b)

@@ -114,3 +114,39 @@ static void scalarbase_fast(gf p[4], const unsigned char *s)
   ge_dbl(r, p); g_cpy(p[0], r[0]); g_cpy(p[1], r[1]); g_cpy(p[2], r[2]); g_cpy(p[3], r[3]);
   for (i = 0; i < 64; i += 2) { pc_select(&t, i / 2, e[i]); ge_madd(r, p, &t); g_cpy(p[0], r[0]); g_cpy(p[1], r[1]); g_cpy(p[2], r[2]); g_cpy(p[3], r[3]); }
 }
+
+/* ===== 可変基点の窓スカラー倍 (verify の [h]A 用) ===== */
+/* 完全加算 r = p + q (両方とも拡張座標)。TweetNaCl の add と同一 (D2 を使う)。 */
+static void ge_add_full(gf r[4], gf p[4], gf q[4])
+{
+  gf a, b, c, d, e, f, g, h, t;
+  g_sub(a, p[1], p[0]); g_sub(t, q[1], q[0]); M_fast(a, a, t);
+  g_add(b, p[0], p[1]); g_add(t, q[0], q[1]); M_fast(b, b, t);
+  M_fast(c, p[3], q[3]); M_fast(c, c, D2);
+  M_fast(d, p[2], q[2]); g_add(d, d, d);
+  g_sub(e, b, a); g_sub(f, d, c); g_add(g, d, c); g_add(h, b, a);
+  M_fast(r[0], e, f); M_fast(r[1], h, g); M_fast(r[2], g, f); M_fast(r[3], e, h);
+}
+
+static void ge_ident(gf p[4]) { int i; for (i = 0; i < 16; i++) { p[0][i]=0; p[1][i]=0; p[2][i]=0; p[3][i]=0; } p[1][0]=1; p[2][0]=1; }
+static void ge_cpy(gf o[4], gf a[4]) { g_cpy(o[0],a[0]); g_cpy(o[1],a[1]); g_cpy(o[2],a[2]); g_cpy(o[3],a[3]); }
+
+/* o = s * q (s は 32 バイト、q は任意の拡張座標点)。4bit 固定窓。元の scalarmult と同一結果。 */
+static void scalarmult_fast(gf p[4], gf q[4], const unsigned char *s)
+{
+  static gf T[16][4];
+  gf r[4];
+  int i, nib;
+  ge_ident(T[0]);
+  ge_cpy(T[1], q);
+  for (i = 2; i < 16; i++) ge_add_full(T[i], T[i - 1], q);
+  ge_ident(p);
+  for (i = 63; i >= 0; i--) {
+    ge_dbl(r, p); ge_cpy(p, r);
+    ge_dbl(r, p); ge_cpy(p, r);
+    ge_dbl(r, p); ge_cpy(p, r);
+    ge_dbl(r, p); ge_cpy(p, r);
+    nib = (s[i >> 1] >> ((i & 1) ? 4 : 0)) & 15;
+    ge_add_full(r, p, T[nib]); ge_cpy(p, r);
+  }
+}

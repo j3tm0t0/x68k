@@ -27,18 +27,17 @@ X25519 scalarmult 1 回:
 | X25519 shared (scalarmult) | 9.1 s | Montgomery ラダー 255 段 |
 | **X25519 keygen** (base=9) | **2.7 s** | Edwards comb + Montgomery 写像 u=(1+y)/(1-y) |
 | **Ed25519 sign** | **3.3 s** | 固定基点 comb で [r]B + SHA-512 |
-| **Ed25519 verify** | **21 s** | comb で [S]B + 汎用 scalarmult で [h]A + √ + 逆元 |
+| **Ed25519 verify** | **13 s** | comb で [S]B + 窓つき可変 scalarmult で [h]A + √ + 逆元 |
 
 クライアントのハンドシェイク (keygen + shared + verify + sign、publickey 認証まで) =
-2.7+9.1+21.4+3.3 = **36.5 s** (XEiJ SUPER)。Z 実機 (2〜3 倍遅い) で ~91〜110 s → OpenSSH の
+2.7+9.1+12.8+3.3 = **27.9 s** (XEiJ SUPER)。Z 実機 (2〜3 倍遅い) で ~70〜84 s → OpenSSH の
 **120 s LoginGraceTime に収まる**。固定基点 comb 前は 74 s (Z で 185 s 超)。keygen も comb+写像で 9→2.7 s。
 
 固定基点 comb (`comb.h` + `basetable.h`): Ed25519 の `scalarbase` を ref10 式の符号付き 4bit 窓 ×64 と
 B の倍数の事前計算表 (32×8 点、~25KB) で、mixed-add 64 回 + 倍加 4 回に (元は倍加 256 + 加算 256)。
-sign/verify の [k]B に効く。表は `gen_basetable.py` で生成。
+sign/verify の [k]B に効く。表は `gen_basetable.py` で生成。verify の可変基点 [h]A は 4bit 窓 + 速い倍加 (ge_dbl=4M+4S) の `scalarmult_fast` で ~1.7 倍 (comb.h)。
 
 ## 残りの最適化 (未実装)
-- **Straus の 2 重スカラー**: verify の可変側 [h]A に窓/NAF を入れて ~1.3 倍。
 - **comba のアキュムレート最適化**: M を 10MHz で ~5〜6 s へ。
 いずれも同じ検証 (cryptography 差分 + asm は Unicorn) で進められる。
 

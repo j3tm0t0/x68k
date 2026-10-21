@@ -28,28 +28,28 @@ int main(void)
 {
   struct iocs_time t0, t1;
   unsigned char q[32], sig[64]; unsigned long sl=0;
-  long c_sh, c_kg, c_sg, c_vf; int i, ok=1, vr;
+  long c_sh, c_kg, c_sg, c_vf; int i, ok=1, vr, ok_sh=1,ok_sg=1,ok_vf=1;
 
   t0=_iocs_ontime(); dropbear_curve25519_scalarmult(q, SCAL, POINT); t1=_iocs_ontime(); c_sh=ela(t0,t1);
-  for(i=0;i<32;i++) if(q[i]!=EXP[i]) ok=0;
+  for(i=0;i<32;i++) if(q[i]!=EXP[i]) ok_sh=0;
 
   { unsigned char base[32]; for(i=0;i<32;i++) base[i]=0; base[0]=9;
     t0=_iocs_ontime(); dropbear_curve25519_scalarmult(q, SCAL, base); t1=_iocs_ontime(); c_kg=ela(t0,t1); }
 
   t0=_iocs_ontime(); dropbear_ed25519_sign(ED_MSG, sizeof ED_MSG, sig, &sl, ED_SEED, ED_PUB); t1=_iocs_ontime(); c_sg=ela(t0,t1);
-  { int sg_ok=1; for(i=0;i<64;i++) if(sig[i]!=ED_SIG[i]) sg_ok=0; if(!sg_ok) ok=0; }
+  for(i=0;i<64;i++) if(sig[i]!=ED_SIG[i]) ok_sg=0;
 
   t0=_iocs_ontime(); vr=dropbear_ed25519_verify(ED_MSG, sizeof ED_MSG, ED_SIG, 64, ED_PUB); t1=_iocs_ontime(); c_vf=ela(t0,t1);
-  if(vr!=0) ok=0;
+  if(vr!=0) ok_vf=0; ok=ok_sh&&ok_sg&&ok_vf;
 
   { FILE *f=fopen("BENCH.OUT","wb");
-    if(f){ fprintf(f,"%s  X25519 shared=%ld.%02lds keygen=%ld.%02lds  Ed25519 sign=%ld.%02lds verify=%ld.%02lds  %s\n",
+    if(f){ fprintf(f,"%s  X25519 shared=%ld.%02lds keygen=%ld.%02lds  Ed25519 sign=%ld.%02lds verify=%ld.%02lds  %s (sh=%d sg=%d vf=%d)\n",
 #ifdef USE_ASM
       "ASM",
 #else
       "C  ",
 #endif
-      c_sh/100,c_sh%100, c_kg/100,c_kg%100, c_sg/100,c_sg%100, c_vf/100,c_vf%100, ok?"ALL OK":"WRONG");
+      c_sh/100,c_sh%100, c_kg/100,c_kg%100, c_sg/100,c_sg%100, c_vf/100,c_vf%100, ok?"ALL OK":"WRONG", ok_sh, ok_sg, ok_vf);
       fclose(f); }
     printf("done %s\n", ok?"ok":"WRONG");
   }
