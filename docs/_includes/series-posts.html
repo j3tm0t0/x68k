@@ -1,0 +1,16 @@
+{%- comment -%} include.series のシリーズの記事を、第 1 回から順に並べる {%- endcomment -%}
+{%- assign series = site.data.series | where: "id", include.series | first -%}
+{%- assign posts = site.posts | where: "series", include.series | sort: "date" -%}
+<ul class="post-list">
+  {%- for post in posts -%}
+  <li>
+    <span class="post-meta">{{ post.date | date: "%b %-d, %Y" }}</span>
+    <h3>
+      <a class="post-link" href="{{ post.url | relative_url }}">{{ post.title | remove_first: series.title | strip | escape }}</a>
+    </h3>
+    {%- if site.show_excerpts -%}
+      {{ post.excerpt }}
+    {%- endif -%}
+  </li>
+  {%- endfor -%}
+</ul>

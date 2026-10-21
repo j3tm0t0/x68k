@@ -1,6 +1,19 @@
 title: x68k
 description: X68000 / X68000 Z のハック
 lang: ja
+timezone: Asia/Tokyo   # 記事の日付と URL を日本時間で
 theme: minima
 permalink: /:year/:month/:day/:title/
 show_excerpts: true   # トップページの一覧に各記事の最初の段落を出す (minima)
+header_pages:   # ヘッダーにはシリーズのページだけを出す
+  - x68000z.md
+  - psp.md
+defaults:   # 記事はファイル名でシリーズに振り分ける (_data/series.yml の id)
+  - scope:
+      path: "_posts/*-x68000z-diary-*"
+    values:
+      series: x68000z
+  - scope:
+      path: "_posts/*-psp-diary-*"
+    values:
+      series: psp

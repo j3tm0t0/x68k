@@ -1,0 +1,15 @@
+{%- comment -%} トップページ: シリーズごとに、説明、本数、第 1 回と最新回へのリンク {%- endcomment -%}
+<h2 class="post-list-heading">シリーズ</h2>
+<ul class="post-list">
+  {%- for series in site.data.series -%}
+  {%- assign posts = site.posts | where: "series", series.id | sort: "date" -%}
+  {%- assign first = posts | first -%}
+  {%- assign last = posts | last -%}
+  <li>
+    <span class="post-meta">{{ posts.size }} 本 · {{ last.date | date: "%b %-d, %Y" }} 更新</span>
+    <h3><a class="post-link" href="{{ series.page | relative_url }}">{{ series.title | escape }}</a></h3>
+    <p>{{ series.description }}</p>
+    <p><a href="{{ first.url | relative_url }}">第 1 回から読む</a> · <a href="{{ last.url | relative_url }}">最新回: {{ last.title | remove_first: series.title | strip | escape }}</a></p>
+  </li>
+  {%- endfor -%}
+</ul>

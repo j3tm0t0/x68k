@@ -1,0 +1,9 @@
+# トップページに並べる順。id は記事の front matter の series と、page はシリーズのページと対応する
+- id: x68000z
+  title: X68000 Z 日記
+  page: /x68000z/
+  description: X68000 Z に CLI の環境を作っていたら、Wi-Fi 越しに TCP/IP が通るところまで来てしまった記録。
+- id: psp
+  title: PSP で X68000 日記
+  page: /psp/
+  description: X68000 エミュレータ px68k の PSP 版を、5 日かけて等速に近づけた記録。
