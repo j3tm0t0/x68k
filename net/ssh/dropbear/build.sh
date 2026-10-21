@@ -11,11 +11,26 @@ SRC="$HERE/work/dropbear-$VER"
 INC="$HERE/x68kinc"
 OUT="${1:-$HERE/ssh.x}"
 CROSS=m68k-xelf-
+# FAST=1 で 68000 向け高速体演算 (net/ssh/crypto68k, vt100 agent 作) を組み込む。
+# scalarmult 118s -> 10s (~12x)。FAST_C=1 なら asm 無し (22s)。CRYPTO68K で場所を指定可。
+FAST="${FAST:-0}"
+CRYPTO68K="${CRYPTO68K:-$HERE/../crypto68k}"
 
 [ -d "$SRC" ] || { echo "build: $SRC が無い。先に ./fetch.sh" >&2; exit 1; }
 
 cp "$HERE/localoptions.h" "$SRC/localoptions.h"
 cp "$HERE/x68k_shim.c"    "$SRC/x68k_shim.c"
+
+EXTRA_DEF="" ; EXTRA_OBJ=""
+if [ "$FAST" = "1" ]; then
+  [ -f "$CRYPTO68K/field_fast.h" ] || { echo "build: FAST=1 だが $CRYPTO68K が無い (branch vt100 の net/ssh/crypto68k)" >&2; exit 1; }
+  cp "$CRYPTO68K/field_fast.h" "$SRC/field_fast.h"
+  if patch -d "$SRC" -p1 --dry-run -f < "$CRYPTO68K/curve25519.patch" >/dev/null 2>&1; then
+    patch -d "$SRC" -p1 < "$CRYPTO68K/curve25519.patch"
+  fi
+  EXTRA_DEF="-DFAST_FIELD"
+  [ "${FAST_C:-0}" != "1" ] && EXTRA_DEF="$EXTRA_DEF -DUSE_ASM"   # mul68k.o は make clean 後に組む
+fi
 
 # パッチ (冪等: 既に当たっていれば skip)
 for p in "$HERE"/patches/*.patch; do
@@ -38,7 +53,7 @@ rm -f libtomcrypt/libtomcrypt.a libtommath/libtommath.a
   --disable-utmp --disable-utmpx --disable-wtmp --disable-loginfunc --disable-harden \
   CC=${CROSS}gcc AR=${CROSS}ar RANLIB=${CROSS}ranlib \
   CFLAGS="-m68000 -O2 -fomit-frame-pointer -fno-stack-protector -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0" \
-  CPPFLAGS="-I$INC -include $INC/x68k_compat.h" \
+  CPPFLAGS="-I$INC -include $INC/x68k_compat.h $EXTRA_DEF" \
   LIBS="-lsocket" >/dev/null
 
 # configure がクロスで取り違える項目を直す
@@ -48,10 +63,12 @@ rm -f config.h.bak
 
 # シム単体をコンパイル (make clean で消えるので make の前に用意し、LIBS に渡す)
 ${CROSS}gcc -m68000 -O2 -fomit-frame-pointer -I"$INC" -include "$INC/x68k_compat.h" -c x68k_shim.c -o x68k_shim.o
+# FAST の asm 乗算も make clean 後に組む
+case "$EXTRA_DEF" in *USE_ASM*) ${CROSS}as -m68000 "$CRYPTO68K/mul68k.s" -o "$SRC/mul68k.o"; EXTRA_OBJ="$SRC/mul68k.o";; esac
 
 # 先に dry-run でリンク行を取っておく (ビルド後だと "up to date" で出ない)
-LINK=$(make -n PROGRAMS="dbclient" LIBS="$SRC/x68k_shim.o -lsocket" 2>/dev/null | grep -E "${CROSS}gcc +-o dbclient " | tail -1)
-make PROGRAMS="dbclient" LIBS="$SRC/x68k_shim.o -lsocket"
+LINK=$(make -n PROGRAMS="dbclient" LIBS="$SRC/x68k_shim.o $EXTRA_OBJ -lsocket" 2>/dev/null | grep -E "${CROSS}gcc +-o dbclient " | tail -1)
+make PROGRAMS="dbclient" LIBS="$SRC/x68k_shim.o $EXTRA_OBJ -lsocket"
 # 出力名を .x にして HU 形式に変換 + strip。取っておいたリンク行を再実行する。
 [ -n "$LINK" ] || { echo "build: link 行が取れない" >&2; exit 1; }
 sh -c "$(echo "$LINK" | sed "s|-o dbclient |-o '$OUT' -s |")"

@@ -13,10 +13,17 @@ dropbear の `dbclient` を X68000 (Human68k) 用にクロスビルドして `ss
 ## ビルド
 
 ```
-./fetch.sh          # dropbear-2022.83.tar.bz2 を取得・検証・展開
-./build.sh          # ssh.x を作る (既定の出力は ./ssh.x)
-./build.sh /path/ssh.x
+./fetch.sh              # dropbear-2022.83.tar.bz2 を取得・検証・展開
+./build.sh              # ssh.x を作る (素の curve25519。遅い。既定の出力は ./ssh.x)
+FAST=1 ./build.sh       # 68000 高速体演算を組み込む (scalarmult 118s->10s、~12x)
+FAST=1 FAST_C=1 ./build.sh   # asm 無しの C 版だけ (22s)。mul68k.s 不要
+./build.sh /path/ssh.x  # 出力先を指定
 ```
+
+`FAST=1` は `net/ssh/crypto68k/` (vt100 agent 作、`curve25519.patch` / `field_fast.h` /
+`mul68k.s`) を使う。別の場所なら `CRYPTO68K=/path ./build.sh`。これでハンドシェイクが
+素の sshd:22 (LoginGraceTime 120秒) にも収まる。素の遅いビルドは grace を上げた
+sshd (例 ~/sshtest の :2222) が要る。
 
 ## このリポジトリに置くもの
 
