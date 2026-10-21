@@ -132,9 +132,10 @@ static void tap_tx(int b)
   pos++;
 }
 
+static int pos, esc, bad;                /* SLIP をほどいている途中の状態 (slip_in と slip_in_buf で共有) */
+
 static void slip_in(int b)
 {
-  static int pos, esc, bad;
   if (b == 0xc0) {                      /* END: パケットの区切り */
     uint8_t *ip = frame + 14;
     /* IPv4 として正しい形のものだけ渡す (版 = 4, ヘッダ長 >= 20, 全長 = 受け取った長さ)。
@@ -165,6 +166,45 @@ static void slip_in(int b)
     frame[14 + pos++] = b;
   else
     bad = 1;
+}
+
+/* まとめて受けた SLIP をほどく。ふつうのバイトはその場で写し、END / ESC とその次のバイトだけ slip_in に回す。
+ * 1 バイトずつ slip_in を呼ぶと、netpipe で受けるたびに CPU の 1 割強をこれに使っていた (68000 では関数呼び出しが重い) */
+static void slip_in_buf(const uint8_t *s, int n)
+{
+  uint8_t *f = frame + 14;
+  while (n > 0) {
+    int b = *s;
+    if (b == 0xc0 || b == 0xdb || esc) {
+      slip_in(b);
+      s++;
+      n--;
+      continue;
+    }
+    {
+      int k = 0;
+      while (k < n && s[k] != 0xc0 && s[k] != 0xdb)
+        k++;
+      if (pos + k > MTU) {
+        bad = 1;
+        k = k < MTU - pos ? k : (pos < MTU ? MTU - pos : 0);
+        if (k == 0) {
+          s++;
+          n--;
+          continue;
+        }
+      }
+      {
+        uint8_t *d = f + pos;             /* -nostdlib なので memcpy は使えない */
+        int j;
+        for (j = 0; j < k; j++)
+          d[j] = s[j];
+      }
+      pos += k;
+      s += k;
+      n -= k;
+    }
+  }
 }
 
 /* スレッド本体 (スーパーバイザモード: slip.sys を DOS を通さずに直接呼べ、途中でスレッドが切り替わらない)。
@@ -203,7 +243,7 @@ static void thread(void)
 #define ZSECTS  8
 #define ZDATA   (ZSECTS * 512 - 16)
 #define ZMAGIC  0x58364e50              /* "X6NP" */
-#define ZIDLE   2                       /* やり取りの直後の問い合わせ間隔 (1/100 秒) */
+#define ZIDLE   6                       /* やり取りの直後の問い合わせ間隔 (1/100 秒、-i で変えられる) */
 #define ZIDLE2  5                       /* 2 秒やり取りが無ければこの間隔に延ばす (帯を回る速さも落とす) */
 
 struct zhdr { uint32_t magic, seq; uint16_t len, more; uint32_t stat; };
@@ -212,6 +252,7 @@ static uint8_t zres[ZSECTS * 512] __attribute__((aligned(4)));
 static uint32_t zseq;
 static uint32_t zmyip;                  /* -z の後ろの IP アドレス。0 でなければ Pico がブリッジする (Z が LAN 上の 1 台になる) */
 static int zsect = ZRLBA;
+static int zidle = ZIDLE;
 static struct { char tag[8]; uint32_t xchg, retry, err, drops; } zstat = { "SLPDZSTA" };
 /* 調査用のトレース (交換ごとに 時刻 1/100 秒, 送信バイト, 受信バイト, 渡したパケット数)。"SLPDTRAC" の後ろ: 位置, 記録 256 件 */
 #define ZTRACE  256
@@ -224,7 +265,10 @@ static int zstep(int d)
 }
 
 /* 1 回交換する。戻り値: 受信データ長 (応答の more に残りの長さ), 失敗なら -1 */
-static int zxchg(int txlen, int *more)
+/* first: 最初の読み込みのセクタ数。データが続いているときは 8 (一度に読み切る)、静かなときは 1。
+ * Z の SCSI は Pico との USB のやり取りが終わるまで ROM が待ち続けるので、1 コマンドが数 ms の CPU になる。
+ * バイト数よりコマンドの回数を減らす方が効く */
+static int zxchg(int txlen, int *more, int first)
 {
   struct zhdr *q = (struct zhdr *)zreq, *r = (struct zhdr *)zres;
   int try, n;
@@ -236,19 +280,22 @@ static int zxchg(int txlen, int *more)
   if (_iocs_s_writeext(ZWLBA, (16 + txlen + 511) / 512, ZID, 1, zreq) != 0)
     return -1;
   for (try = 0; ; try++) {
-    if (_iocs_s_readext(zstep(8), 1, ZID, 1, zres) != 0)
+    if (_iocs_s_readext(zstep(8), first, ZID, 1, zres) != 0)
       return -1;
     if (r->magic == ZMAGIC && r->seq == zseq)
       break;
     zstat.retry++;
-    if (try >= 3)
+    if (try >= 64)
       return -1;
-    zstep(0x10000 - 8);                 /* キャッシュに残っていた: 大きく飛ばす */
+    /* キャッシュに残っていた古い応答: 16MB 飛ばして読み直す。リセットを繰り返すと、前の回までに読んだ範囲
+       (100MB を超えることもある) がキャッシュに残っていて、3 回で諦めると抜け出せず交換が全滅した。
+       キャッシュに当たる読み込みは USB を通らないので、何度読み直しても安い */
+    zstep(0x8000 - 8);
   }
   n = r->len;
   if (n > ZDATA)
     return -1;
-  if (16 + n > 512 && _iocs_s_readext(zsect + 1, (16 + n - 1) / 512, ZID, 1, zres + 512) != 0)
+  if (16 + n > first * 512 && _iocs_s_readext(zsect + first, (16 + n - 1) / 512 + 1 - first, ZID, 1, zres + first * 512) != 0)
     return -1;
   zstat.xchg++;
   zstat.drops = r->stat;
@@ -265,7 +312,7 @@ static void zthread(void)
 {
   int last = 0, hot = 0, act = 0;
   for (;;) {
-    int n = 0, now, r, more = 0, i;
+    int n = 0, now, r, more = 0;
     long c;
     stat.loops++;
     while (n < ZDATA && (c = call_etd(etd, 17, 0)) >= 0) {
@@ -273,12 +320,12 @@ static void zthread(void)
       tap_tx(c & 0xff);
     }
     now = ticks();
-    if (n == 0 && hot == 0 && (unsigned)(now - last) < ((unsigned)(now - act) < 200 ? ZIDLE : ZIDLE2)) {
+    if (n == 0 && hot == 0 && (unsigned)(now - last) < ((unsigned)(now - act) < 200 ? zidle : ZIDLE2)) {
       _dos_change_pr();
       continue;
     }
     last = now;
-    r = zxchg(n, &more);
+    r = zxchg(n, &more, (unsigned)(now - act) < 20 ? ZSECTS : 1);
     if (r < 0) {
       zstat.err++;
       while ((unsigned)(ticks() - now) < 100)   /* Pico が居ない・つながらない: 1 秒待つ */
@@ -288,8 +335,7 @@ static void zthread(void)
     stat.tx += n;
     {
       uint32_t rx0 = stat.rx;
-      for (i = 0; i < r; i++)
-        slip_in(zres[16 + i]);
+      slip_in_buf(zres + 16, r);
       if (n || r) {
         int k = ztrace.pos++ % ZTRACE;
         act = now;
@@ -299,8 +345,10 @@ static void zthread(void)
         ztrace.e[k].pk = stat.rx - rx0;
       }
     }
-    /* やり取りがあった直後は間を置かずに問い合わせる (TCP の応答や続きがすぐ来る) */
-    hot = more ? 1 : (n || r) ? 20 : hot ? hot - 1 : 0;
+    /* Pico に続きがあるときだけ間を置かずに問い合わせる。送るものができたら (TCP の ACK など) その場で交換する。
+       以前はやり取りの直後に 20 回続けて問い合わせていたが、空の交換 (SCSI の読み書き、1 回数 ms) が
+       CPU を食って xip.x の番が回らず、パケット 1 個に 6〜7 回交換していた */
+    hot = more ? 1 : 0;
     _dos_change_pr();
   }
 }
@@ -311,7 +359,13 @@ int slipd_main(void)
   {
     unsigned char *p = cmd_line + 1;     /* 先頭 1 バイトは長さ */
     for (; *p; p++)
-      if (p[0] == '-' && (p[1] | 0x20) == 'z') {
+      if (p[0] == '-' && (p[1] | 0x20) == 'i' && p[2] >= '0' && p[2] <= '9') {
+        /* -i N: やり取りの直後の問い合わせ間隔 (1/100 秒)。短いほど応答は速いが、空の交換が CPU を食う */
+        zidle = 0;
+        for (p += 2; *p >= '0' && *p <= '9'; p++)
+          zidle = zidle * 10 + (*p - '0');
+        p--;
+      } else if (p[0] == '-' && (p[1] | 0x20) == 'z') {
         /* -z a.b.c.d: ブリッジ (Pico が Wi-Fi の LAN で a.b.c.d を名乗る)。-z だけなら UDP で Pi と運ぶ */
         unsigned char *q = p + 2;
         uint32_t ip = 0, v = 0;
@@ -355,6 +409,11 @@ int slipd_main(void)
     h *= 2654435761u;
     zseq = h;
     zsect = ZRLBA + (h >> 8) % (ZRSPAN / 8) * 8;
+  }
+  if (zmode) {
+    /* 簡易プロファイラ (start.S の prof_vdisp、zprof.x で使う)。垂直同期の割り込みが空いていなければ使わない */
+    extern void prof_vdisp(void);
+    _iocs_vdispst(prof_vdisp, 0, 1);
   }
   prc.length = sizeof mbox;
   prc.buf_ptr = mbox;

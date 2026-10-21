@@ -20,6 +20,32 @@ call_etd:
     movem.l %sp@+,%d2-%d7/%a2-%a6
     rts
 
+/* 簡易プロファイラ: 垂直同期の割り込み (約 60Hz) で、割り込まれた PC を zprof.buf に記録する。
+ * zprof.on が 0 の間は何もしない。zprof.x で開始・取り出しをする ("SLPDPROF")。
+ * _VDISPST で登録するので RTE で戻る */
+    .global prof_vdisp
+prof_vdisp:
+    tst.l   zprof+8
+    beq.s   1f
+    movem.l %d0/%a0,%sp@-
+    move.l  zprof+12,%d0
+    andi.l  #4095,%d0
+    lsl.l   #2,%d0
+    lea     zprof+16,%a0
+    move.l  %sp@(10),%a0@(0,%d0.l)  /* 8 バイト積んだ後ろの SR (2) の次が PC */
+    addq.l  #1,zprof+12
+    movem.l %sp@+,%d0/%a0
+1:  rte
+
+    .data
+    .even
+    .global zprof
+zprof:
+    .ascii  "SLPDPROF"
+    .long   0                   /* +8  on */
+    .long   0                   /* +12 pos */
+    .space  4096*4              /* +16 PC */
+
     .bss
     .even
     .global mem_ptr, prg_end, cmd_line
