@@ -218,6 +218,10 @@ int main(int argc, char **argv)
   /* コンソールが RS-232C (CTTY AUX) のとき、標準出力はバッファされ、rcmd.x が終わるまで何も出なかった。
      受け取ったコマンドや -v の出力をその場で見られるよう、バッファしない */
   setvbuf(stdout, NULL, _IONBF, 0);
+  /* CTTY AUX の間に押したキーはキーバッファに溜まったままで、その中の ESC で rcmd.x がすぐ止まった。
+     起動前に押されていたキーは捨てる */
+  while (_iocs_b_keysns())
+    _iocs_b_keyinp();
 
   for (i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "-p") && i + 1 < argc)

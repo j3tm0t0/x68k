@@ -150,6 +150,28 @@ xip.x を入れる (`make XIPMSS=1460`、既定。`scripts/patchxip.py` が元�
 XEiJ では `scripts/xeijslip.py 127.0.0.1 54322 raspi3 build/slip.log` (Pi の pty に slattach して sl1 = 192.168.69.1 と橋渡し) で試せる。
 XEiJ の SCC には受信 FIFO が無いため、19200bps 以上では実機より取りこぼしが多い (19200bps で約 5%)。
 
+## Pico W 経由で TCP/IP 接続 (netpipe)
+
+[x68kzremotedrv](https://github.com/yunkya2/x68kzremotedrv) (Pico W を X68000 Z の USB に挿してリモートドライブにするもの) に、
+SCSI ID 6 越しに SLIP のバイト列を運ぶ netpipe を足したファームを使う (netpipe ブランチ、未公開)。
+`slipd.x -z` が ID 6 の決まった LBA に要求を書き、応答を読む。シリアルケーブルは要らず、38400bps の SLIP の約 3 倍速い。
+
+```sh
+netup pico               # Pico → Pi の slipudp.py (UDP 6868) → sl0。アドレスはシリアルの SLIP と同じ 192.168.68.2、Pi で NAT
+netup bridge 192.168.1.68  # Pico がこの IP を代わりに名乗り (代理 ARP)、Z を LAN 上の 1 台にする。Pi も NAT も不要
+```
+
+- bridge: ルーターは `NETGW` (既定 192.168.1.1)、DNS は `NETDNS` (既定は `NETGW`)。IP は DHCP の範囲外か予約したものを使う。
+  外から Z にそのままつなげる (rcmd、自作のサーバ)。Pico は外からの ping (echo request) を Z に渡さない (ESP/X が止まったことがあるため)。
+- pico: Pi 側は `/etc/default/ppp-x68k` を `MODE=pico` にする (`templates/raspi/ppp-x68k.sh` が `slipudp.py` と slattach を起動する)。
+- pico / bridge / RS-232C の切り替えと bridge の IP の変更は再起動が要る (slipd.x のスレッドが最初の設定のまま残る)。
+
+X68000 Z 実機で計測 (x68put、200KB、MSS 1460 の xip.x): pico 8.4KB/s、bridge 8.6〜8.8KB/s。律速は xip.x。
+
+Z の Linux は SCSI の読み込みをキャッシュし、X68000 をリセットしても消えない (電源を切ると消える)。
+そのため応答は毎回違う LBA (0x110000〜0x1ffff7 の約 480MB を 8 セクタずつ) から読み、番号と読み始めの位置は起動のたびに時刻から決める。
+0x200000〜0x3fffff は B: のドライバ (scsiremote.sys) が使う。slipd.x が残す記録 (`SLPDTAP_`、直近 64 パケットの先頭) は `ztap.x` (`make -C src/slipd ztap.x`) で見られる。
+
 ## PPP で TCP/IP 接続 (NET=ppp)
 
 `NET=ppp make image` にすると SLIP の代わりに PPP (IIJ-PPP の Human68k 移植) を使う。ssh クライアントは存在しないので、どちらの方式でも Pi へは telnet で入る。
