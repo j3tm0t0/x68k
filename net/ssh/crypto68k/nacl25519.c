@@ -1,5 +1,6 @@
 /* nacl25519.c -- dropbear 2022.83 の curve25519.c (TweetNaCl 版) の核。ホスト/X68000 両対応。
- * FAST_FIELD で M/S/inv25519/pow2523 を field_fast.h の高速版に差し替える (差分テスト用)。
+ * FAST_FIELD で M/S/inv25519/pow2523/scalarmult/scalarbase を field_fast.h/comb.h の高速版に差し替え、
+ * keygen (base=9) は Edwards comb + Montgomery 写像にする (差分テスト用)。
  * 元コードは public domain / dropbear MIT。提供: crypto_hash(SHA-512), genrandom(決定的)。 */
 #include <stdint.h>
 #include <string.h>
@@ -217,16 +218,12 @@ void dropbear_curve25519_scalarmult(u8 *q,const u8 *n,const u8 *p)
   z[31]=(n[31]&127)|64;
   z[0]&=248;
 #ifdef FAST_FIELD
-  { int _i, _isbase = (p[0]==9); gf _P[4],_nn,_dd;
-    for(_i=1;_i<32;_i++) _isbase &= (p[_i]==0);
-    if (_isbase) {                 /* keygen: [z]*9 を Edwards comb + Montgomery 写像で */
-      scalarbase_fast(_P, z);
-      A(_nn,_P[2],_P[1]);          /* Z+Y */
-      Z(_dd,_P[2],_P[1]);          /* Z-Y */
-      inv25519(_dd,_dd);
-      M(_nn,_nn,_dd);              /* u=(1+y)/(1-y)=(Z+Y)/(Z-Y) */
-      pack25519(q,_nn);
-      return;
+  { int kgi, kgbase = (p[0]==9); gf kgP[4],kgn,kgd;
+    for(kgi=1;kgi<32;kgi++) kgbase &= (p[kgi]==0);
+    if (kgbase) {                 /* keygen: [z]*9 を Edwards comb + Montgomery 写像で */
+      scalarbase_fast(kgP, z);
+      A(kgn,kgP[2],kgP[1]); Z(kgd,kgP[2],kgP[1]); inv25519(kgd,kgd); M(kgn,kgn,kgd);
+      pack25519(q,kgn); return;
     } }
 #endif
   unpack25519(x,p);
