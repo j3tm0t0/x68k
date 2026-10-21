@@ -153,9 +153,10 @@ static void thread(void)
 #define ZWLBA   0x100000
 /* 応答を読む帯。Z 側の Linux は読み込みをキャッシュするので、帯が狭いと一巡したところで古い応答が返り、
    それきり交換できなくなった (0x80000 セクタの帯で 65536 回 = 20ms 間隔で約 22 分、2026-10-21)。
-   Z のメモリより広い 2GB を回る (ファームの NETPIPE_RLBA / NETPIPE_REND と同じ) */
-#define ZRLBA   0x400000
-#define ZRSPAN  0x3ffff8
+   約 1.5GB (0x110000～0x3ffff7) を回る (ファームの NETPIPE_RLBA / NETPIPE_REND と同じ)。
+   ID6 を 2GB より大きくすると Z が起動しなくなるので、これ以上は広げられない */
+#define ZRLBA   0x110000
+#define ZRSPAN  0x2efff8
 #define ZSECTS  8
 #define ZDATA   (ZSECTS * 512 - 16)
 #define ZMAGIC  0x58364e50              /* "X6NP" */
