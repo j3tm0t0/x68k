@@ -18,7 +18,7 @@ default:
  deny chap
  deny pap
 
-# Raspberry Pi 直結 (templates/raspi/ppp-x68k.sh と対)。netup <速度> が raspi<速度> を使う
+# Raspberry Pi 直結 (net/raspi/ppp-x68k.sh と対)。netup <速度> が raspi<速度> を使う
 #   set speed は ppp.x が IOCS _SET232C で設定する速度 (Pi 側の SPEED と同じにする)
 #   set ifaddr <X68000 側> <Raspberry Pi 側>
 raspi9600:
@@ -42,7 +42,7 @@ raspi:
  set speed 38400
  set ifaddr 192.168.68.2 192.168.68.1
 
-# XEiJ での試験用 (scripts/xeijppp.py が Pi 上の pppd notty に 192.168.69.1:192.168.69.2 で橋渡しする)。
+# XEiJ での試験用 (harness/xeij/xeijppp.py が Pi 上の pppd notty に 192.168.69.1:192.168.69.2 で橋渡しする)。
 # 実機の UART 接続 (raspi:) と同時に張っても衝突しないようアドレスを分けてある
 xeij:
  set openmode active

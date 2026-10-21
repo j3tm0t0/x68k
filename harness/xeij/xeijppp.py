@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """XEiJ の RS-232C (TCP/IP 接続) を ssh 経由で Raspberry Pi の pppd に橋渡しする (PPP の動作確認用)。
-X68000 Z 実機では UART 直結 + templates/raspi/ppp-x68k.sh を使う。これはその代わりに
+X68000 Z 実機では UART 直結 + net/raspi/ppp-x68k.sh を使う。これはその代わりに
 Pi 側で `pppd notty` (標準入出力を PPP 回線にする) を起動し、XEiJ の AUX とつなぐ。
-XEiJ 側: scripts/run.sh -tcpiphost=127.0.0.1 -tcpipport=54321 -tcpiputf8=off -rs232cconnection='TCP%2FIP+%E2%87%94+AUX'
+XEiJ 側: harness/xeij/run.sh -tcpiphost=127.0.0.1 -tcpipport=54321 -tcpiputf8=off -rs232cconnection='TCP%2FIP+%E2%87%94+AUX'
 usage: xeijppp.py HOST PORT SSHHOST LOGFILE [LOCALIP REMOTEIP]
   LOGFILE には X> (XEiJ→Pi) / R> (Pi→XEiJ) の生データと pppd の stderr を記録する"""
 import os, sys, socket, select, subprocess, time
@@ -18,7 +18,7 @@ for i in range(60):
 else:
     sys.exit("connect failed")
 log.write(b"== connected\n")
-# NAT: X68000 からのパケットを Pi の外側へ出す (templates/raspi/ppp-x68k.sh と同じ)
+# NAT: X68000 からのパケットを Pi の外側へ出す (net/raspi/ppp-x68k.sh と同じ)
 nat = (f"sudo sysctl -q -w net.ipv4.ip_forward=1; "
        f"sudo iptables -t nat -C POSTROUTING -s {remote} -j MASQUERADE 2>/dev/null || "
        f"sudo iptables -t nat -A POSTROUTING -s {remote} -j MASQUERADE; ")

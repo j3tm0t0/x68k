@@ -4,12 +4,12 @@
 # しまうので使わない。テキスト VRAM (0xE00000、1 プレーン 128 バイト/ライン) で、ほぼ白いバイト (8 ドット中 5 ドット以上点灯)
 # が横に 30 個以上続く行 (ダイアログの白地) があるかで判定する (ふだんの画面はファンクションキー表示の 8 個が最大、
 # 漢字の行も 6 未満。バスエラーのダイアログは 52)。
-# Monitor から使う: scripts/xeijwatch.sh [間隔秒]
-cd "$(dirname "$0")/.."
+# Monitor から使う: harness/xeij/xeijwatch.sh [間隔秒]
+cd "$(dirname "$0")/../../x68kcli"   # build/ と tools/ (XEiJ, rb-cli) は x68kcli のもの
 iv=${1:-5}; last=""
 while sleep "$iv"; do
   rm -f build/watch_tvram.bin
-  scripts/xeijcmd.sh dump "$PWD/build/watch_tvram.bin" 0xE00000 0x40000   # プレーン 0 と 1
+  ../harness/xeij/xeijcmd.sh dump "$PWD/build/watch_tvram.bin" 0xE00000 0x40000   # プレーン 0 と 1
   for i in 1 2 3 4 5 6; do [ -s build/watch_tvram.bin ] && break; sleep 0.5; done
   [ -s build/watch_tvram.bin ] || continue
   r=$(python3 -I - build/watch_tvram.bin <<'PY'

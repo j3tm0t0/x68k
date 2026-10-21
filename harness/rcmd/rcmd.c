@@ -20,7 +20,7 @@
  *          -d: 接続ごとの状態を表示  -v: 実行したコマンドの出力をコンソールにも表示
  *   build: gcc rcmd.c -o rcmd.x -lnetwork   (xip.x / inetd.x 常駐中に実行する)
  *
- * Raspberry Pi 側: templates/raspi/x68.sh 'ls -l'
+ * Raspberry Pi 側: harness/raspi/x68.sh 'ls -l'
  */
 #include <stdio.h>
 #include <stdlib.h>

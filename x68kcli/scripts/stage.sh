@@ -144,7 +144,7 @@ cp work/tcpa/bin/*.x stage/USR/BIN/
 if [ "${XIPMSS:-1460}" = 512 ]; then
   cp work/xip/xip.x stage/USR/BIN/
 else
-  python3 scripts/patchxip.py work/xip/xip.x stage/USR/BIN/xip.x --mss "${XIPMSS:-1460}"
+  python3 ../net/patchxip.py work/xip/xip.x stage/USR/BIN/xip.x --mss "${XIPMSS:-1460}"
 fi
 cp work/tcpa/etc/protocols work/tcpa/etc/services stage/ETC/
 mkdir -p stage/USR/DOC/ESPX stage/USR/DOC/XIP
@@ -155,14 +155,14 @@ mkdir -p stage/USR/LIB stage/USR/INCLUDE
 cp work/tcpb/lib/*.a stage/USR/LIB/; cp work/tcpb/include/*.h stage/USR/INCLUDE/
 cp work/tcpb/README_B.doc work/tcpb/man/*.man stage/USR/DOC/ESPX/
 mkdir -p stage/USR/SRC/ESPX && cp -R work/tcpb/src/. stage/USR/SRC/ESPX/
-# 自作ツールのソース (src/<name>/) -> /USR/SRC/<NAME>。X68000 上で make してビルドする (zsh の netup / rcmd が初回に自動ビルド)
+# 自作ツールのソース (../harness/rcmd, ../net/pppwait, ../net/rsspeed) -> /USR/SRC/<NAME>。X68000 上で make してビルドする (zsh の netup / rcmd が初回に自動ビルド)
 #   rcmd    : リモートコマンド実行サーバ (ESP/X ソケット)
 #   rsspeed : IOCS _SET232C 直接呼び出し (X68000 Z で UART を 38400 にする)
-#   (src/slip, src/slipd, src/xshim は Mac 側で elf2x68k でクロスビルドするもの。X68000 上では作れないので入れない)
-for n in rcmd pppwait rsspeed; do
-  u=$(echo "$n" | tr '[:lower:]' '[:upper:]')
+#   (../net/slip, ../net/slipd, src/xshim は Mac 側で elf2x68k でクロスビルドするもの。X68000 上では作れないので入れない)
+for d in ../harness/rcmd ../net/pppwait ../net/rsspeed; do
+  u=$(basename "$d" | tr '[:lower:]' '[:upper:]')
   mkdir -p "stage/USR/SRC/$u"
-  for f in src/$n/*.c src/$n/Makefile; do crlf "$f" "stage/USR/SRC/$u/$(basename "$f")"; done
+  for f in $d/*.c $d/Makefile; do crlf "$f" "stage/USR/SRC/$u/$(basename "$f")"; done
 done
 # 設定ファイル (hosts / networks / conf.ppp はテンプレートから)
 for f in conf.ppp linkup.ppp hosts networks; do crlf templates/etc/$f stage/ETC/$f; done

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # XEiJ で HDD イメージから起動する (SCSI ID 0)
 set -euo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../../x68kcli"   # build/ と tools/ (XEiJ, rb-cli) は x68kcli のもの
 IMG=${IMG:-build/x68kcli.hds}
 mkdir -p build
 JAVA=java

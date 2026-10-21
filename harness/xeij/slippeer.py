@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """XEiJ の RS-232C (TCP/IP 接続) の向こうで SLIP の相手役をする試験用スクリプト。
 X68000 (slip.sys) から来た IPv4 パケットを表示し、ICMP echo request には echo reply を返す。
-XEiJ 側: scripts/run.sh -model=SUPER -tcpiphost=127.0.0.1 -tcpipport=54322 -tcpiputf8=off -rs232cconnection='TCP%2FIP+%E2%87%94+AUX'
+XEiJ 側: harness/xeij/run.sh -model=SUPER -tcpiphost=127.0.0.1 -tcpipport=54322 -tcpiputf8=off -rs232cconnection='TCP%2FIP+%E2%87%94+AUX'
 usage: slippeer.py HOST PORT"""
 import socket, struct, sys, time
 END, ESC, ESC_END, ESC_ESC = 0xC0, 0xDB, 0xDC, 0xDD

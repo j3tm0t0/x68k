@@ -72,13 +72,13 @@ A:\TMP         一時ファイル ($temp)
 | `scripts/mkhds.py` | 空の SCSI HDD イメージを作る (クラスタは 8KB: rb-cli はディレクトリが 1 クラスタを超えると FAT チェーンを壊すため)。X68SCSI1 ヘッダ、Sharp 純正の SCSI IPL / デバイスドライバ / パーティション IPL (FORMAT.X から抽出)、BPB、FAT を XEiJ のフォーマッタと同じレイアウトで書く |
 | `scripts/mkbatch.py` | `stage/` を rb-cli の batch JSON に変換 |
 | `scripts/fixfs.py` | rb-cli が空白で埋めるディレクトリエントリの拡張名フィールドを 0 埋めに直す (直さないと Human68k が HUMAN.SYS を見つけられない) |
-| `scripts/run.sh` | XEiJ を起動 (貼り付け/制御パイプ有効、エージェント付き) |
+| `harness/xeij/run.sh` | XEiJ を起動 (貼り付け/制御パイプ有効、エージェント付き) |
 
 ### 起動確認の自動化 (XEiJ)
 
-`scripts/agent/XEiJAgent.java` は XEiJ に `-javaagent` で載せる小さなエージェントで、
-`scripts/xeijcmd.sh screenshot` (→ `capture/N.png`)、`scripts/xeijcmd.sh textcopy` (テキスト画面をクリップボードへ → `pbpaste`)
-などをファイル経由で実行できる。`scripts/xeijtype.py 'ls -l\n'` で制御パイプからキー入力を送れる。
+`harness/xeij/agent/XEiJAgent.java` は XEiJ に `-javaagent` で載せる小さなエージェントで、
+`harness/xeij/xeijcmd.sh screenshot` (→ `capture/N.png`)、`harness/xeij/xeijcmd.sh textcopy` (テキスト画面をクリップボードへ → `pbpaste`)
+などをファイル経由で実行できる。`harness/xeij/xeijtype.py 'ls -l\n'` で制御パイプからキー入力を送れる。
 `make run` 後にこれらを組み合わせると、画面を見ずに Human68k 上のコマンド実行結果を確認できる
 (`run.sh` は `-usecanvas=off` で起動する。キャンバス描画のままだと screenshot が黒くなる)。
 
@@ -98,7 +98,7 @@ RS-232C レベル (±12V) ではないので USB シリアル変換やレベル�
 
 Raspberry Pi 側は `enable_uart=1` で `/dev/ttyS0` (serial0) に `serial-getty@ttyS0` が立ち上がっている状態を前提にする。
 X68000 Z は 38400bps までしか対応せず、ハードウェアフロー制御も無いので、getty のボーレートを 38400 に固定し端末種別を `ansi` にする
-(`templates/raspi/serial-getty-override.conf` を `/etc/systemd/system/serial-getty@ttyS0.service.d/override.conf` に置いて `systemctl daemon-reload && systemctl restart serial-getty@ttyS0`)。
+(`harness/raspi/serial-getty-override.conf` を `/etc/systemd/system/serial-getty@ttyS0.service.d/override.conf` に置いて `systemctl daemon-reload && systemctl restart serial-getty@ttyS0`)。
 カーネルの起動メッセージも読みたければ `cmdline.txt` の `console=serial0,115200` を `38400` にする。
 
 X68000 Z 側は zsh から `muterm` を起動するだけ (`\USR\BIN\MUTERM.CNF` に 38400bps / XON-XOFF / RTS-CTS なし / ANSI / カーソルキー = `ESC [ A` 等を設定済み)。
@@ -108,16 +108,16 @@ MuTERM は VT100 エミュレータではなく NEC / Human68k / ANSI 系のエ�
 TERM=ansi なら terminfo にスクロール領域が無いので vim も行挿入/削除で描画されるが、TERM=vt100 / vt220 だと `ESC [ r` を使うので崩れる。X68000 LIBRARY には VT100 を名乗るターミナルは無い
 (Ko-Window 用の KX_Term / mtelnet.win が vt100 系対応を謳うが Ko-Window が必要)。
 KeyWitch (`KEYMAP=us`) 併用時は MuDial + 小人さんパッチが必要とされているので未検証。
-Raspberry Pi 側の bash は bracketed paste の `ESC [ ? 2004 h` を MuTERM が表示してしまうので、`templates/raspi/bashrc-serial.sh` を `~/.bashrc` に足して TERM=ansi のときだけ切る。
+Raspberry Pi 側の bash は bracketed paste の `ESC [ ? 2004 h` を MuTERM が表示してしまうので、`harness/raspi/bashrc-serial.sh` を `~/.bashrc` に足して TERM=ansi のときだけ切る。
 
-実機なしで確認するには XEiJ の RS-232C を TCP/IP に接続し (`scripts/run.sh -tcpiphost=127.0.0.1 -tcpipport=54321 -tcpiputf8=off -rs232cconnection='TCP%2FIP+%E2%87%94+AUX'`)、
-`scripts/xeijserial.py 127.0.0.1 54321 raspi3 build/serial.log` で `ssh -tt raspi3` に橋渡しする。XEiJ 上の `muterm` から Raspberry Pi の bash が使えることを確認済み
+実機なしで確認するには XEiJ の RS-232C を TCP/IP に接続し (`harness/xeij/run.sh -tcpiphost=127.0.0.1 -tcpipport=54321 -tcpiputf8=off -rs232cconnection='TCP%2FIP+%E2%87%94+AUX'`)、
+`harness/xeij/xeijserial.py 127.0.0.1 54321 raspi3 build/serial.log` で `ssh -tt raspi3` に橋渡しする。XEiJ 上の `muterm` から Raspberry Pi の bash が使えることを確認済み
 (ログイン後の表示、ls、Ctrl+C、カーソルキー、vi の表示崩れなし (簡易確認)、SHIFT+BREAK で zsh に戻る)。X68000 Z 実機 + UART 直結でもログインできた (2026-10-19。最初は文字化けすることがある。BREAK を押すと直る)。
 
 ## SLIP で TCP/IP 接続 (X68000 Z → Raspberry Pi → インターネット)
 
 同じ 3 線直結のまま、MuTERM の代わりに SLIP を張って X68000 側で TCP/IP (ping / telnet / ftp / rcmd) を使う。既定の方式。
-Human68k に公開された SLIP ドライバは無いので、ESP/X (xip.x) 用のネットワークドライバを自作した (`src/slip`, `src/slipd`。elf2x68k でクロスビルド)。
+Human68k に公開された SLIP ドライバは無いので、ESP/X (xip.x) 用のネットワークドライバを自作した (`net/slip`, `net/slipd`。elf2x68k でクロスビルド)。
 
 | 部品 | 役割 |
 |---|---|
@@ -130,7 +130,7 @@ netup [速度]     # rsspeed.x (IOCS _SET232C) → xip.x → ifconfig ep0 → in
 netdown          # xip.x -r (slipd.x のスレッドは残り、次の netup で受信を再開する)
 ```
 
-速度は AUTOEXEC.BAT の `NETSPEED` (make の `NETSPEED=`、既定 38400)。Pi 側は `templates/raspi/ppp-x68k.service` を `MODE=slip` (既定) で常駐させ、
+速度は AUTOEXEC.BAT の `NETSPEED` (make の `NETSPEED=`、既定 38400)。Pi 側は `net/raspi/ppp-x68k.service` を `MODE=slip` (既定) で常駐させ、
 `/etc/default/ppp-x68k` の `SPEED=` を揃える (slattach が sl0 = 192.168.68.1 を作り、NAT で外へ出す)。
 
 X68000 Z 実機で計測 (x68put で Pi → X68000、100KB):
@@ -143,11 +143,11 @@ X68000 Z 実機で計測 (x68put で Pi → X68000、100KB):
 
 38400bps では X68000 側の処理が頭打ちになる (xip.x の TCP ウィンドウを 8192 にしても変わらない)。
 xip.x は 1 パケットごとに 100〜150ms かかり、MSS が 512 に固定されているので、イメージには MSS を 1460 にした
-xip.x を入れる (`make XIPMSS=1460`、既定。`scripts/patchxip.py` が元の xip.x の SHA-256 を確かめてから書き換える。
+xip.x を入れる (`make XIPMSS=1460`、既定。`net/patchxip.py` が元の xip.x の SHA-256 を確かめてから書き換える。
 改変済みのバイナリは配布しない)。Pico W の netpipe では 4KB/s → 8.5KB/s になった。`XIPMSS=512` で元のまま入れる。
 はじめは SCC の受信・送信割り込みを slip.sys が自前で横取りしていたが、xip.x のヒープやスタックが壊れて
 バスエラー / アドレスエラー / 画面のスクロール崩れが起きた。ROM / RSDRV の割り込み処理に任せる今の形 (ppp.x と同じ) にしてから起きない。
-XEiJ では `scripts/xeijslip.py 127.0.0.1 54322 raspi3 build/slip.log` (Pi の pty に slattach して sl1 = 192.168.69.1 と橋渡し) で試せる。
+XEiJ では `harness/xeij/xeijslip.py 127.0.0.1 54322 raspi3 build/slip.log` (Pi の pty に slattach して sl1 = 192.168.69.1 と橋渡し) で試せる。
 XEiJ の SCC には受信 FIFO が無いため、19200bps 以上では実機より取りこぼしが多い (19200bps で約 5%)。
 
 ## Pico W 経由で TCP/IP 接続 (netpipe)
@@ -163,14 +163,14 @@ netup bridge 192.168.1.68  # Pico がこの IP を代わりに名乗り (代理 
 
 - bridge: ルーターは `NETGW` (既定 192.168.1.1)、DNS は `NETDNS` (既定は `NETGW`)。IP は DHCP の範囲外か予約したものを使う。
   外から Z にそのままつなげる (rcmd、自作のサーバ)。Pico は外からの ping (echo request) を Z に渡さない (ESP/X が止まったことがあるため)。
-- pico: Pi 側は `/etc/default/ppp-x68k` を `MODE=pico` にする (`templates/raspi/ppp-x68k.sh` が `slipudp.py` と slattach を起動する)。
+- pico: Pi 側は `/etc/default/ppp-x68k` を `MODE=pico` にする (`net/raspi/ppp-x68k.sh` が `slipudp.py` と slattach を起動する)。
 - pico / bridge / RS-232C の切り替えと bridge の IP の変更は再起動が要る (slipd.x のスレッドが最初の設定のまま残る)。
 
 X68000 Z 実機で計測 (x68put、200KB、MSS 1460 の xip.x): pico 8.4KB/s、bridge 8.6〜8.8KB/s。律速は xip.x。
 
 Z の Linux は SCSI の読み込みをキャッシュし、X68000 をリセットしても消えない (電源を切ると消える)。
 そのため応答は毎回違う LBA (0x110000〜0x1ffff7 の約 480MB を 8 セクタずつ) から読み、番号と読み始めの位置は起動のたびに時刻から決める。
-0x200000〜0x3fffff は B: のドライバ (scsiremote.sys) が使う。slipd.x が残す記録 (`SLPDTAP_`、直近 64 パケットの先頭) は `ztap.x` (`make -C src/slipd ztap.x`) で見られる。
+0x200000〜0x3fffff は B: のドライバ (scsiremote.sys) が使う。slipd.x が残す記録 (`SLPDTAP_`、直近 64 パケットの先頭) は `ztap.x` (`make -C harness/ztools`) で見られる。
 
 ## PPP で TCP/IP 接続 (NET=ppp)
 
@@ -187,7 +187,7 @@ CONFIG.SYS には `PROCESS = 16 10 50` (xip/ppp がバックグラウンドプ�
 AUTOEXEC.BAT には `PPP=A:\ETC` (conf.ppp の場所) / `SYSROOT=A:\` (etc の親) / `HOST=x68k` を設定済み。
 アドレスは `/etc/conf.ppp` の `raspi:` ラベルで X68000 = 192.168.68.2、Raspberry Pi = 192.168.68.1 (`/etc/hosts` も同じ)。
 
-Raspberry Pi 側は `templates/raspi/ppp-x68k.service` で常駐させる (手順はファイル先頭のコメント。`/etc/default/ppp-x68k` に `MODE=ppp` と `SPEED=`)。手で試すなら `templates/raspi/ppp-x68k.sh` を `sudo` で起動しておく (serial-getty を止めて `pppd /dev/ttyS0 38400 local noauth nocrtscts novj noccp noipv6 ...` を待ち受け、
+Raspberry Pi 側は `net/raspi/ppp-x68k.service` で常駐させる (手順はファイル先頭のコメント。`/etc/default/ppp-x68k` に `MODE=ppp` と `SPEED=`)。手で試すなら `net/raspi/ppp-x68k.sh` を `sudo` で起動しておく (serial-getty を止めて `pppd /dev/ttyS0 38400 local noauth nocrtscts novj noccp noipv6 ...` を待ち受け、
 `ip_forward` + `iptables MASQUERADE` で X68000 からのパケットを外へ NAT する。Ctrl-C で getty に戻す)。
 `cmdline.txt` の `console=serial0,...` は削除しておく (カーネルメッセージが PPP フレームを壊す)。`ppp` パッケージが必要。
 
@@ -204,11 +204,11 @@ netdown          # ppp.x (切断・常駐解除) → xip.x -r
 **X68000 Z では tmsio が SCC に書く速度が UART に反映されず、常に 9600bps で通信する** (Pi 側 38400 で待つと Z からのデータが化ける。
 IOCS `_SET232C` で先に 38400 にする `rsspeed.x 4c09` を試したが、その後 tmsio を載せると 1 バイトも出なくなった)。そのため netup の既定は標準 RSDRV.SYS + rsspeed.x (Z でも 19200 / 38400 が通る)。
 実機 X68000 (RS-232C) なら 38400 が使え、ftp 3KB/s 台の報告がある。X68000 Z 実機で `netup` → `ping 8.8.8.8` が通ることを確認済み (9600bps)。
-XEiJ では上記 TCP/IP 接続 (`-model=SUPER` を付ける。既定の X68030 25MHz では ppp.x が切断時に固まる: 添付 qa.doc の高速機問題) + `scripts/xeijppp.py 127.0.0.1 54321 raspi3 build/ppp.log` (ssh 経由で Pi の `pppd notty` に橋渡し) で PPP が張れる (ping 8.8.8.8 応答、netdown で両側とも正常終了) ことを確認済み。X68000 Z 実機では tmsio で送受信できる (9600bps のみ)。bsio は未検証。
+XEiJ では上記 TCP/IP 接続 (`-model=SUPER` を付ける。既定の X68030 25MHz では ppp.x が切断時に固まる: 添付 qa.doc の高速機問題) + `harness/xeij/xeijppp.py 127.0.0.1 54321 raspi3 build/ppp.log` (ssh 経由で Pi の `pppd notty` に橋渡し) で PPP が張れる (ping 8.8.8.8 応答、netdown で両側とも正常終了) ことを確認済み。X68000 Z 実機では tmsio で送受信できる (9600bps のみ)。bsio は未検証。
 
 ### Raspberry Pi から X68000 のコマンドを実行する (rcmd.x)
 
-逆方向。X68000 側で `rcmd.x` (ESP/X ソケット API で書いた小さなサーバ、`src/rcmd/rcmd.c`) を起動しておくと、
+逆方向。X68000 側で `rcmd.x` (ESP/X ソケット API で書いた小さなサーバ、`harness/rcmd/rcmd.c`) を起動しておくと、
 Pi から `x68 'ls -l'` のように zsh のコマンドを実行して出力を受け取れる。1 接続 1 コマンド、出力は一時ファイル経由
 (Human68k に pty が無いので対話的なフルスクリーン操作はできない。vim などは不可)。
 
@@ -216,7 +216,7 @@ Pi から `x68 'ls -l'` のように zsh のコマンドを実行して出力を
 # X68000 側 (netup のあと)。ソースはイメージ内 /usr/src/rcmd にあり、X68000 上で make してビルドする
 cd /usr/src/rcmd; make          # gcc.x rcmd.c -o rcmd.x -lnetwork -liocs -ldos -lgcc2
 rcmd.x                          # port 2323 で待ち受け。リモートから "exit" を送ると終了
-# Raspberry Pi 側 (templates/raspi/x68.sh を ~/bin/x68 などに置く。bash の /dev/tcp を使うので nc 不要)
+# Raspberry Pi 側 (harness/raspi/x68.sh を ~/bin/x68 などに置く。bash の /dev/tcp を使うので nc 不要)
 x68 'ls -l /usr/bin'
 x68 'gcc hello.c -o hello.x && hello.x'
 x68 exit                        # rcmd.x を終える
@@ -225,7 +225,7 @@ x68 exit                        # rcmd.x を終える
 rcmd.x の実行中は X68000 のコンソールはふさがる (ESC で終了。`-d` で接続ごとの状態を表示、`-B` で accept() ブロック待ち)。
 X68000 Z 実機 + PPP 9600bps で `ls` / `echo` / `gawk` の実行と終了コードの受け渡しを確認済み。日本語を含むコマンドは化ける (未調査)。
 XEiJ の PPP は外から来たパケット (Pi からの ping / 接続) に応答しないが、SLIP (xeijslip.py) なら rcmd も試せる。
-`netup` は `pppwait.x` (src/pppwait) で Pi の pppd が送ってくる LCP を受信してから ppp.x を起動する。
+`netup` は `pppwait.x` (net/pppwait) で Pi の pppd が送ってくる LCP を受信してから ppp.x を起動する。
 ppp.x は相手が居ないと Phase: Dead で固まり BREAK も効かないため。pppwait は ESC / BREAK / Ctrl-C で中止できる (待ち時間は `NETWAIT=秒`、既定 30)。出力は Shift_JIS/CRLF のまま送られ、`x68` 側で UTF-8/LF に直す。
 終了コードは `--rcmd-end rc=N--` の行で返り、`x68` の終了コードになる。ESP/X PACK-B (libnetwork.a, ヘッダ, サンプルソース) も `/usr/lib` `/usr/include` `/usr/src/espx` に入れてある。
 

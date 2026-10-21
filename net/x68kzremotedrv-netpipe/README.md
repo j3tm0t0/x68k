@@ -2,7 +2,7 @@
 
 [x68kzremotedrv](https://github.com/yunkya2/x68kzremotedrv) (yunkya2 氏、MIT) に netpipe を足すパッチ。
 X68000 Z の SCSI ID 6 越しに SLIP のバイト列を運び、Z から Wi-Fi で TCP/IP を使えるようにする。
-Z 側は [../x68kcli](../x68kcli) の `slipd.x -z` (`netup pico` / `netup bridge`)。
+Z 側は [../../x68kcli](../../x68kcli) の `slipd.x -z` (`netup pico` / `netup bridge`)。
 
 ## 当て方
 

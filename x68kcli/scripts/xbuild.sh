@@ -39,9 +39,9 @@ build() {  # build NAME TARBALL OUT EXTRA_CONFIGURE EXTRA_CFLAGS
 }
 build sed  dl/gnu/sed-4.9.tar.xz  sed/sed.x  "--disable-acl --without-selinux --disable-i18n" ""
 build grep dl/gnu/grep-3.11.tar.xz src/grep.x "--disable-perl-regexp" "-DDT_BLK=6 -DDT_CHR=2 -DDT_FIFO=1 -DDT_LNK=10 -DDT_SOCK=12 -DFNM_EXTMATCH=32"
-# slip.sys (ESP/X 用 SLIP ドライバ, src/slip)
-make -s -C src/slip slip.sys >/dev/null && cp src/slip/slip.sys build/x/slip.sys && echo "xbuild: build/x/slip.sys"
-m68k-xelf-gcc -O2 src/rsspeed/rsspeed.c -o build/x/rsspeed.x && rm -f build/x/rsspeed.x.elf && echo "xbuild: build/x/rsspeed.x"
-make -s -C src/slipd slipd.x >/dev/null && cp src/slipd/slipd.x build/x/slipd.x && echo "xbuild: build/x/slipd.x"
-# contee.sys (画面の出力を RS-232C にも流す。PROFILE=dev の CONFIG.SYS で組み込む, src/contee)
-make -s -C src/contee contee.sys >/dev/null 2>&1 && cp src/contee/contee.sys build/x/contee.sys && echo "xbuild: build/x/contee.sys"
+# slip.sys (ESP/X 用 SLIP ドライバ, ../net/slip)
+make -s -C ../net/slip slip.sys >/dev/null && cp ../net/slip/slip.sys build/x/slip.sys && echo "xbuild: build/x/slip.sys"
+m68k-xelf-gcc -O2 ../net/rsspeed/rsspeed.c -o build/x/rsspeed.x && rm -f build/x/rsspeed.x.elf && echo "xbuild: build/x/rsspeed.x"
+make -s -C ../net/slipd slipd.x >/dev/null && cp ../net/slipd/slipd.x build/x/slipd.x && echo "xbuild: build/x/slipd.x"
+# contee.sys (画面の出力を RS-232C にも流す。PROFILE=dev の CONFIG.SYS で組み込む, ../harness/contee)
+make -s -C ../harness/contee contee.sys >/dev/null 2>&1 && cp ../harness/contee/contee.sys build/x/contee.sys && echo "xbuild: build/x/contee.sys"

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """XEiJ の RS-232C を TCP/IP 経由で `ssh -tt SSHHOST` に橋渡しする (シリアルログインの動作確認用)。
-XEiJ 側: scripts/run.sh -tcpiphost=127.0.0.1 -tcpipport=54321 -tcpiputf8=off -rs232cconnection='TCP%2FIP+%E2%87%94+AUX'
+XEiJ 側: harness/xeij/run.sh -tcpiphost=127.0.0.1 -tcpipport=54321 -tcpiputf8=off -rs232cconnection='TCP%2FIP+%E2%87%94+AUX'
   (rs232cconnection は「TCP/IP ⇔ AUX」を URL エンコードしたもの。XEiJ が TCP サーバになる)
 usage: xeijserial.py HOST PORT SSHHOST LOGFILE   (LOGFILE には X> 送信 / R> 受信 を記録)"""
 import os, sys, socket, select, subprocess, time
