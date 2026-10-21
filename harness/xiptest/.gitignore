@@ -3,3 +3,5 @@
 lock.bin
 lock.rel
 __pycache__/
+lockfix.bin
+lockfix.rel

@@ -20,6 +20,7 @@ class Thread:
         self.emu = emu
         self.stack_top = stack_top
         self.ctx = None          # 途中で止まっているときのレジスタ
+        self.pending_skip = False
         self.ret = stack_top - 0x20  # 戻り番地 (ここに来たら関数が終わった)
 
     def call(self, entry, *args, regs=None):
