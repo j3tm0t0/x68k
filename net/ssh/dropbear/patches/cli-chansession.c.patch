@@ -1,6 +1,54 @@
 --- dropbear-2022.83/cli-chansession.c
 +++ x68k/cli-chansession.c
-@@ -306,6 +306,7 @@
+@@ -105,6 +105,10 @@
+ 		return;
+ 	}
+ 
++#if DROPBEAR_X68K
++	/* 画面を VT100 エミュレータ (term/vt100) に切り替える。以後 vt_fini まで DOS コンソールに触らない */
++	{ extern void x68k_tty_setup(void); x68k_tty_setup(); }
++#endif
+ 	if (tcgetattr(STDIN_FILENO, &tio) == -1) {
+ 		dropbear_exit("Failed to set raw TTY mode");
+ 	}
+@@ -146,6 +150,10 @@
+ 	} else {
+ 		cli_ses.tty_raw_mode = 0; 
+ 	}
++#if DROPBEAR_X68K
++	/* コンソールを戻す (パレット・カーソル)。画面の内容は残す */
++	{ extern void x68k_tty_cleanup(void); x68k_tty_cleanup(); }
++#endif
+ 
+ 	TRACE(("leave cli_tty_cleanup"))
+ }
+@@ -284,7 +292,11 @@
+ 	/* Get the terminal */
+ 	term = getenv("TERM");
+ 	if (term == NULL) {
++#if DROPBEAR_X68K
++		term = "xterm"; /* term/vt100 は xterm サブセット (色・代替画面・DECCKM)。環境変数 TERM で上書き可 */
++#else
+ 		term = "vt100"; /* Seems a safe default */
++#endif
+ 	}
+ 	buf_putstring(ses.writepayload, term, strlen(term));
+ 
+@@ -297,15 +309,21 @@
+ 	encrypt_packet();
+ 
+ 	/* Set up a window-change handler */
++#if DROPBEAR_X68K
++	/* Human68k にシグナルは無い (画面サイズも変わらない)。newlib の signal() は通るが失敗しても無視 */
++	(void)signal(SIGWINCH, sigwinch_handler);
++#else
+ 	if (signal(SIGWINCH, sigwinch_handler) == SIG_ERR) {
+ 		dropbear_exit("Signal error");
+ 	}
++#endif
+ 	TRACE(("leave send_chansess_pty_req"))
+ }
+ 
  static void send_chansess_shell_req(const struct Channel *channel) {
  
  	char* reqtype = NULL;

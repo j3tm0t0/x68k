@@ -1,7 +1,10 @@
 #ifndef _X68K_TERMIOS_H_
 #define _X68K_TERMIOS_H_
 /* elf2x68k の termios.h は sys/termios.h を要求するが無い。dropbear 用の自己完結スタブ。
-   実機では tty の raw 設定は行わない (端末制御は vt100 側)。tcgetattr/tcsetattr は no-op。 */
+   実機では tty の raw 設定は行わない (端末制御は vt100 側)。tcsetattr は no-op。
+   tcgetattr は「cooked な端末の既定値」を返す: -t の pty-req で put_termcodes がこの値を
+   そのまま sshd に送り、sshd が pty に適用するため。全部 0 だと ECHO/ICANON/ISIG/ONLCR が
+   落ちて「エコー無し・階段状の改行・Ctrl-C 不可」の pty になる。 */
 #include <sys/types.h>
 typedef unsigned char cc_t;
 typedef unsigned int speed_t;
@@ -43,16 +46,29 @@ struct termios {
 #define TCSANOW 0
 #define TCSADRAIN 1
 #define TCSAFLUSH 2
-static inline int tcgetattr(int fd, struct termios *t){ (void)fd; if(t){ unsigned i; char*p=(char*)t; for(i=0;i<sizeof(*t);i++)p[i]=0; } return 0; }
+static inline int tcgetattr(int fd, struct termios *t){
+  unsigned i; (void)fd;
+  if(!t) return 0;
+  for(i=0;i<NCCS;i++) t->c_cc[i]=0;
+  t->c_iflag = ICRNL | IXON | BRKINT;
+  t->c_oflag = OPOST | 0x0004 /* ONLCR */;
+  t->c_cflag = CS8;
+  t->c_lflag = ECHO | ECHOE | ECHOK | ICANON | ISIG | IEXTEN;
+  t->c_cc[0 /*VINTR*/]=3;  t->c_cc[1 /*VQUIT*/]=0x1c; t->c_cc[2 /*VERASE*/]=0x7f; t->c_cc[3 /*VKILL*/]=0x15;
+  t->c_cc[4 /*VEOF*/]=4;   t->c_cc[VMIN]=1; t->c_cc[VTIME]=0; t->c_cc[8 /*VSTART*/]=0x11;
+  t->c_cc[9 /*VSTOP*/]=0x13; t->c_cc[10 /*VSUSP*/]=0x1a;
+  t->c_ispeed = t->c_ospeed = 38400;
+  return 0;
+}
 static inline int tcsetattr(int fd, int act, const struct termios *t){ (void)fd;(void)act;(void)t; return 0; }
-static inline speed_t cfgetispeed(const struct termios *t){ (void)t; return 0; }
-static inline speed_t cfgetospeed(const struct termios *t){ (void)t; return 0; }
+static inline speed_t cfgetispeed(const struct termios *t){ (void)t; return 38400; }
+static inline speed_t cfgetospeed(const struct termios *t){ (void)t; return 38400; }
 static inline void cfmakeraw(struct termios *t){ (void)t; }
 #endif
 
 /* termcodes.c が無条件に参照する追加の termios 定数 (スタブ)。
-   c_cc[] の添字は NCCS(20) 未満で重複しない値、フラグは各語内で適当なビット。
-   pty を要求しないので実値は使われない (コンパイルを通すため)。 */
+   c_cc[] の添字は NCCS(20) 未満で重複しない値、フラグは各語内で適当なビット
+   (上の tcgetattr の既定値と同じ番号・ビットを使うこと)。 */
 #ifndef VQUIT
 #define VQUIT 1
 #endif

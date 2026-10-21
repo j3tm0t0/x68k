@@ -1,0 +1,28 @@
+--- dropbear-2022.83/common-channel.c
++++ x68k/common-channel.c
+@@ -422,7 +422,12 @@
+ 
+ 	/* Write the first portion of the circular buffer */
+ 	cbuf_readptrs(cbuf, &circ_p1, &circ_len1, &circ_p2, &circ_len2);
++#if DROPBEAR_X68K
++	/* stdout/stderr は VT100 画面へ (x68k_shim.c)。ソケットは素の write */
++	{ extern int x68k_chan_write(int, const void *, unsigned int); written = x68k_chan_write(fd, circ_p1, circ_len1); }
++#else
+ 	written = write(fd, circ_p1, circ_len1);
++#endif
+ 	if (written < 0) {
+ 		if (errno != EINTR && errno != EAGAIN) {
+ 			TRACE(("channel IO write error fd %d %s", fd, strerror(errno)))
+@@ -734,7 +739,12 @@
+ 	buf_putint(ses.writepayload, 0);
+ 
+ 	/* read the data */
++#if DROPBEAR_X68K
++	/* stdin はキーボードのバッファから (x68k_shim.c)。空なら -1/EINTR で EOF にしない */
++	{ extern int x68k_chan_read(int, void *, unsigned int); len = x68k_chan_read(fd, buf_getwriteptr(ses.writepayload, maxlen), maxlen); }
++#else
+ 	len = read(fd, buf_getwriteptr(ses.writepayload, maxlen), maxlen);
++#endif
+ 
+ 	if (len <= 0) {
+ 		if (len == 0 || errno != EINTR) {

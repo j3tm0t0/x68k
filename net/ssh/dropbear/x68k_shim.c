@@ -17,6 +17,11 @@
  *                                       cli-main.c (DROPBEAR_X68K) から呼ぶ。
  *  - x68k_get_entropy                 : /dev/urandom が無いので各種タイマを撹拌する種。
  *                                       dbrandom.c (DROPBEAR_X68K) から呼ぶ。**弱い**。
+ *  - x68k_tty_setup/cleanup           : -t (pty) のとき VT100 エミュレータ (term/vt100) で画面を
+ *                                       占有する / 戻す。cli-chansession.c の cli_tty_setup/cleanup から呼ぶ。
+ *  - x68k_chan_write/x68k_chan_read   : チャネルの stdout/stderr 書き込みと stdin 読み出し。VT が
+ *                                       有効なら vt_write / キーバッファに振り向け、無効なら素の write/read。
+ *                                       common-channel.c (DROPBEAR_X68K) から呼ぶ。
  */
 #include <sys/types.h>
 #include <pwd.h>
@@ -74,27 +79,108 @@ static struct passwd *fill_pw(void)
 struct passwd *getpwuid(uid_t uid) { (void)uid; return fill_pw(); }
 struct passwd *getpwnam(const char *name) { (void)name; return fill_pw(); }
 
-/* --- ioctl は無い --- */
-int ioctl(int fd, unsigned long request, ...) { (void)fd; (void)request; return -1; }
+/* --- VT100 端末 (term/vt100) --- */
+#include "vt100.h"
+#include <stdarg.h>
+#include <errno.h>
+#include <sys/ioctl.h>
+static int vt_active;                 /* vt_init 済み (vt_init〜vt_fini の間は DOS コンソールに触らない) */
+static unsigned char kbuf[256];       /* vt_key が吐いたバイト列 (ホストへ送るまで溜める) */
+static int kbuf_len;
+
+/* キーボードを非ブロッキングで読んでバッファに足す。VT が無効でも IOCS のキー読みは害が無いので
+   同じ経路を使う (コマンドモードで stdin を要求されたときも同じ)。 */
+static void kbuf_fill(void)
+{
+  if (kbuf_len < (int)sizeof kbuf)
+    kbuf_len += vt_key(kbuf + kbuf_len, (int)sizeof kbuf - kbuf_len);
+}
+
+/* --- ioctl: TIOCGWINSZ だけ VT の寸法 (96x32) を返す。他は -1 --- */
+int ioctl(int fd, unsigned long request, ...)
+{
+  (void)fd;
+  if (request == TIOCGWINSZ) {
+    va_list ap; struct winsize *ws; int c, r;
+    va_start(ap, request); ws = va_arg(ap, struct winsize *); va_end(ap);
+    vt_get_size(&c, &r);           /* vt_init 前でも既定の 96x32 が返る */
+    if (ws) { ws->ws_col = (unsigned short)c; ws->ws_row = (unsigned short)r; ws->ws_xpixel = (unsigned short)(c * 8); ws->ws_ypixel = (unsigned short)(r * 16); }
+    return 0;
+  }
+  return -1;
+}
+
+/* cli_tty_setup (pty 要求後、シェル要求の後) から: 画面を VT100 に切り替える */
+void x68k_tty_setup(void)
+{
+  if (vt_active) return;
+  vt_init(0, 0);
+  vt_active = 1;
+}
+
+/* cli_tty_cleanup (チャネル close / 終了処理) から: コンソールを戻す。
+   画面は消さない (直前の表示を残す)。IOCS のカーソルを VT の最終カーソル行の次に置き、
+   続く "Connection ... closed." がその下に出るようにする。 */
+void x68k_tty_cleanup(void)
+{
+  int x, y, cols, rows;
+  if (!vt_active) return;
+  vt_get_cursor(&x, &y);
+  vt_get_size(&cols, &rows);
+  vt_fini();
+  vt_active = 0;
+  if (x > 0) y++;
+  if (y >= rows) { _iocs_b_locate(0, rows - 1); _iocs_b_print("\r\n"); }
+  else _iocs_b_locate(0, y);
+}
+
+/* チャネルの fd 書き込み (writechannel_fallback から)。VT 有効時の stdout/stderr は画面へ */
+int x68k_chan_write(int fd, const void *p, unsigned int n)
+{
+  if (vt_active && fd < X68K_SOCKFD_MIN) { vt_write((const unsigned char *)p, (int)n); return (int)n; }
+  return (int)write(fd, p, n);
+}
+
+/* チャネルの fd 読み出し (send_msg_channel_data から)。stdin はキーバッファから。
+   0 や EAGAIN を返すと dropbear は EOF 扱いで stdin を閉じるので、空なら -1/EINTR。 */
+int x68k_chan_read(int fd, void *p, unsigned int n)
+{
+  if (fd < X68K_SOCKFD_MIN) {
+    unsigned int k;
+    kbuf_fill();
+    if (kbuf_len == 0) { errno = EINTR; return -1; }
+    k = (unsigned int)kbuf_len < n ? (unsigned int)kbuf_len : n;
+    memcpy(p, kbuf, k);
+    memmove(kbuf, kbuf + k, kbuf_len - k);
+    kbuf_len -= k;
+    return (int)k;
+  }
+  return (int)read(fd, p, n);
+}
 
 /* --- select() を libsocket の poll() で実装 ---
    ソケット以外の fd (標準入出力など、X68K_SOCKFD_MIN 未満) は poll に渡せないので
-   「書き込みは常に可、読み込みは不可」として扱う (stdout への出力は同期書き)。
-   stdin (キーボード) の読み取りは未対応: 対話セッションで入力を流すには
-   IOCS _B_KEYSNS 等で可否を見る必要がある。 */
+   「書き込みは常に可」として扱う (stdout への出力は同期書き)。
+   stdin (fd 0) の読み取りはキーボード: poll を短い刻み (KEY_SLICE_MS) で回し、刻みの間に
+   vt_key で IOCS のキーを読んでバッファに溜め、溜まっていれば fd 0 を「読める」と返す。
+   libsocket の poll は内部で _CHANGE_PR を呼んで xip に CPU を譲るので、ここで自前に待たない。
+   nfds==0 の poll は EINVAL なので、ソケットが無いとき (fd_read_pending(0) など) は poll を飛ばす。 */
 #include <sys/select.h>
 #include <poll.h>
+#define KEY_SLICE_MS 50
 int select(int nfds, fd_set *rfds, fd_set *wfds, fd_set *efds, struct timeval *tv)
 {
   static struct pollfd pfd[FD_SETSIZE];
   static int map[FD_SETSIZE];
   static fd_set wready;
-  int i, n = 0, r, count = 0, timeout, nw = 0;
+  int i, n = 0, r = 0, count = 0, timeout, nw = 0, want_kbd = 0;
+  long t0 = 0;
   FD_ZERO(&wready);
   for (i = 0; i < nfds && n < FD_SETSIZE; i++) {
     short ev = 0;
     if (i < X68K_SOCKFD_MIN) {
       if (wfds && FD_ISSET(i, wfds)) { FD_SET(i, &wready); nw++; }
+      if (rfds && FD_ISSET(i, rfds) && i == 0) want_kbd = 1;
       continue;
     }
     if (rfds && FD_ISSET(i, rfds)) ev |= POLLIN;
@@ -103,12 +189,33 @@ int select(int nfds, fd_set *rfds, fd_set *wfds, fd_set *efds, struct timeval *t
   }
   timeout = tv ? (int)(tv->tv_sec * 1000 + tv->tv_usec / 1000) : -1;
   if (nw) timeout = 0;   /* 書けるものがあるので待たない */
-  r = poll(pfd, n, timeout);
+  if (want_kbd) {
+    /* キーが溜まるかソケットが動くか時間切れまで、刻みで回す */
+    t0 = _dos_time_pr();
+    for (;;) {
+      int slice = timeout;
+      kbuf_fill();
+      if (kbuf_len > 0) slice = 0;
+      else if (timeout < 0 || timeout > KEY_SLICE_MS) slice = KEY_SLICE_MS;
+      if (n > 0) {
+        r = poll(pfd, n, slice);
+        if (r != 0) break;                     /* ソケットが動いた / エラー */
+      } else if (slice > 0) {
+        _dos_change_pr();                      /* ソケット無し: 譲るだけ */
+      }
+      kbuf_fill();
+      if (kbuf_len > 0) break;
+      if (timeout >= 0 && _dos_time_pr() - t0 >= timeout) break;
+    }
+  } else if (n > 0) {
+    r = poll(pfd, n, timeout);
+  }
   if (rfds) FD_ZERO(rfds);
   if (wfds) FD_ZERO(wfds);
   if (efds) FD_ZERO(efds);
   if (r < 0) return r;
   if (nw) { for (i = 0; i < nfds; i++) if (FD_ISSET(i, &wready)) FD_SET(i, wfds); count = nw; }
+  if (want_kbd && kbuf_len > 0 && rfds) { FD_SET(0, rfds); count++; }
   if (r == 0) return count;
   for (i = 0; i < n; i++) {
     if (rfds && (pfd[i].revents & (POLLIN | POLLHUP | POLLERR))) { FD_SET(map[i], rfds); count++; }

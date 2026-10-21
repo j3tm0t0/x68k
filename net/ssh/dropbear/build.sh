@@ -17,6 +17,8 @@ FAST="${FAST:-0}"
 # DEBUG=1 で位相ごとの印 (x68dbg、経過秒付き) をテキスト画面に出す版を作る。
 DEBUG="${DEBUG:-0}"
 CRYPTO68K="${CRYPTO68K:-$HERE/../crypto68k}"
+# VT100 端末エミュレータ (term/vt100)。-t の対話セッションで画面を描き、キーボードを読む。常に組み込む。
+VT100="${VT100:-$HERE/../../../term/vt100}"
 
 # パッチ適用前に必ず素の状態に戻す (前回のパッチが残っていると更新版が当たらない)。
 TARBALL="$HERE/work/dropbear-$VER.tar.bz2"
@@ -70,9 +72,12 @@ sed -i.bak 's|/\* #undef HAVE_SYS_UIO_H \*/|#define HAVE_SYS_UIO_H 1|' config.h
 rm -f config.h.bak
 
 # シム単体をコンパイル (make clean で消えるので make の前に用意し、LIBS に渡す)
-${CROSS}gcc -m68000 -O2 -fomit-frame-pointer -I"$INC" -include "$INC/x68k_compat.h" $EXTRA_DEF -c x68k_shim.c -o x68k_shim.o
+[ -f "$VT100/vt100.c" ] || { echo "build: $VT100/vt100.c が無い (term/vt100)" >&2; exit 1; }
+${CROSS}gcc -m68000 -O2 -fomit-frame-pointer -I"$INC" -I"$VT100" -include "$INC/x68k_compat.h" $EXTRA_DEF -c x68k_shim.c -o x68k_shim.o
+${CROSS}gcc -m68000 -O2 -fomit-frame-pointer -Wno-array-bounds -I"$VT100" -c "$VT100/vt100.c" -o vt100.o
+EXTRA_OBJ="$SRC/vt100.o"
 # FAST の asm 乗算も make clean 後に組む
-case "$EXTRA_DEF" in *USE_ASM*) ${CROSS}as -m68000 "$CRYPTO68K/mul68k.s" -o "$SRC/mul68k.o"; EXTRA_OBJ="$SRC/mul68k.o";; esac
+case "$EXTRA_DEF" in *USE_ASM*) ${CROSS}as -m68000 "$CRYPTO68K/mul68k.s" -o "$SRC/mul68k.o"; EXTRA_OBJ="$EXTRA_OBJ $SRC/mul68k.o";; esac
 
 # 先に dry-run でリンク行を取っておく (ビルド後だと "up to date" で出ない)
 LINK=$(make -n PROGRAMS="dbclient" LIBS="$SRC/x68k_shim.o $EXTRA_OBJ -lsocket" 2>/dev/null | grep -E "${CROSS}gcc +-o dbclient " | tail -1)
