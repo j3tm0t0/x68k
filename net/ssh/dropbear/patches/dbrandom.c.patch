@@ -1,5 +1,5 @@
---- dropbear-2022.83/dbrandom.c	2022-11-14 23:30:00
-+++ xbuild/dbrandom.c	2026-10-22 01:41:42
+--- dropbear-2022.83/dbrandom.c
++++ x68k/dbrandom.c
 @@ -131,6 +131,9 @@
  
  static void write_urandom()

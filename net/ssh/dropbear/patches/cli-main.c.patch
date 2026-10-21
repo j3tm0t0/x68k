@@ -1,6 +1,21 @@
---- dropbear-2022.83/cli-main.c	2022-11-14 23:30:00
-+++ stripped/cli-main.c	2026-10-22 02:41:48
-@@ -88,10 +88,18 @@
+--- dropbear-2022.83/cli-main.c
++++ x68k/cli-main.c
+@@ -52,12 +52,14 @@
+ 	_dropbear_exit = cli_dropbear_exit;
+ 	_dropbear_log = cli_dropbear_log;
+ 
++	x68dbg("main");
+ 	disallow_core();
+ 
+ 	seedrandom();
+ 	crypto_init();
+ 
+ 	cli_getopts(argc, argv);
++	x68dbg("getopts-done");
+ 
+ #ifndef DISABLE_SYSLOG
+ 	if (opts.usingsyslog) {
+@@ -88,10 +90,18 @@
  	} else
  #endif
  	{

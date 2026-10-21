@@ -53,7 +53,13 @@ socket / connect / 送受信は動く。当初「能動オープンの受信が�
 
 → **xip (KA9Q NOS 由来) が TOS≠0 の受信 TCP セグメントを拒否する** のが原因。
 
-### 回避策 (採用・動作確認済み): IPQoS none の sshd
+### 現在: npd4.x が受信 TOS をクリアするので回避策は不要
+
+lead が npd4.x (Pico W netpipe ドライバ) で受信 IP ヘッダの TOS を 0 にするようにしたため、
+素の sshd:22 にそのまま通る (2026-10-22、dropbear 移植の ssh.x で `uname -a` まで確認)。
+下の IPQoS none の sshd は停止済みで、削除してよい。
+
+### 旧回避策 (不要になった): IPQoS none の sshd
 
 Pi に user-level の sshd を `IPQoS none` で立てれば、送信データの TOS が 0 に
 なり Z が受信できる。中継は不要。実機で banner→自バナー→KEXINIT (複数
@@ -63,11 +69,11 @@ Pi に user-level の sshd を `IPQoS none` で立てれば、送信データの
   authorized_keys)。ポート 2222。root 不要・systemd 不使用・削除可。
 - 受入: `ssh.x moto@192.168.1.108 -p 2222 <command>`。
 
-### 後でやる: xip の TOS 拒否をバイトパッチ (任意)
+### xip 自体のバイトパッチは見送り
 
-原因が TOS と特定できたので、xip が受信 IP ヘッダの TOS を見て弾いている箇所を
-patchxip.py 方式で潰せば、素の sshd:22 や任意サーバにも通せる見込み。
+xip 側を直すより、ドライバ (npd4.x) で受信パケットの TOS を 0 に書き換える方が安全なので
+そちらで解決した。
 
-### 開発・試験は b:pnetorig で
+### 開発・試験は b:pnetorg4 で
 
-素の xiporig.x (MSS 512) を使う b:pnetorig に統一 (lead 方針)。リセット手順は同じ。
+素の xiporig.x (MSS 512) + npd4.x (TOS クリア) の b:pnetorg4 に統一 (lead 方針)。

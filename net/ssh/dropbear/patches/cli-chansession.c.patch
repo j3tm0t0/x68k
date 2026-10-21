@@ -1,0 +1,10 @@
+--- dropbear-2022.83/cli-chansession.c
++++ x68k/cli-chansession.c
+@@ -306,6 +306,7 @@
+ static void send_chansess_shell_req(const struct Channel *channel) {
+ 
+ 	char* reqtype = NULL;
++	x68dbg("exec-request");
+ 
+ 	TRACE(("enter send_chansess_shell_req"))
+ 

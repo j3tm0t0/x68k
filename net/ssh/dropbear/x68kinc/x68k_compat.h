@@ -39,4 +39,10 @@ struct x68k_linger { int l_onoff; int l_linger; };
 #define linger x68k_linger
 #endif
 
+/* libsocket のソケット fd は 128..159。それ未満は Human68k の通常ファイル/コンソール */
+#define X68K_SOCKFD_MIN 128
+
+/* 位相ごとのデバッグ印 (x68k_shim.c)。-DX68K_SSH_DEBUG のビルドでのみ出力する */
+void x68dbg(const char *m);
+
 #endif

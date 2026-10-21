@@ -1,0 +1,26 @@
+--- dropbear-2022.83/common-kex.c
++++ x68k/common-kex.c
+@@ -53,6 +53,7 @@
+ 
+ /* Send our list of algorithms we can use */
+ void send_msg_kexinit() {
++	x68dbg("kexinit-send");
+ 
+ 	CHECKCLEARTOWRITE();
+ 	buf_putbyte(ses.writepayload, SSH_MSG_KEXINIT);
+@@ -188,6 +189,7 @@
+ 
+ /* Bring the new keys into use after a key exchange */
+ void recv_msg_newkeys() {
++	x68dbg("newkeys-recv");
+ 
+ 	TRACE(("enter recv_msg_newkeys"))
+ 
+@@ -472,6 +474,7 @@
+  * later in the key exchange. No response is sent, as the client should
+  * initiate the diffie-hellman key exchange */
+ void recv_msg_kexinit() {
++	x68dbg("kexinit-recv");
+ 	
+ 	unsigned int kexhashbuf_len = 0;
+ 	unsigned int remote_ident_len = 0;

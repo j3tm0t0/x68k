@@ -1,5 +1,5 @@
---- dropbear-2022.83/common-session.c	2022-11-14 23:30:00
-+++ stripped/common-session.c	2026-10-22 02:41:48
+--- dropbear-2022.83/common-session.c
++++ x68k/common-session.c
 @@ -89,6 +89,10 @@
  	if (!fuzz.fuzzing)
  #endif

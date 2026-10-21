@@ -14,6 +14,8 @@ CROSS=m68k-xelf-
 # FAST=1 で 68000 向け高速体演算 (net/ssh/crypto68k, vt100 agent 作) を組み込む。
 # scalarmult 118s -> 10s (~12x)。FAST_C=1 なら asm 無し (22s)。CRYPTO68K で場所を指定可。
 FAST="${FAST:-0}"
+# DEBUG=1 で位相ごとの印 (x68dbg、経過秒付き) をテキスト画面に出す版を作る。
+DEBUG="${DEBUG:-0}"
 CRYPTO68K="${CRYPTO68K:-$HERE/../crypto68k}"
 
 # パッチ適用前に必ず素の状態に戻す (前回のパッチが残っていると更新版が当たらない)。
@@ -27,13 +29,14 @@ cp "$HERE/localoptions.h" "$SRC/localoptions.h"
 cp "$HERE/x68k_shim.c"    "$SRC/x68k_shim.c"
 
 EXTRA_DEF="" ; EXTRA_OBJ=""
+[ "$DEBUG" = "1" ] && EXTRA_DEF="-DX68K_SSH_DEBUG"
 if [ "$FAST" = "1" ]; then
   [ -f "$CRYPTO68K/field_fast.h" ] || { echo "build: FAST=1 だが $CRYPTO68K が無い (branch vt100 の net/ssh/crypto68k)" >&2; exit 1; }
   cp "$CRYPTO68K"/*.h "$SRC/"   # field_fast.h / comb.h / basetable.h 等
   if patch -d "$SRC" -p1 --dry-run -f < "$CRYPTO68K/curve25519.patch" >/dev/null 2>&1; then
     patch -d "$SRC" -p1 < "$CRYPTO68K/curve25519.patch"
   fi
-  EXTRA_DEF="-DFAST_FIELD"
+  EXTRA_DEF="$EXTRA_DEF -DFAST_FIELD"
   [ "${FAST_C:-0}" != "1" ] && EXTRA_DEF="$EXTRA_DEF -DUSE_ASM"   # mul68k.o は make clean 後に組む
 fi
 
@@ -67,7 +70,7 @@ sed -i.bak 's|/\* #undef HAVE_SYS_UIO_H \*/|#define HAVE_SYS_UIO_H 1|' config.h
 rm -f config.h.bak
 
 # シム単体をコンパイル (make clean で消えるので make の前に用意し、LIBS に渡す)
-${CROSS}gcc -m68000 -O2 -fomit-frame-pointer -I"$INC" -include "$INC/x68k_compat.h" -c x68k_shim.c -o x68k_shim.o
+${CROSS}gcc -m68000 -O2 -fomit-frame-pointer -I"$INC" -include "$INC/x68k_compat.h" $EXTRA_DEF -c x68k_shim.c -o x68k_shim.o
 # FAST の asm 乗算も make clean 後に組む
 case "$EXTRA_DEF" in *USE_ASM*) ${CROSS}as -m68000 "$CRYPTO68K/mul68k.s" -o "$SRC/mul68k.o"; EXTRA_OBJ="$SRC/mul68k.o";; esac
 

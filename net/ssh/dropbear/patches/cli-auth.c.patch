@@ -1,0 +1,10 @@
+--- dropbear-2022.83/cli-auth.c
++++ x68k/cli-auth.c
+@@ -262,6 +262,7 @@
+ }
+ 
+ void recv_msg_userauth_success() {
++	x68dbg("auth-success");
+ 	/* This function can validly get called multiple times
+ 	if DROPBEAR_CLI_IMMEDIATE_AUTH is set */
+ 

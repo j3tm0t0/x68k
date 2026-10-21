@@ -1,0 +1,10 @@
+--- dropbear-2022.83/cli-session.c
++++ x68k/cli-session.c
+@@ -371,6 +371,7 @@
+ }
+ 
+ static void cli_finished() {
++	x68dbg("finished");
+ 	TRACE(("cli_finished()"))
+ 
+ 	session_cleanup();

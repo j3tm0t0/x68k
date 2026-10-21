@@ -1,0 +1,48 @@
+--- dropbear-2022.83/cli-kex.c
++++ x68k/cli-kex.c
+@@ -43,6 +43,7 @@
+ #define MAX_KNOWNHOSTS_LINE 4500
+ 
+ void send_msg_kexdh_init() {
++	x68dbg("kexdh-init-start");
+ 	TRACE(("send_msg_kexdh_init()"))	
+ 
+ 	CHECKCLEARTOWRITE();
+@@ -93,12 +94,14 @@
+ #endif
+ 	}
+ 
++	x68dbg("kexdh-init-sent");
+ 	cli_ses.param_kex_algo = ses.newkeys->algo_kex;
+ 	encrypt_packet();
+ }
+ 
+ /* Handle a diffie-hellman key exchange reply. */
+ void recv_msg_kexdh_reply() {
++	x68dbg("kexdh-reply-recv");
+ 
+ 	sign_key *hostkey = NULL;
+ 	unsigned int keytype, keybloblen;
+@@ -161,7 +164,9 @@
+ 		case DROPBEAR_KEX_CURVE25519:
+ 			{
+ 			buffer *ecdh_qs = buf_getstringbuf(ses.payload);
++			x68dbg("shared-secret-start");
+ 			kexcurve25519_comb_key(cli_ses.curve25519_param, ecdh_qs, hostkey);
++			x68dbg("shared-secret-done");
+ 			buf_free(ecdh_qs);
+ 			}
+ 			break;
+@@ -188,10 +193,12 @@
+ #endif
+ 
+ 	cli_ses.param_kex_algo = NULL;
++	x68dbg("hostkey-verify-start");
+ 	if (buf_verify(ses.payload, hostkey, ses.newkeys->algo_signature, 
+ 			ses.hash) != DROPBEAR_SUCCESS) {
+ 		dropbear_exit("Bad hostkey signature");
+ 	}
++	x68dbg("hostkey-verify-done");
+ 
+ 	sign_key_free(hostkey);
+ 	hostkey = NULL;
