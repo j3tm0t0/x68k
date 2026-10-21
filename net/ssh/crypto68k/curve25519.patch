@@ -1,5 +1,5 @@
 --- a/curve25519.c	2026-10-22 03:34:16
-+++ b/curve25519.c	2026-10-22 03:52:12
++++ b/curve25519.c	2026-10-22 04:00:19
 @@ -165,8 +165,15 @@
    FOR(i,16) o[i]=a[i]-b[i];
  }
@@ -47,3 +47,14 @@
    gf c;
    int a;
    FOR(a,16) c[a]=i[a];
+@@ -329,6 +348,10 @@
+ 
+ sv scalarbase(gf p[4],const u8 *s)
+ {
++#if defined(FAST_FIELD)
++  scalarbase_fast(p,s);
++  return;
++#endif
+   gf q[4];
+   set25519(q[0],X);
+   set25519(q[1],Y);

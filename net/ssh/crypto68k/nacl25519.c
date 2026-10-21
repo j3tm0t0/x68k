@@ -329,6 +329,10 @@ sv scalarmult(gf p[4],gf q[4],const u8 *s)
 
 sv scalarbase(gf p[4],const u8 *s)
 {
+#ifdef FAST_FIELD
+  scalarbase_fast(p,s);
+  return;
+#endif
   gf q[4];
   set25519(q[0],X);
   set25519(q[1],Y);
