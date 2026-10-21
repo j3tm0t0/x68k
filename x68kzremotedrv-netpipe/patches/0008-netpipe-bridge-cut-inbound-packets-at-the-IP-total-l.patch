@@ -1,0 +1,58 @@
+From fd2033acda00c4ce6311a573f1c9d1cd0ea97a8a Mon Sep 17 00:00:00 2001
+From: moto <j3tm0t0@gmail.com>
+Date: Wed, 21 Oct 2026 10:31:56 +0900
+Subject: [PATCH 8/8] netpipe bridge: cut inbound packets at the IP total
+ length
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PrGdt1XK1exBgERrMmLA1u
+---
+ src/netpipe.c | 14 +++++++++-----
+ 1 file changed, 9 insertions(+), 5 deletions(-)
+
+diff --git a/src/netpipe.c b/src/netpipe.c
+index adbb8f6..1e77d00 100644
+--- a/src/netpipe.c
++++ b/src/netpipe.c
+@@ -92,10 +92,10 @@ static bool ring_room(uint32_t n)
+     return n <= RXRING - (rx_head - rx_tail);
+ }
+ 
+-/* SLIP にしてリングに積む (入りきらないときは丸ごと捨てる) */
+-static void ring_put_slip(const struct pbuf *p, uint16_t offset)
++/* offset から len バイトを SLIP にしてリングに積む (入りきらないときは丸ごと捨てる) */
++static void ring_put_slip(const struct pbuf *p, uint16_t offset, uint16_t len)
+ {
+-    if (!ring_room(2 * (p->tot_len - offset) + 2)) {
++    if (!ring_room(2 * len + 2)) {
+         st_drop++;
+         return;
+     }
+@@ -111,7 +111,7 @@ static void ring_put_slip(const struct pbuf *p, uint16_t offset)
+         }
+         i = skip;
+         skip = 0;
+-        for (; i < q->len; i++) {
++        for (; i < q->len && len > 0; i++, len--) {
+             uint8_t c = s[i];
+             if (c == SLIP_END) {
+                 rxring[h++ % RXRING] = SLIP_ESC;
+@@ -206,10 +206,14 @@ static err_t np_input(struct pbuf *p, struct netif *netif)
+                 const uint8_t *ip = (const uint8_t *)ih;
+                 int hl = (ip[0] & 15) * 4;
+                 /* 外からの ping は捨てる: ESP/X は TCP を閉じたあとに echo request を受けると止まった */
++                /* Ethernet の詰め物を Z に渡さないよう、IP の全長で切る */
++                int tot = lwip_ntohs(IPH_LEN(ih));
+                 if (IPH_PROTO(ih) == IP_PROTO_ICMP && p->len >= SIZEOF_ETH_HDR + hl + 1 && ip[hl] == 8)
+                     st_drop++;
++                else if (tot < 20 || tot > p->tot_len - SIZEOF_ETH_HDR)
++                    st_drop++;
+                 else
+-                    ring_put_slip(p, SIZEOF_ETH_HDR);
++                    ring_put_slip(p, SIZEOF_ETH_HDR, tot);
+                 pbuf_free(p);
+                 return ERR_OK;
+             }
+-- 
+2.54.0 (Apple Git-157)
+

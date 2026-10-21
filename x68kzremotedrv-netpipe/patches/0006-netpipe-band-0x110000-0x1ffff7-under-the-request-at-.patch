@@ -1,0 +1,52 @@
+From ee135f63701a388f3c54f6fa5afb91f0309e9913 Mon Sep 17 00:00:00 2001
+From: moto <j3tm0t0@gmail.com>
+Date: Wed, 21 Oct 2026 10:25:59 +0900
+Subject: [PATCH 6/8] netpipe: band 0x110000-0x1ffff7 under the request at
+ 0x100000
+
+scsiremote.sys reads 0x200000-0x3fffff, so the band has to stay below it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PrGdt1XK1exBgERrMmLA1u
+---
+ src/netpipe.h      | 8 ++++----
+ src/virtual_disk.c | 4 ++--
+ 2 files changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/src/netpipe.h b/src/netpipe.h
+index 65573d5..86d6a83 100644
+--- a/src/netpipe.h
++++ b/src/netpipe.h
+@@ -4,10 +4,10 @@
+ #include <stdint.h>
+ 
+ /* SCSI ID 6 (DTYPE_REMOTECOMM) の中で netpipe が使う LBA */
+-#define NETPIPE_WLBA    0x1000          /* 要求を書く (8 セクタまで) */
+-#define NETPIPE_RLBA    0x2000          /* 応答を読む (0x2000～0x1ffff7 のどこでも、8 セクタ周期)。 */
+-#define NETPIPE_REND    0x200000        /* 読む位置は毎回変える: Z 側が読み込みをキャッシュする (帯は約 1GB)。
+-                                           0x200000 以降は scsiremote.sys が使う。ID6 は 2GB より大きくできない */
++#define NETPIPE_WLBA    0x100000        /* 要求を書く (8 セクタまで) */
++#define NETPIPE_RLBA    0x110000        /* 応答を読む (0x110000～0x1ffff7 のどこでも、8 セクタ周期)。 */
++#define NETPIPE_REND    0x200000        /* 読む位置は毎回変える: Z 側が読み込みをキャッシュする (帯は約 480MB)。
++                                           0x200000 以降は scsiremote.sys が使う */
+ 
+ int netpipe_write(uint32_t lba, const uint8_t *buf);
+ int netpipe_read(uint32_t lba, uint8_t *buf);
+diff --git a/src/virtual_disk.c b/src/virtual_disk.c
+index 5d81a62..a1e3244 100644
+--- a/src/virtual_disk.c
++++ b/src/virtual_disk.c
+@@ -229,8 +229,8 @@ int vd_init(void)
+ 
+     /* SCSI ID 6 : for remote communication */
+     diskinfo[6].type = DTYPE_REMOTECOMM;
+-    /* 2GB より大きくすると Z がディスク構成を受け付けず、起動できなくなる (0xfffffe00 で確認)。
+-       netpipe の帯は netpipe.h */
++    /* netpipe の帯は netpipe.h (0x200000 セクタ未満)。0xfffffe00 にした版では Z が起動しなかったが、
++       電源投入時に Pico の接続が間に合わなかっただけかもしれない (未確認) */
+     diskinfo[6].size = 0x80000000;
+ 
+     for (int i = 0; i < 7; i++) {
+-- 
+2.54.0 (Apple Git-157)
+

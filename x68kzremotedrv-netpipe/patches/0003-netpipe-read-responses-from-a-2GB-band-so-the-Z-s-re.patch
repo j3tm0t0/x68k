@@ -1,0 +1,58 @@
+From 3d3106a96e9eae7488c5ccb87b4c6b407db244fa Mon Sep 17 00:00:00 2001
+From: moto <j3tm0t0@gmail.com>
+Date: Wed, 21 Oct 2026 07:00:22 +0900
+Subject: [PATCH 3/8] netpipe: read responses from a 2GB band so the Z's read
+ cache never serves stale ones
+
+The Z's Linux caches reads of the comm disk. The old 0x80000-sector band
+wrapped after 65536 exchanges (about 22 minutes of 20 ms polling); from
+then on every read returned a cached old response and the pipe stopped
+until the Pico was power-cycled. The comm disk is now 4GB and responses
+are read from 0x400000-0x7ffff7, wider than the Z's memory.
+---
+ src/netpipe.h      | 4 ++--
+ src/virtual_disk.c | 6 ++++--
+ 2 files changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/src/netpipe.h b/src/netpipe.h
+index ebb92c2..9633f92 100644
+--- a/src/netpipe.h
++++ b/src/netpipe.h
+@@ -5,8 +5,8 @@
+ 
+ /* SCSI ID 6 (DTYPE_REMOTECOMM) の中で netpipe が使う LBA */
+ #define NETPIPE_WLBA    0x100000        /* 要求を書く (8 セクタまで) */
+-#define NETPIPE_RLBA    0x180000        /* 応答を読む (0x180000～0x1fffff のどこでも、8 セクタ周期) */
+-#define NETPIPE_REND    0x200000
++#define NETPIPE_RLBA    0x400000        /* 応答を読む (0x400000～0x7ffff7 のどこでも、8 セクタ周期)。 */
++#define NETPIPE_REND    0x7ffff8        /* 読む位置は毎回変える: Z 側が読み込みをキャッシュする (帯は 2GB = Z のメモリより広く) */
+ 
+ int netpipe_write(uint32_t lba, const uint8_t *buf);
+ int netpipe_read(uint32_t lba, uint8_t *buf);
+diff --git a/src/virtual_disk.c b/src/virtual_disk.c
+index b7564a1..69bf7de 100644
+--- a/src/virtual_disk.c
++++ b/src/virtual_disk.c
+@@ -229,7 +229,9 @@ int vd_init(void)
+ 
+     /* SCSI ID 6 : for remote communication */
+     diskinfo[6].type = DTYPE_REMOTECOMM;
+-    diskinfo[6].size = 0x80000000;
++    /* netpipe が 0x400000 セクタ以降 (2GB 分) を応答の読み出しに使う。Z 側の Linux が読み込みを
++       キャッシュするので、Z のメモリより広い帯を回らないと、一巡したところで古い応答が返る */
++    diskinfo[6].size = 0xfffffe00;
+ 
+     for (int i = 0; i < 7; i++) {
+         diskinfo[i].sects = (diskinfo[i].size + SECTOR_SIZE - 1) / SECTOR_SIZE;
+@@ -571,7 +573,7 @@ int vd_write_block(uint32_t lba, uint8_t *buf)
+             return 0;
+         }
+         if (diskinfo[id].type == DTYPE_REMOTECOMM) {
+-            if (lba >= NETPIPE_WLBA && lba < NETPIPE_RLBA) {
++            if (lba >= NETPIPE_WLBA && lba < NETPIPE_WLBA + 8) {
+                 return netpipe_write(lba, buf);
+             }
+             struct vdbuf *b = (struct vdbuf *)buf;
+-- 
+2.54.0 (Apple Git-157)
+
