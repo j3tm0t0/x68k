@@ -134,7 +134,13 @@ cp work/ppp/conf.ppp stage/USR/DOC/PPP/conf_ppp.org
 # ESP/X (計測技研 TCPPACKA): ping ftp telnet inetdconf ifconfig netstat arp + etc/protocols services + man
 #   TCP/IP 本体は inetd.x の改良版 xip.x を使う (inetd.x も参考に残す)
 x dl/net/TCPPACKA.LZH tcpa; x dl/net/xipb5.lzh xip
-cp work/tcpa/bin/*.x stage/USR/BIN/; cp work/xip/xip.x stage/USR/BIN/
+cp work/tcpa/bin/*.x stage/USR/BIN/
+# XIPMSS (既定 1460): MSS をパッチした xip.x を入れる (改変済みのバイナリは配布せず、ここで元の xip.x から作る)
+if [ "${XIPMSS:-1460}" = 512 ]; then
+  cp work/xip/xip.x stage/USR/BIN/
+else
+  python3 scripts/patchxip.py work/xip/xip.x stage/USR/BIN/xip.x --mss "${XIPMSS:-1460}"
+fi
 cp work/tcpa/etc/protocols work/tcpa/etc/services stage/ETC/
 mkdir -p stage/USR/DOC/ESPX stage/USR/DOC/XIP
 cp work/tcpa/README_A.doc work/tcpa/man/* stage/USR/DOC/ESPX/; cp work/xip/xip.doc work/xip/xip.his stage/USR/DOC/XIP/

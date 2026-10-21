@@ -13,12 +13,15 @@ if [ -n "${X68PUT_TEXT:-}" ]; then
   # Human68k のテキスト: Shift_JIS + CRLF + 末尾 ^Z (^Z が無いと gcc 1.42 の cpp がバスエラーで落ちた)
   { iconv -f UTF-8 -t CP932 "$src" | LC_ALL=C sed 's/$/\r/'; printf '\032'; } > "$tmpd/text"; src=$tmpd/text
 fi
-size=$(stat -c %s "$src")
+# stat -c も date +%N も GNU だけなので、macOS でも動くよう wc と perl を使う
+fsize() { wc -c < "$1" | tr -d ' '; }
+now() { perl -MTime::HiRes=time -e 'printf "%.3f", time'; }
+size=$(fsize "$src")
 
 # send <file> <X68000 path> : @put で 1 ファイル送り、終了コードを返す
 send() {
   exec 3<>"/dev/tcp/$HOST/$PORT" || return 1
-  { printf '@put %s %s\r\n' "$2" "$(stat -c %s "$1")"; cat "$1"; } >&3
+  { printf '@put %s %s\r\n' "$2" "$(fsize "$1")"; cat "$1"; } >&3
   local rc=1 line
   while IFS= read -r line <&3 || [ -n "$line" ]; do
     case "$line" in --rcmd-end\ rc=*--*) rc=${line#--rcmd-end rc=}; rc=${rc%%--*}; break;; esac
@@ -27,15 +30,15 @@ send() {
   return "${rc:-1}"
 }
 
-t0=$(date +%s.%N)
+t0=$(now)
 how=raw; wire=$size
 if [ -z "${X68PUT_RAW:-}" ] && [ "$size" -gt 4096 ]; then
   # 展開先のファイル名で 1 ファイルだけの tar.gz を作る (tar 1.11 なので GNU 形式・数値 owner)
   name=$(basename "$dst"); dir=$(dirname "$dst")
   mkdir "$tmpd/a"; cp "$src" "$tmpd/a/$name"
   tar -C "$tmpd/a" --format=gnu --owner=0 --group=0 -czf "$tmpd/x.tgz" "$name"
-  if [ "$(stat -c %s "$tmpd/x.tgz")" -lt $((size * 9 / 10)) ]; then
-    how=gzip; wire=$(stat -c %s "$tmpd/x.tgz")
+  if [ "$(fsize "$tmpd/x.tgz")" -lt $((size * 9 / 10)) ]; then
+    how=gzip; wire=$(fsize "$tmpd/x.tgz")
     send "$tmpd/x.tgz" /tmp/x68put.tgz || { echo "x68put: send failed" >&2; exit 1; }
     # 展開 (X68000 側の zsh で実行)
     out=$("$(dirname "$0")/x68" "cd $dir && tar.x -xzf /tmp/x68put.tgz && rm /tmp/x68put.tgz"); rc=$?
@@ -46,7 +49,7 @@ if [ $how = raw ]; then
   send "$src" "$dst"; rc=$?
   [ $rc = 0 ] || { echo "x68put: failed rc=$rc" >&2; exit "$rc"; }
 fi
-t=$(awk -v a="$t0" -v b="$(date +%s.%N)" 'BEGIN{printf "%.1f", b-a}')
+t=$(awk -v a="$t0" -v b="$(now)" 'BEGIN{printf "%.1f", b-a}')
 eff=$(awk -v s="$size" -v t="$t" 'BEGIN{printf "%.0f", (t>0)? s/t : 0}')
 kbps=$(awk -v e="$eff" 'BEGIN{printf "%.1f", e*8/1000}')
 if [ $how = gzip ]; then

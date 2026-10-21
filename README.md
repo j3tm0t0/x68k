@@ -142,6 +142,9 @@ X68000 Z 実機で計測 (x68put で Pi → X68000、100KB):
 | PPP (ppp.x) | 9600〜38400bps | 約 1KB/s | |
 
 38400bps では X68000 側の処理が頭打ちになる (xip.x の TCP ウィンドウを 8192 にしても変わらない)。
+xip.x は 1 パケットごとに 100〜150ms かかり、MSS が 512 に固定されているので、イメージには MSS を 1460 にした
+xip.x を入れる (`make XIPMSS=1460`、既定。`scripts/patchxip.py` が元の xip.x の SHA-256 を確かめてから書き換える。
+改変済みのバイナリは配布しない)。Pico W の netpipe では 4KB/s → 8.5KB/s になった。`XIPMSS=512` で元のまま入れる。
 はじめは SCC の受信・送信割り込みを slip.sys が自前で横取りしていたが、xip.x のヒープやスタックが壊れて
 バスエラー / アドレスエラー / 画面のスクロール崩れが起きた。ROM / RSDRV の割り込み処理に任せる今の形 (ppp.x と同じ) にしてから起きない。
 XEiJ では `scripts/xeijslip.py 127.0.0.1 54322 raspi3 build/slip.log` (Pi の pty に slattach して sl1 = 192.168.69.1 と橋渡し) で試せる。

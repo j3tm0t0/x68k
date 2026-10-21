@@ -12,6 +12,9 @@ NET ?= slip
 NETSPEED ?= 38400
 KEYMAP ?= jis
 HOMEDIR ?= A:/home
+# XIPMSS: xip.x の TCP の MSS (元は 512)。1 パケットごとに 100～150ms かかるので、大きいほど速い
+#   (Pico W netpipe で 4KB/s → 8.5KB/s)。512 にすると元の xip.x のまま入れる
+XIPMSS ?= 1460
 
 .PHONY: all tools fetch stage image run agent ls clean distclean
 
@@ -25,7 +28,7 @@ fetch:            ## sources.txt のアーカイブを dl/ に取得 (sha256 検
 
 stage: tools fetch      ## アーカイブを展開して stage/ を作る (elf2x68k があれば sed/grep もクロスビルド)
 	scripts/xbuild.sh
-	PROFILE=$(PROFILE) KEYMAP=$(KEYMAP) NET=$(NET) NETSPEED=$(NETSPEED) HOMEDIR=$(HOMEDIR) scripts/stage.sh
+	PROFILE=$(PROFILE) KEYMAP=$(KEYMAP) NET=$(NET) NETSPEED=$(NETSPEED) HOMEDIR=$(HOMEDIR) XIPMSS=$(XIPMSS) scripts/stage.sh
 
 image: tools stage ## $(IMG) を生成
 	IMG=$(IMG) SIZE_MB=$(SIZE_MB) scripts/build.sh
