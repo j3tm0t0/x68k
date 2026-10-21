@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """xip.x (β5, xipb5.lzh) にパッチを当てる。改変済みのバイナリは配布せず、ビルド時に元の xip.x から作る。
-usage: patchxip.py IN OUT [--mss N] [--super] [--timer] [--lock | --lockfix]
+usage: patchxip.py IN OUT [--mss N] [--super] [--timer] [--lock | --lockfix] [--yield]
   --mss N  : TCP の MSS (既定 1460)。xip は 512 固定で、1 パケットごとに 100～150ms かかるので、
              MSS を大きくするとそのまま速くなる (Pico W netpipe で 4KB/s → 8.5KB/s、2026-10-21)
   --super  : 2 本のスレッド (受信、タイマー) をスーパーバイザモードで作る (_OPEN_PR の SR を $2000 に)。
@@ -18,6 +18,9 @@ usage: patchxip.py IN OUT [--mss N] [--super] [--timer] [--lock | --lockfix]
   --lockfix: --lock に、元の不具合の修正を足したもの (harness/xiptest/lockfix.S)。待っている間に項目が別の
              キーに割り当て直されると、同じキーが表に 2 つでき、2 本のスレッドが同時に同じキーを持てた。
              取れたあとでマスターロックを持ってキーを確かめ直す (mutex.py で、割り込みでどこでも切り替わる条件で確かめる)
+  --yield  : 受信スレッドとタイマースレッドは、処理 (0x26B0 / 0x2792) の最後と、スレッドの繰り返し (0x2FA / 0x32E) の
+             両方で _CHANGE_PR を呼び、1 周に 2 回譲っていた。処理の中の 2 か所 (0x2782 の bsr.w、0x2874 の bsr.s) を nop にする
+             (2 つの処理はスレッドの繰り返しからしか呼ばれない)
 書き換える前に、元のバイトとファイル全体の SHA-256 を確かめる (違う版の xip.x には当てない)。"""
 import hashlib, struct, sys
 
@@ -56,13 +59,14 @@ LOCKFIX_NEW = bytes.fromhex("4aaf0004676c4ab900019ab4660000a0610000d4222f0004616
 LOCKFIX_REL = (0xF56, 0xFC6, 0xFC2)
 LOCKFIX_NEW = bytes.fromhex("4aaf0004676c4ab900019ab4660000a0610000d4222f000461626626207a00565848701f4a9066064ae800036708504851c8fff260e642a8fffc2141fffc600000b6610000b248e71008260149e800074ad46704ffff60f86100008c220341ecfff94cdf1008b2906700008c42a8000460a64e750001547a00000f1c207afff6701fb298670a584851c8fff8b0404e75594820084e7500000000222f0004670a61da6706202800044e7570004e75222f000461ea6708227affc070214e4f4e75222f0004671261b46710740021420004200890baffa0e6884e757020741f4e75000000000000")
 LOCKFIX_REL = (0xF56, 0xFC6, 0xFC2)
+YIELD_AT = ((0x2782, "610000fc", "4e714e71"), (0x2874, "610a", "4e71"))
 TIMER_AT = 0x283A               # タイマースレッドの「経過 > 0 なら掃除」 (4A85 6F36)          # スレッドを作る _OPEN_PR に積む SR (move.w #0,-(sp) = 3F3C 0000)
 
 def main():
     args = sys.argv[1:]
     if len(args) < 2:
         sys.exit(__doc__)
-    src, dst, mss, sup, tim, lck = args[0], args[1], 1460, False, False, False
+    src, dst, mss, sup, tim, lck, yld = args[0], args[1], 1460, False, False, False, False
     rest = args[2:]
     while rest:
         a = rest.pop(0)
@@ -76,6 +80,8 @@ def main():
             lck = "lock"
         elif a == "--lockfix":
             lck = "lockfix"
+        elif a == "--yield":
+            yld = True
         else:
             sys.exit("unknown option " + a)
     d = bytearray(open(src, "rb").read())
@@ -95,6 +101,11 @@ def main():
         o = HDR + TIMER_AT
         assert d[o:o + 4] == bytes.fromhex("4a856f36")
         d[o:o + 4] = bytes.fromhex("ba816d36")
+    if yld:
+        for a, old, new in YIELD_AT:
+            o = HDR + a
+            assert d[o:o + len(old) // 2] == bytes.fromhex(old)
+            d[o:o + len(old) // 2] = bytes.fromhex(new)
     if lck:
         text, data, bss, rel = struct.unpack(">IIII", d[12:28])
         a, b = LOCK_AT
@@ -109,7 +120,7 @@ def main():
         d = d[:r0] + tab + d[r0 + rel:]
         d[0x18:0x1C] = struct.pack(">I", len(tab))
     open(dst, "wb").write(d)
-    print("patchxip: %s -> %s (MSS %d%s%s%s)" % (src, dst, mss, ", supervisor threads" if sup else "",
-                                                ", timer 0.1s" if tim else "", (", " + {"lock": "fast lock", "lockfix": "fast lock + fix"}[lck]) if lck else ""))
+    print("patchxip: %s -> %s (MSS %d%s%s%s%s)" % (src, dst, mss, ", supervisor threads" if sup else "",
+                                                ", timer 0.1s" if tim else "", ", one yield per loop" if yld else "", (", " + {"lock": "fast lock", "lockfix": "fast lock + fix"}[lck]) if lck else ""))
 
 main()
