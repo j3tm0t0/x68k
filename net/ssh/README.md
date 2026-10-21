@@ -35,25 +35,36 @@ libsocket が xip.x 相手に素で動くかの煙試験。`b:` (Pi の
 | tcptest4.c | write-first (接続後すぐクライアントバナー送信) | 送信は ACK されるが受信バナーで RST |
 | tcptest5.c | connect 後に SO_SOCKMODE=BINARY を設定 | 効果なし。やはり RST |
 
-## 現状: 受信がブロックされている (xip.x の能動オープンの不具合)
+## 真因: xip は TOS≠0 の受信 TCP データを捨てる
 
-socket / connect / **送信** は動く (Pi の sshd が Z のクライアントバナーを
-ACK するのを tcpdump で確認)。しかし **能動オープン (connect したクライアント)
-のソケットでサーバから最初のデータ (41 バイトの SSH バナー) が届いた瞬間に、
-Z の xip が相手へ RST を返し、データを捨てる。** ソケットの状態は手元では
-ESTABLISHED のまま、受信バッファは空のまま。
+socket / connect / 送受信は動く。当初「能動オープンの受信が全部 RST される」
+ように見えたが、切り分けの結果、真因は **IP ヘッダの TOS (DSCP)** だった。
 
-- 受動オープン (rcmd = listen/accept 側) は大量受信 (@put で ~500kbps) でき
-  ているので、**能動オープンの受信固有の問題**。
-- 配布物の純正 `telnet.x` (FCT TCP/IP 2.00、xip β5 と同じ) を Z から
-  `telnet.x 192.168.1.108 22` で動かしても **まったく同じ RST** になる。
-  → 自作コードや libsocket の不具合ではなく、xip 側。
-- 線上はすべて整合 (バナーの seq == Z がアドバタイズした rcv_nxt、順序内)
-  なのに RST する。SYN_SENT→ESTABLISHED の経路で何かのフィールドが初期化
-  されていない疑い。
+- 素の Python リスナ (TOS=0) への能動オープンは **完全動作** (poll→POLLIN
+  0.13s、banner 受信、nonblock=EAGAIN、stdin poll すべて OK)。
+- 同じリスナで `setsockopt(IP_TOS, 0xb8)` を立てて送ると **RST・データ破棄**。
+- sshd は IPQoS で送信データに tos 0xb8 (DSCP EF) を付ける。だから
+  ハンドシェイク (tos 0) は通るのに最初のデータ到着で RST していた。
+  純正 `telnet.x` が同症状だったのも同じ理由 (相手が sshd:22 だったため)。
+- パッチの有無 (pnetny の xiply vs pnetorig の xiporig) は無関係。両方で再現。
 
-SSH は双方向の能動オープンが要るので、ここが直るまでクライアントは完成
-できない。考えられる道:
-1. xip.x の能動オープン受信を直す (patchxip.py と同じやり方のバイトパッチ)。
-2. Z を受動側 (listen) にして、Pi 側の中継が sshd へ橋渡しする回避策。
-3. netpipe/SLIP 経路固有かどうかを別リンク (XEiJ など) で切り分ける。
+→ **xip (KA9Q NOS 由来) が TOS≠0 の受信 TCP セグメントを拒否する** のが原因。
+
+### 回避策 (採用・動作確認済み): IPQoS none の sshd
+
+Pi に user-level の sshd を `IPQoS none` で立てれば、送信データの TOS が 0 に
+なり Z が受信できる。中継は不要。実機で banner→自バナー→KEXINIT (複数
+セグメント) 受信まで完走を確認。
+
+- Pi: `~/sshtest/` (start.sh / stop.sh / sshd_config=IPQoS none / hostkey /
+  authorized_keys)。ポート 2222。root 不要・systemd 不使用・削除可。
+- 受入: `ssh.x moto@192.168.1.108 -p 2222 <command>`。
+
+### 後でやる: xip の TOS 拒否をバイトパッチ (任意)
+
+原因が TOS と特定できたので、xip が受信 IP ヘッダの TOS を見て弾いている箇所を
+patchxip.py 方式で潰せば、素の sshd:22 や任意サーバにも通せる見込み。
+
+### 開発・試験は b:pnetorig で
+
+素の xiporig.x (MSS 512) を使う b:pnetorig に統一 (lead 方針)。リセット手順は同じ。
