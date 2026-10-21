@@ -182,3 +182,6 @@ static void pow2523_fast(gf o, const gf z) /* o = z^(2^252-3) */
   sqn(t1, t1, 50);  M_fast(t0, t1, t0);   /* 2^250-1 */
   sqn(t0, t0, 2);   M_fast(o, t0, z);     /* 2^252-3 */
 }
+
+/* 固定基点 comb scalarbase (M_fast/S_fast の後で) */
+#include "comb.h"

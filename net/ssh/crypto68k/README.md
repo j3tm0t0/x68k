@@ -20,25 +20,26 @@ X25519 scalarmult 1 回:
 | + 68000 asm comba 乗算 (`mul68k.s`) | 10 s | 12x |
 | **+ 逆元/√ を加算鎖に (254S+252M → 254S+11M)** | **9.1 s** | **13x** |
 
-操作別 (asm 版、`tests/bench_ops.c`):
+操作別 (asm 版、`tests/bench_ops.c`。固定基点 comb 後):
 
 | 操作 | 時間 | 構成 |
 |---|---|---|
 | X25519 shared (scalarmult) | 9.1 s | Montgomery ラダー 255 段 |
-| X25519 keygen (base=9) | 9.0 s | 同上 (固定基点だが汎用ラダー) |
-| Ed25519 sign | 19 s | Edwards scalarbase + SHA-512 |
-| **Ed25519 verify** | **37 s** | Edwards scalarmult 2 本 + √ + 逆元 |
+| **X25519 keygen** (base=9) | **2.7 s** | Edwards comb + Montgomery 写像 u=(1+y)/(1-y) |
+| **Ed25519 sign** | **3.3 s** | 固定基点 comb で [r]B + SHA-512 |
+| **Ed25519 verify** | **21 s** | comb で [S]B + 汎用 scalarmult で [h]A + √ + 逆元 |
 
-MULU だけで scalarmult 1 回の理論下限が ~3 s。10MHz でハンドシェイク (keygen+shared+verify ≈
-55 s) は、Z 実機 (XEiJ SUPER の 2〜3 倍遅い) で ~130〜160 s → OpenSSH の 120 s LoginGraceTime に
-ぎりぎり届かない。**あと ~2 倍**には固定基点の事前計算が要る (下記)。
+クライアントのハンドシェイク (keygen + shared + verify + sign、publickey 認証まで) =
+2.7+9.1+21.4+3.3 = **36.5 s** (XEiJ SUPER)。Z 実機 (2〜3 倍遅い) で ~91〜110 s → OpenSSH の
+**120 s LoginGraceTime に収まる**。固定基点 comb 前は 74 s (Z で 185 s 超)。keygen も comb+写像で 9→2.7 s。
 
-## 残りの最適化 (未実装、効果の大きい順)
-- **固定基点テーブル (comb/窓) で Ed25519 の `scalarbase`**: sign と verify の [S]B はベース B が固定なので
-  倍数表を前計算すれば倍加を大幅に省ける (4〜8 倍)。verify を ~37 s → 20 s 台、sign を ~19 s → ~5 s に。
-  ハンドシェイクが Z 実機で 120 s を切る見込み。表は符号付き窓で小さく保つ。
-- **Straus の 2 重スカラー**: verify の [S]B − [h]A を 1 本のラダーで (倍加を共有)。
-- **comba のアキュムレート最適化** (演算子スキャン・レジスタ常駐): M を 10MHz で ~5〜6 s へ。
+固定基点 comb (`comb.h` + `basetable.h`): Ed25519 の `scalarbase` を ref10 式の符号付き 4bit 窓 ×64 と
+B の倍数の事前計算表 (32×8 点、~25KB) で、mixed-add 64 回 + 倍加 4 回に (元は倍加 256 + 加算 256)。
+sign/verify の [k]B に効く。表は `gen_basetable.py` で生成。
+
+## 残りの最適化 (未実装)
+- **Straus の 2 重スカラー**: verify の可変側 [h]A に窓/NAF を入れて ~1.3 倍。
+- **comba のアキュムレート最適化**: M を 10MHz で ~5〜6 s へ。
 いずれも同じ検証 (cryptography 差分 + asm は Unicorn) で進められる。
 
 ## 中身

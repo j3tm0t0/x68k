@@ -216,6 +216,19 @@ void dropbear_curve25519_scalarmult(u8 *q,const u8 *n,const u8 *p)
   FOR(i,31) z[i]=n[i];
   z[31]=(n[31]&127)|64;
   z[0]&=248;
+#ifdef FAST_FIELD
+  { int _i, _isbase = (p[0]==9); gf _P[4],_nn,_dd;
+    for(_i=1;_i<32;_i++) _isbase &= (p[_i]==0);
+    if (_isbase) {                 /* keygen: [z]*9 を Edwards comb + Montgomery 写像で */
+      scalarbase_fast(_P, z);
+      A(_nn,_P[2],_P[1]);          /* Z+Y */
+      Z(_dd,_P[2],_P[1]);          /* Z-Y */
+      inv25519(_dd,_dd);
+      M(_nn,_nn,_dd);              /* u=(1+y)/(1-y)=(Z+Y)/(Z-Y) */
+      pack25519(q,_nn);
+      return;
+    } }
+#endif
   unpack25519(x,p);
   FOR(i,16) {
     b[i]=x[i];
@@ -329,6 +342,10 @@ sv scalarmult(gf p[4],gf q[4],const u8 *s)
 
 sv scalarbase(gf p[4],const u8 *s)
 {
+#ifdef FAST_FIELD
+  scalarbase_fast(p,s);
+  return;
+#endif
   gf q[4];
   set25519(q[0],X);
   set25519(q[1],Y);
