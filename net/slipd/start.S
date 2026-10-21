@@ -41,11 +41,20 @@ prof_vdisp:
  * ほかの SCSI の呼び出し (B: の scsiremote.sys など) を、その命令が終わるまで待たせる。ROM の読み書きの入口は
  * メールボックスが使用中かどうかを見ずに書き換えるので、待たせないと互いの命令を壊す。
  * ROM を呼んでいる間は scsi_inrom を数え、slipd.x はそれが 0 のときだけ命令を出す */
-    .global scsi_hook, scsi_inrom, scsi_old
+    .global scsi_hook, scsi_inrom, scsi_old, scsi_zown
 scsi_hook:
     addq.w  #1,scsi_inrom
 1:  tst.b   0xea0060
     bmi.s   1b
+    /* slipd.x の命令が終わったまま段階 (+1) が 4 で残っていると、ROM の段階ごとの呼び出し (選択など) が
+       失敗する。slipd.x に代わって 0 に戻す (状態は捨てる。slipd.x は成功とみなす) */
+    move.w  %sr,%sp@-
+    ori.w   #0x0700,%sr
+    tst.b   scsi_zown
+    beq.s   3f
+    clr.b   0xea0061
+    clr.b   scsi_zown
+3:  move.w  %sp@+,%sr
     pea     2f
     move.l  scsi_old,%sp@-
     rts
@@ -66,6 +75,7 @@ zprof:
     .global mem_ptr, prg_end, cmd_line
 scsi_old:   .long 0
 scsi_inrom: .short 0
+scsi_zown:  .byte 0
     .even
 mem_ptr:  .long 0
 prg_end:  .long 0
