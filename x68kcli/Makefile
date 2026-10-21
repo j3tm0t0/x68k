@@ -23,6 +23,8 @@ XIPTIMER ?= 1
 # XIPLOCK: fix なら xip.x の名前付きロックを速くし、競合を直した版に替える (harness/xiptest、patchxip.py --lockfix)。
 #   Z の npd で 40〜45 → 45〜47KB/s、20 分 44MB で失敗 0。空にすると元のロックのまま
 XIPLOCK ?= fix
+# XIPYIELD: 1 なら xip.x のスレッドが 1 周に 2 回 CPU を譲っていたのを 1 回にする (patchxip.py --yield、Z の npd で +12%)
+XIPYIELD ?= 1
 
 .PHONY: all tools fetch stage image run agent ls clean distclean
 
@@ -36,7 +38,7 @@ fetch:            ## sources.txt のアーカイブを dl/ に取得 (sha256 検
 
 stage: tools fetch      ## アーカイブを展開して stage/ を作る (elf2x68k があれば sed/grep もクロスビルド)
 	scripts/xbuild.sh
-	PROFILE=$(PROFILE) KEYMAP=$(KEYMAP) NET=$(NET) NETSPEED=$(NETSPEED) NETZIP=$(NETZIP) HOMEDIR=$(HOMEDIR) XIPMSS=$(XIPMSS) XIPTIMER=$(XIPTIMER) XIPLOCK=$(XIPLOCK) scripts/stage.sh
+	PROFILE=$(PROFILE) KEYMAP=$(KEYMAP) NET=$(NET) NETSPEED=$(NETSPEED) NETZIP=$(NETZIP) HOMEDIR=$(HOMEDIR) XIPMSS=$(XIPMSS) XIPTIMER=$(XIPTIMER) XIPLOCK=$(XIPLOCK) XIPYIELD=$(XIPYIELD) scripts/stage.sh
 
 image: tools stage ## $(IMG) を生成
 	IMG=$(IMG) SIZE_MB=$(SIZE_MB) scripts/build.sh
