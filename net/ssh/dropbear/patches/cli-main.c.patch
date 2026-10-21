@@ -1,0 +1,21 @@
+--- dropbear-2022.83/cli-main.c	2022-11-14 23:30:00
++++ stripped/cli-main.c	2026-10-22 02:41:48
+@@ -88,10 +88,18 @@
+ 	} else
+ #endif
+ 	{
++#if DROPBEAR_X68K
++		/* xip は非ブロッキング connect が不可。同期 connect して接続済み fd を渡す */
++		extern int x68k_connect(const char*, const char*);
++		sock_in = sock_out = x68k_connect(cli_opts.remotehost, cli_opts.remoteport);
++		if (sock_in < 0) dropbear_exit("x68k connect failed");
++		progress = NULL;
++#else
+ 		progress = connect_remote(cli_opts.remotehost, cli_opts.remoteport,
+ 			cli_connected, &ses, cli_opts.bind_address, cli_opts.bind_port,
+ 			DROPBEAR_PRIO_LOWDELAY);
+ 		sock_in = sock_out = -1;
++#endif
+ 	}
+ 
+ 	cli_session(sock_in, sock_out, progress, proxy_cmd_pid);

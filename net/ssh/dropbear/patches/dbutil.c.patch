@@ -1,0 +1,18 @@
+--- dropbear-2022.83/dbutil.c	2022-11-14 23:30:00
++++ xbuild/dbutil.c	2026-10-22 01:34:52
+@@ -599,6 +599,7 @@
+ }
+ 
+ void disallow_core() {
++#if !DROPBEAR_X68K
+ 	struct rlimit lim = {0};
+ 	if (getrlimit(RLIMIT_CORE, &lim) < 0) {
+ 		TRACE(("getrlimit(RLIMIT_CORE) failed"));
+@@ -607,6 +608,7 @@
+ 	if (setrlimit(RLIMIT_CORE, &lim) < 0) {
+ 		TRACE(("setrlimit(RLIMIT_CORE) failed"));
+ 	}
++#endif
+ }
+ 
+ /* Returns DROPBEAR_SUCCESS or DROPBEAR_FAILURE, with the result in *val */

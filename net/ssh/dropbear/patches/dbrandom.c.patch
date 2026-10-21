@@ -1,0 +1,35 @@
+--- dropbear-2022.83/dbrandom.c	2022-11-14 23:30:00
++++ xbuild/dbrandom.c	2026-10-22 01:41:42
+@@ -131,6 +131,9 @@
+ 
+ static void write_urandom()
+ {
++#if DROPBEAR_X68K
++	return;
++#else
+ #if DROPBEAR_FUZZ
+ 	if (fuzz.fuzzing) {
+ 		return;
+@@ -147,6 +150,7 @@
+ 	fwrite(buf, sizeof(buf), 1, f);
+ 	fclose(f);
+ #endif
++#endif
+ }
+ 
+ #if DROPBEAR_FUZZ
+@@ -247,7 +251,13 @@
+ #endif
+ 
+ 	if (!urandom_seeded) {
+-#if DROPBEAR_USE_PRNGD
++#if DROPBEAR_X68K
++		{ void x68k_get_entropy(unsigned char *, int);
++		  unsigned char eb[INIT_SEED_SIZE];
++		  x68k_get_entropy(eb, sizeof eb);
++		  sha256_process(&hs, eb, sizeof eb);
++		  urandom_seeded = 1; }
++#elif DROPBEAR_USE_PRNGD
+ 		if (process_file(&hs, DROPBEAR_PRNGD_SOCKET, INIT_SEED_SIZE, 1) 
+ 				!= DROPBEAR_SUCCESS) {
+ 			dropbear_exit("Failure reading random device %s", 
