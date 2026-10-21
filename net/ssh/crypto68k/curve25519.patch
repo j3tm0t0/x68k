@@ -1,0 +1,49 @@
+--- a/curve25519.c	2026-10-22 03:34:16
++++ b/curve25519.c	2026-10-22 03:52:12
+@@ -165,8 +165,15 @@
+   FOR(i,16) o[i]=a[i]-b[i];
+ }
+ 
++#if defined(FAST_FIELD)
++#include "field_fast.h"
++#endif
+ sv M(gf o,const gf a,const gf b)
+ {
++#if defined(FAST_FIELD)
++  M_fast(o,a,b);
++  return;
++#endif
+   i64 i,j,t[31];
+   FOR(i,31) t[i]=0;
+   FOR(i,16) FOR(j,16) t[i+j]+=a[i]*b[j];
+@@ -178,11 +185,19 @@
+ 
+ sv S(gf o,const gf a)
+ {
++#if defined(FAST_FIELD)
++  S_fast(o,a);
++  return;
++#endif
+   M(o,a,a);
+ }
+ 
+ sv inv25519(gf o,const gf i)
+ {
++#if defined(FAST_FIELD)
++  inv_fast(o,i);
++  return;
++#endif
+   gf c;
+   int a;
+   FOR(a,16) c[a]=i[a];
+@@ -196,6 +211,10 @@
+ #if DROPBEAR_ED25519 && DROPBEAR_SIGNKEY_VERIFY
+ sv pow2523(gf o,const gf i)
+ {
++#if defined(FAST_FIELD)
++  pow2523_fast(o,i);
++  return;
++#endif
+   gf c;
+   int a;
+   FOR(a,16) c[a]=i[a];

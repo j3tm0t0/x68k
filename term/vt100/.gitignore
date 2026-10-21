@@ -1,0 +1,6 @@
+*.x
+*.x.elf*
+*.o
+vthost
+tests/venv/
+tests/fixtures/*.out
