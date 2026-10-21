@@ -38,9 +38,14 @@ if [ "${NET:-slip}" = slip ]; then
   sed -i.bak 's/^DEVICE    = \\SYS\\ppp.sys/DEVICE    = \\SYS\\slip.sys/' work/CONFIG.SYS && rm -f work/CONFIG.SYS.bak
 fi
 # PROFILE=dev: RSDRV.SYS の直後に contee.sys (画面の出力を RS-232C にも流す) を組み込み、
-#   以降のドライバの組み込みメッセージや画面で止まったときの表示をシリアルで見られるようにする
+#   以降のドライバの組み込みメッセージや画面で止まったときの表示 (エラーのダイアログなど) をシリアルで見られるようにする。
+#   IOCS.X は画面出力の IOCS を自分の版に置き換えるので、contee.sys より前 (最初のドライバ) に移す。
+#   contee.sys を RSDRV.SYS より前に置くと、RSDRV.SYS が 9600bps に戻してしまい化ける
 if [ "${PROFILE:-cli}" = dev ] && [ -s build/x/contee.sys ]; then
-  awk '{print} /^DEVICE    = \\SYS\\RSDRV\.SYS/ {print "DEVICE    = \\SYS\\contee.sys"}' work/CONFIG.SYS > work/CONFIG.dev && mv work/CONFIG.dev work/CONFIG.SYS
+  awk '/^DEVICE    = \\SYS\\IOCS\.X/ {next}
+       /^DEVICE/ && !d {print "DEVICE    = \\SYS\\IOCS.X"; d = 1}
+       {print}
+       /^DEVICE    = \\SYS\\RSDRV\.SYS/ {print "DEVICE    = \\SYS\\contee.sys"}' work/CONFIG.SYS > work/CONFIG.dev && mv work/CONFIG.dev work/CONFIG.SYS
 fi
 crlf work/CONFIG.SYS        stage/CONFIG.SYS
 sed -e "s/@NETMODE@/${NET:-slip}/" -e "s/@NETSPEED@/${NETSPEED:-38400}/" -e "s|@HOMEDIR@|${HOMEDIR:-A:/home}|" templates/AUTOEXEC.BAT > work/AUTOEXEC.BAT

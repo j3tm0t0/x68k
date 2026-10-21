@@ -1,8 +1,9 @@
 /*
  * contee.sys -- 画面に出す文字 (IOCS _B_PUTC / _B_PRINT) を RS-232C にも流す (PROFILE=dev 用)
  *
- * CONFIG.SYS の先頭で組み込むと、それ以降のデバイスドライバの組み込みメッセージや、
+ * CONFIG.SYS の IOCS.X の後ろで組み込むと、それ以降のデバイスドライバの組み込みメッセージや、
  * 画面で止まったときの表示を、シリアルのログで見られる (COMMAND.X の CTTY AUX より前の分)。
+ * IOCS.X は _B_PUTC などを自分の版に置き換えるので、それより前に組み込むと途中で外れる。
  * 組み込み時に RS-232C を 38400bps 8N1 (rsspeed.x 4c09 と同じ) にする。
  */
     .text
@@ -18,6 +19,8 @@ reqheader:
 old_putc:
     .long   0
 old_print:
+    .long   0
+old_putmes:
     .long   0
 
 /* 1 文字を RS-232C に送る (d1.b)。d0/d1 以外は壊さない */
@@ -54,6 +57,21 @@ new_print:
     move.l  old_print,%sp@-
     rts
 
+/* _B_PUTMES: a1 = 文字列, d4.w = 長さ - 1 (位置を指定して描く。エラーのダイアログなど)。行ごとに改行を足す */
+new_putmes:
+    movem.l %d0-%d1/%d4/%a1,%sp@-
+1:  move.b  %a1@+,%d1
+    beq.s   2f
+    bsr.s   out1
+    dbra    %d4,1b
+2:  moveq   #13,%d1
+    bsr.s   out1
+    moveq   #10,%d1
+    bsr.s   out1
+    movem.l %sp@+,%d0-%d1/%d4/%a1
+    move.l  old_putmes,%sp@-
+    rts
+
 strategy:
     move.l  %a5,reqheader
     rts
@@ -76,6 +94,11 @@ interrupt:
     move.l  #0x80,%d0
     trap    #15
     move.l  %d0,old_print
+    move.w  #0x12f,%d1          /* _B_PUTMES */
+    lea     new_putmes,%a1
+    move.l  #0x80,%d0
+    trap    #15
+    move.l  %d0,old_putmes
     pea     title
     .short  0xff09              /* DOS _PRINT */
     addq.l  #4,%sp
