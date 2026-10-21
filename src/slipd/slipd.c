@@ -150,13 +150,13 @@ static void thread(void)
  * 1 回の交換で、要求 (見出し 16 バイト + 送信データ) を ZWLBA に書き、応答 (見出し + 受信データ) を ZRLBA 帯から読む。
  * 応答を読む位置は毎回 8 ずつ下げる (X68000 Z 側でディスクの読み込みがキャッシュされるため。scsiremote.sys と同じ方法) */
 #define ZID     6
-#define ZWLBA   0x1000
+#define ZWLBA   0x100000
 /* 応答を読む帯。Z 側の Linux は読み込みをキャッシュするので、帯が狭いと一巡したところで古い応答が返り、
    それきり交換できなくなった (0x80000 セクタの帯で 65536 回 = 20ms 間隔で約 22 分、2026-10-21)。
-   約 1GB (0x2000～0x1ffff7) を回る (ファームの NETPIPE_RLBA / NETPIPE_REND と同じ)。
-   ID6 を 2GB より大きくすると Z が起動しなくなり、0x200000 以降は scsiremote.sys が使うので、これ以上は広げられない */
-#define ZRLBA   0x2000
-#define ZRSPAN  0x1fe000
+   約 480MB (0x110000～0x1ffff7) を回る (ファームの NETPIPE_RLBA / NETPIPE_REND と同じ)。
+   0x200000 以降は scsiremote.sys が使う */
+#define ZRLBA   0x110000
+#define ZRSPAN  0xf0000
 #define ZSECTS  8
 #define ZDATA   (ZSECTS * 512 - 16)
 #define ZMAGIC  0x58364e50              /* "X6NP" */

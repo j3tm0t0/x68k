@@ -17,7 +17,7 @@
  * sockstate() / socklen() をポーリングしながら _dos_change_pr() で CPU を譲る。
  *
  *   usage: rcmd.x [-p port] [-s shell] [-d] [-v] [-B]   (default: -p 2323 -s zsh.x)
- *          -d: 接続ごとの状態を表示  -v: 実行したコマンドの出力を X68000 の画面にも表示
+ *          -d: 接続ごとの状態を表示  -v: 実行したコマンドの出力をコンソールにも表示
  *   build: gcc rcmd.c -o rcmd.x -lnetwork   (xip.x / inetd.x 常駐中に実行する)
  *
  * Raspberry Pi 側: templates/raspi/x68.sh 'ls -l'
@@ -214,6 +214,10 @@ int main(int argc, char **argv)
   char *tmp;
   int ls, i;
   static char line[1024], mark[64];
+
+  /* コンソールが RS-232C (CTTY AUX) のとき、標準出力はバッファされ、rcmd.x が終わるまで何も出なかった。
+     受け取ったコマンドや -v の出力をその場で見られるよう、バッファしない */
+  setvbuf(stdout, NULL, _IONBF, 0);
 
   for (i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "-p") && i + 1 < argc)
