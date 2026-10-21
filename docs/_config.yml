@@ -3,3 +3,4 @@ description: X68000 / X68000 Z のハック
 lang: ja
 theme: minima
 permalink: /:year/:month/:day/:title/
+show_excerpts: true   # トップページの一覧に各記事の最初の段落を出す (minima)
