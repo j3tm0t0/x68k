@@ -1,7 +1,7 @@
 /*
  * rcmd.x -- X68000 remote command server (ESP/X socket library)
  *
- * TCP で接続を受け、1 行受け取ったコマンドを zsh.x -c で実行し、
+ * TCP で接続を受け、1 行受け取ったコマンドを zsh.x -c (-s command.x なら command.x /c) で実行し、
  * 標準出力・標準エラー出力をそのまま送り返す。1 接続 1 コマンド。
  * 出力の最後に "--rcmd-end rc=<終了コード>--" の行を付ける。
  * "exit" を受け取るか、X68000 側で ESC キーを押すとサーバを終了する。
@@ -84,7 +84,20 @@ static int open_listener(int port)
   return ls;
 }
 
-/* cmd を shell -c で実行し、出力を tmpout に落とす。戻り値は終了コード */
+/* shell が COMMAND.X なら 1。COMMAND.X は -c を受け付けず、/c で 1 行実行して終わる */
+static int is_command_x(const char *shell)
+{
+  const char *b = shell, *p, *w = "command.x";
+  for (p = shell; *p; p++)
+    if (*p == '\\' || *p == '/' || *p == ':')
+      b = p + 1;
+  for (; *b && *w; b++, w++)
+    if ((*b | 0x20) != *w)
+      return 0;
+  return *b == 0 && (*w == 0 || *w == '.');
+}
+
+/* cmd を shell -c (COMMAND.X なら /c) で実行し、出力を tmpout に落とす。戻り値は終了コード */
 static int run_command(char *shell, char *cmd)
 {
   int fd, so, se, rc;
@@ -97,7 +110,28 @@ static int run_command(char *shell, char *cmd)
   dup2(fd, 1);
   dup2(fd, 2);
   close(fd);
-  rc = spawnlp(P_WAIT, shell, shell, "-c", cmd, (char *)0);
+  if (is_command_x(shell)) {
+    /* spawn は空白を含む引数を "" で囲むらしく、"/c" と "echo hello" を渡すと COMMAND.X が何もしなかった。
+       空白で区切って 1 語ずつ渡す (COMMAND.X が空白でつなぎ直す) */
+    static char buf[1024];
+    char *av[64], *p = buf;
+    int ac = 0;
+    strncpy(buf, cmd, sizeof buf - 1);
+    av[ac++] = shell;
+    av[ac++] = "/c";
+    while (*p && ac < 63) {
+      while (*p == ' ')
+        *p++ = 0;
+      if (!*p)
+        break;
+      av[ac++] = p;
+      while (*p && *p != ' ')
+        p++;
+    }
+    av[ac] = 0;
+    rc = spawnvp(P_WAIT, shell, av);
+  } else
+    rc = spawnlp(P_WAIT, shell, shell, "-c", cmd, (char *)0);
   dup2(so, 1);
   dup2(se, 2);
   close(so);
