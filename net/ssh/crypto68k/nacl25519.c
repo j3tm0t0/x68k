@@ -326,6 +326,10 @@ sv pack(u8 *r,gf p[4])
 
 sv scalarmult(gf p[4],gf q[4],const u8 *s)
 {
+#ifdef FAST_FIELD
+  scalarmult_fast(p,q,s);
+  return;
+#endif
   int i;
   set25519(p[0],gf0);
   set25519(p[1],gf1);

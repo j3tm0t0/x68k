@@ -1,5 +1,5 @@
 --- a/curve25519.c	2026-10-22 03:34:16
-+++ b/curve25519.c	2026-10-22 04:04:27
++++ b/curve25519.c	2026-10-22 04:18:18
 @@ -165,8 +165,15 @@
    FOR(i,16) o[i]=a[i]-b[i];
  }
@@ -63,7 +63,18 @@
    unpack25519(x,p);
    FOR(i,16) {
      b[i]=x[i];
-@@ -329,6 +357,10 @@
+@@ -313,6 +341,10 @@
+ 
+ sv scalarmult(gf p[4],gf q[4],const u8 *s)
+ {
++#if defined(FAST_FIELD)
++  scalarmult_fast(p,q,s);
++  return;
++#endif
+   int i;
+   set25519(p[0],gf0);
+   set25519(p[1],gf1);
+@@ -329,6 +361,10 @@
  
  sv scalarbase(gf p[4],const u8 *s)
  {
