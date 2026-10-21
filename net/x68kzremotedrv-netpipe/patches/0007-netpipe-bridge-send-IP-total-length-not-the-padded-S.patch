@@ -1,8 +1,8 @@
 From d3127979c97a3769daa673405072c41190fcb70a Mon Sep 17 00:00:00 2001
 From: moto <j3tm0t0@gmail.com>
 Date: Wed, 21 Oct 2026 10:31:33 +0900
-Subject: [PATCH 7/9] netpipe bridge: send IP total length, not the padded SLIP
- frame
+Subject: [PATCH 07/10] netpipe bridge: send IP total length, not the padded
+ SLIP frame
 
 xip.x pads frames to the 60-byte Ethernet minimum and slip.sys sends the
 padding, so small packets such as SYN-ACKs were longer than their IP total

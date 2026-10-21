@@ -1,7 +1,7 @@
 From 27f10b5907d3b0a0b3e6fa8738120a4447e1317d Mon Sep 17 00:00:00 2001
 From: moto <j3tm0t0@gmail.com>
 Date: Wed, 21 Oct 2026 18:20:11 +0900
-Subject: [PATCH 9/9] netpipe: record framing (X6NR) in bridge mode; retry
+Subject: [PATCH 09/10] netpipe: record framing (X6NR) in bridge mode; retry
  Wi-Fi/SMB2 at boot
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

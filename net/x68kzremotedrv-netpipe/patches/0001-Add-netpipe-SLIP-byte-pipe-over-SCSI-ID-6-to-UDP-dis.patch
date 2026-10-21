@@ -1,7 +1,7 @@
 From 2601bffc7f31b3f6795dbf383728e92b08871949 Mon Sep 17 00:00:00 2001
 From: moto <j3tm0t0@gmail.com>
 Date: Wed, 21 Oct 2026 01:00:34 +0900
-Subject: [PATCH 1/9] Add netpipe: SLIP byte pipe over SCSI ID 6 to UDP;
+Subject: [PATCH 01/10] Add netpipe: SLIP byte pipe over SCSI ID 6 to UDP;
  disable Wi-Fi power save
 
 ---

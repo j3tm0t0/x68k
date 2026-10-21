@@ -1,7 +1,7 @@
 From fd2033acda00c4ce6311a573f1c9d1cd0ea97a8a Mon Sep 17 00:00:00 2001
 From: moto <j3tm0t0@gmail.com>
 Date: Wed, 21 Oct 2026 10:31:56 +0900
-Subject: [PATCH 8/9] netpipe bridge: cut inbound packets at the IP total
+Subject: [PATCH 08/10] netpipe bridge: cut inbound packets at the IP total
  length
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
