@@ -15,7 +15,7 @@ dropbear の `dbclient` を X68000 (Human68k) 用にクロスビルドして `ss
 ```
 ./fetch.sh              # dropbear-2022.83.tar.bz2 を取得・検証・展開
 ./build.sh              # ssh.x を作る (素の curve25519。遅い。既定の出力は ./ssh.x)
-FAST=1 ./build.sh       # 68000 高速体演算を組み込む (scalarmult 118s->10s、~12x)
+FAST=1 ./build.sh       # 68000 高速体演算を組み込む (XEiJ 計測で scalarmult 118s->10s。Z 実機の内訳は ../PROGRESS.md)
 FAST=1 FAST_C=1 ./build.sh   # asm 無しの C 版だけ (22s)。mul68k.s 不要
 ./build.sh /path/ssh.x  # 出力先を指定
 DEBUG=1 FAST=1 ./build.sh /path/dbg.x   # 位相ごとの印 (経過秒付き) をテキスト画面に出す版
