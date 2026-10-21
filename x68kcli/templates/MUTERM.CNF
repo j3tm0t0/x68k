@@ -1,0 +1,30 @@
+* MuTERM 1.23 設定 (x68kcli)
+* RS-232C 直結で UNIX ホスト (Raspberry Pi など) のシリアルコンソールにログインする用。
+* 通信パラメータは 8bit / stop 1 / パリティなしに固定 (MuTERM の仕様)。
+* X68000 Z の UART はハードウェアフロー制御が無いので RTSCTS=0 必須。XON/XOFF は使う。
+*
+* カーソルキーを ANSI (VT100) のシーケンスで送る
+F25    = "\x1B[A"
+F26    = "\x1B[D"
+F27    = "\x1B[C"
+F28    = "\x1B[B"
+*
+* 起動時パラメータ
+BLBUF  = 64		バックログバッファ (KB)
+HIS    = 32		ヒストリライン数
+RSBUF  = 64		受信バッファ (x256 バイト)
+CRT    = 1		31kHz
+LINE   = 0		25 行
+WINDOW = 10		バックログウィンドウ行数
+CTRL   = 1		バックログの CTRL コード表示
+*
+* 通信パラメータ
+SPEED  = 38400		X68000 Z が対応する最高速。不安定なら 19200 / 9600
+XFLOW  = 1		XON/XOFF フロー制御
+RTSCTS = 0		RTS/CTS は使わない (X68000 Z 非対応、3 線結線)
+ESC    = 2		ANSI エスケープシーケンス
+KANA   = 1
+ZEN    = 1
+ECHO   = 0		エコーはホスト任せ
+BS     = 1		BS で 1 文字消す
+BREAK  = 30		BREAK キー: 300ms のブレーク信号 (agetty のボーレート切り替えに使う)

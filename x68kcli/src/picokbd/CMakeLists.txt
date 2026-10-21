@@ -1,0 +1,10 @@
+# picokbd: Pico W を Wi-Fi (UDP 6869) で操作できる USB キーボードにする
+#   PICO_SDK_PATH=... cmake -DPICO_BOARD=pico_w .. && make   (Wi-Fi は wifi.h、git に入れない)
+cmake_minimum_required(VERSION 3.13)
+include($ENV{PICO_SDK_PATH}/external/pico_sdk_import.cmake)
+project(picokbd C CXX ASM)
+pico_sdk_init()
+add_executable(picokbd main.c usb_descriptors.c)
+target_include_directories(picokbd PRIVATE ${CMAKE_CURRENT_LIST_DIR})
+target_link_libraries(picokbd pico_stdlib pico_cyw43_arch_lwip_threadsafe_background tinyusb_device tinyusb_board)
+pico_add_extra_outputs(picokbd)

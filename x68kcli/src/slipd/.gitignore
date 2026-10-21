@@ -1,0 +1,4 @@
+slipd.x
+*.o
+*.elf
+ztap.x

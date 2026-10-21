@@ -1,0 +1,8 @@
+#
+# /etc/hosts  (xip.x / ESP/X が起動時に読む)
+#
+127.0.0.1	localhost	localhost
+192.168.68.2	x68k		x68k
+192.168.68.1	raspi		raspberrypi
+192.168.69.2	x68k-xeij	x68k-xeij
+192.168.69.1	raspi-xeij	raspi-xeij

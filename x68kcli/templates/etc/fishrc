@@ -1,0 +1,7 @@
+#  /etc/fishrc -- fish 0.8 (Human68k) 共通設定
+set path=(~~ . A:/usr/bin A:/bin A:/sys A:/etc)   # ~~ は組み込みコマンドの仮想ディレクトリ (必須)
+set history=30
+set prompt='%~%% '
+set addsuffix autolist
+alias ls 'ls -F'
+alias vi 'vim.x -T builtin_x68k'

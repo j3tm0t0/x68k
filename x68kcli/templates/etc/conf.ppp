@@ -1,0 +1,50 @@
+# /etc/conf.ppp -- IIJ-PPP on Human68k Rel.5 (ppp.x) の設定 (x68kcli)
+# RS-232C 直結の Raspberry Pi (pppd) と PPP で接続する。モデムもログインも無い。
+#   接続: netup   (zsh。中身は tmsio.x / xip.x / ppp.x -dial raspi)
+#   切断: netdown (ppp.x をもう一度起動すると LCP を閉じて常駐解除する)
+# ラベル行は行頭から、コマンド行はインデントして書く。空行まででひとつのラベル。
+# 元の添付サンプルは /usr/doc/ppp/conf_ppp.org。
+
+default:
+ set debug phase
+ disable vjcomp
+ deny vjcomp
+ disable lqr
+ deny lqr
+ disable pred1
+ deny pred1
+ disable chap
+ disable pap
+ deny chap
+ deny pap
+
+# Raspberry Pi 直結 (templates/raspi/ppp-x68k.sh と対)。netup <速度> が raspi<速度> を使う
+#   set speed は ppp.x が IOCS _SET232C で設定する速度 (Pi 側の SPEED と同じにする)
+#   set ifaddr <X68000 側> <Raspberry Pi 側>
+raspi9600:
+ set openmode active
+ set speed 9600
+ set ifaddr 192.168.68.2 192.168.68.1
+
+raspi19200:
+ set openmode active
+ set speed 19200
+ set ifaddr 192.168.68.2 192.168.68.1
+
+raspi38400:
+ set openmode active
+ set speed 38400
+ set ifaddr 192.168.68.2 192.168.68.1
+
+# 旧名 (ppp.x -dial raspi)
+raspi:
+ set openmode active
+ set speed 38400
+ set ifaddr 192.168.68.2 192.168.68.1
+
+# XEiJ での試験用 (scripts/xeijppp.py が Pi 上の pppd notty に 192.168.69.1:192.168.69.2 で橋渡しする)。
+# 実機の UART 接続 (raspi:) と同時に張っても衝突しないようアドレスを分けてある
+xeij:
+ set openmode active
+ set speed 38400
+ set ifaddr 192.168.69.2 192.168.69.1

@@ -1,0 +1,7 @@
+# /etc/profile -- ksh 4.9 (Human68k) 共通設定
+PATH='A:/usr/bin:A:/bin:A:/sys:A:/etc'
+PS1='$PWD $ '
+ENVMARGIN=512
+alias ls='ls -F'
+alias vi='vim.x -T builtin_x68k'
+export PATH

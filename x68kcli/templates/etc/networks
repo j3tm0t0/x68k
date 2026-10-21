@@ -1,0 +1,6 @@
+#
+# /etc/networks  (xip.x / ESP/X が起動時に読む)
+#
+127		loopback
+192.168.68	ppp-net
+192.168.69	xeij-ppp-net
