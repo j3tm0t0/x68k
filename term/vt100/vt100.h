@@ -46,8 +46,9 @@ void vt_get_size(int *cols, int *rows);
 void vt_default_size(int *cols, int *rows);
 
 /* --- デバッグ用: 論理画面の取り出し (vtcat / ホストテスト用) --- */
-/* out[0]=文字コード, out[1]=前景色, out[2]=背景色, out[3]=フラグ (F_UNDERLINE=1, F_SPECIAL=2) */
-void vt_get_cell(int r, int c, unsigned char out[4]);
+/* cp=コードポイント, fg=前景色, bg=背景色, fl=フラグ
+ * (F_UNDERLINE=1, F_SPECIAL=2, F_WIDE=4 全角左, F_WIDECONT=8 全角右) */
+void vt_get_cell(int r, int c, unsigned short *cp, unsigned char *fg, unsigned char *bg, unsigned char *fl);
 void vt_get_cursor(int *x, int *y);
 
 #endif /* VT100_H */

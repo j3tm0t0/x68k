@@ -6,12 +6,16 @@ SRC     = vtcat.c vt100.c vtdump.c
 
 all: vtcat.x
 
-vtcat.x: $(SRC) vt100.h
+# UTF-8 -> JIS X0208 変換表 (コミット済み。genkanji.py を変えたら再生成される)
+kanjitab.h: genkanji.py
+	python3 -I genkanji.py > $@
+
+vtcat.x: $(SRC) vt100.h kanjitab.h
 	$(CC) $(CFLAGS) -o $@ $(SRC) -s
 
 # Mac 上でパーサ・スクロール・属性だけを pyte と比べる (VRAM/IOCS はスタブ)
 HOSTCC  = cc
-vthost: $(SRC) vt100.h
+vthost: $(SRC) vt100.h kanjitab.h
 	$(HOSTCC) -O2 -Wall -DVT_HOSTTEST -o $@ $(SRC)
 
 clean:

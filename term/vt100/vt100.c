@@ -34,6 +34,7 @@ unsigned char vt_host_cg[0x1000];
 #include <x68k/iocs.h>
 #endif
 #include "vt100.h"
+#include "kanjitab.h"   /* UTF-8(Unicode) -> JIS X0208 (genkanji.py 生成) */
 
 /* ---- 画面の寸法 ---- */
 #define MAXCOLS 96
@@ -54,15 +55,19 @@ unsigned char vt_host_cg[0x1000];
 #endif
 
 /* ---- セル ---- */
-/* ch: 描く文字。0x20-0x7f は ANK。flags の SPECIAL が立つと DEC 罫線グリフ表を引く。 */
+/* cp: 描くコードポイント。0x20-0x7e は ANK、それ以外は Unicode (漢字など)。UTF-8 デコーダ
+ * (utf8_feed) と描画層 (blit) を分けてあり、cp はコードポイントのまま持つ。
+ * 全角 (East Asian Width = W/F) は 2 セルを占める: 左に F_WIDE、右に F_WIDECONT (継続・描かない)。 */
 typedef struct {
-  unsigned char ch;
+  unsigned short cp;
   unsigned char fg;     /* 0..15 パレット番号 (bold / reverse 解決済み) */
   unsigned char bg;     /* 0..15 */
-  unsigned char flags;  /* bit0: 下線 */
+  unsigned char flags;  /* F_UNDERLINE | F_SPECIAL | F_WIDE | F_WIDECONT */
 } cell_t;
 #define F_UNDERLINE 0x01
-#define F_SPECIAL   0x02   /* ch を DEC 特殊グリフ表で描く */
+#define F_SPECIAL   0x02   /* cp を DEC 罫線グリフ表で描く */
+#define F_WIDE      0x04   /* 全角の左セル (16 ドット幅で描く) */
+#define F_WIDECONT  0x08   /* 全角の右セル (描かない。左が両方を描く) */
 
 static cell_t scr_main[MAXROWS][MAXCOLS];
 static cell_t scr_alt[MAXROWS][MAXCOLS];
@@ -171,34 +176,63 @@ static void palette_setup(void)
 }
 
 /* ================= グリフ描画 ================= */
-static const unsigned char *glyph_of(const cell_t *c)
+static const unsigned char *glyph_of(const cell_t *c)   /* 8x16 ANK / DEC 罫線 (16 バイト) */
 {
-  if ((c->flags & F_SPECIAL) && c->ch >= 0x60 && c->ch <= 0x7f)
-    return sg_glyph[c->ch - 0x60];
-  if (c->ch >= 0x20 && c->ch <= 0x7f)
-    return CGROM16 + (int)c->ch * 16;
+  if ((c->flags & F_SPECIAL) && c->cp >= 0x60 && c->cp <= 0x7f)
+    return sg_glyph[c->cp - 0x60];
+  if (c->cp >= 0x20 && c->cp <= 0x7e)
+    return CGROM16 + (int)c->cp * 16;
   return CGROM16 + 0x20 * 16;   /* 空白 */
 }
 
-/* 1 セルを VRAM に描く (スーパーバイザ前提) */
+/* 16x16 漢字グリフ (32 バイト = 2 バイト/行) の先頭。JIS 区点から CGROM アドレスを計算する。 */
+static const unsigned char *kanji_glyph(unsigned short jis)
+{
+#ifdef VT_HOSTTEST
+  static const unsigned char zero[32] = { 0 };
+  (void)jis; return zero;
+#else
+  int ku = (jis >> 8) - 0x20, ten = (jis & 0xff) - 0x20;
+  if (ku < 1 || ku > 94 || ten < 1 || ten > 94) return (const unsigned char *)0xF00000UL;
+  return (const unsigned char *)(0xF00000UL + (unsigned long)((ku - 1) * 94 + (ten - 1)) * 32);
+#endif
+}
+
+/* 1 セルを VRAM に描く (スーパーバイザ前提)。全角は左セルで 16 ドット幅 (2 バイト) を描く。 */
 static void blit(int col, int row, const cell_t *c)
 {
-  const unsigned char *gp = glyph_of(c);
-  int fg = c->fg, bg = c->bg, s, p;
+  int fg = c->fg, bg = c->bg, s, p, wide = 0;
   unsigned char fgm[4], bgm[4];
+  const unsigned char *gp;
+  if (c->flags & F_WIDECONT) return;   /* 右半分は左の F_WIDE セルが描く */
   for (p = 0; p < 4; p++) {
     fgm[p] = (fg >> p) & 1 ? 0xff : 0x00;
     bgm[p] = (bg >> p) & 1 ? 0xff : 0x00;
   }
+  if (c->flags & F_WIDE) {
+    unsigned short jis = ucs_to_jis(c->cp);
+    if (jis) { gp = kanji_glyph(jis); wide = 1; }
+    else gp = glyph_of(c);   /* 変換できない全角は空白相当 (put_cp 側で '?' に落とすので通常来ない) */
+  } else {
+    gp = glyph_of(c);
+  }
   for (s = 0; s < CH; s++) {
-    unsigned char g = gp[s];
-    if ((c->flags & F_UNDERLINE) && s == CH - 1) g = 0xff;
+    unsigned char g0, g1 = 0;
+    if (wide) { g0 = gp[s * 2]; g1 = gp[s * 2 + 1]; }
+    else g0 = gp[s];
+    if ((c->flags & F_UNDERLINE) && s == CH - 1) { g0 = 0xff; if (wide) g1 = 0xff; }
     {
       volatile unsigned char *v = TVRAM + (unsigned long)(row * CH + s) * VBYTES + col;
-      v[0 * PLANE] = (unsigned char)((g & fgm[0]) | (~g & bgm[0]));
-      v[1 * PLANE] = (unsigned char)((g & fgm[1]) | (~g & bgm[1]));
-      v[2 * PLANE] = (unsigned char)((g & fgm[2]) | (~g & bgm[2]));
-      v[3 * PLANE] = (unsigned char)((g & fgm[3]) | (~g & bgm[3]));
+      v[0 * PLANE] = (unsigned char)((g0 & fgm[0]) | (~g0 & bgm[0]));
+      v[1 * PLANE] = (unsigned char)((g0 & fgm[1]) | (~g0 & bgm[1]));
+      v[2 * PLANE] = (unsigned char)((g0 & fgm[2]) | (~g0 & bgm[2]));
+      v[3 * PLANE] = (unsigned char)((g0 & fgm[3]) | (~g0 & bgm[3]));
+      if (wide) {
+        v[1 + 0 * PLANE] = (unsigned char)((g1 & fgm[0]) | (~g1 & bgm[0]));
+        v[1 + 1 * PLANE] = (unsigned char)((g1 & fgm[1]) | (~g1 & bgm[1]));
+        v[1 + 2 * PLANE] = (unsigned char)((g1 & fgm[2]) | (~g1 & bgm[2]));
+        v[1 + 3 * PLANE] = (unsigned char)((g1 & fgm[3]) | (~g1 & bgm[3]));
+      }
     }
   }
 }
@@ -242,7 +276,7 @@ static void vram_move_lines(int dst_line, int src_line, int nlines)
   }
 }
 
-static void clear_cell(cell_t *c) { c->ch = 0x20; c->fg = c_fg; c->bg = c_bg; c->flags = 0; }
+static void clear_cell(cell_t *c) { c->cp = 0x20; c->fg = c_fg; c->bg = c_bg; c->flags = 0; }
 
 /* スクロール領域 [top,bot] を n 行上へ (正: 上スクロール / 負: 下スクロール) */
 static void scroll(int n)
@@ -279,7 +313,7 @@ static void flush(void)
   for (r = 0; r < ROWS; r++)
     for (c = 0; c < COLS; c++) {
       cell_t *lc = &cur[r][c], *dc = &drawn[r][c];
-      if (lc->ch != dc->ch || lc->fg != dc->fg || lc->bg != dc->bg || lc->flags != dc->flags) {
+      if (lc->cp != dc->cp || lc->fg != dc->fg || lc->bg != dc->bg || lc->flags != dc->flags) {
         blit(c, r, lc);
         *dc = *lc;
       }
@@ -298,7 +332,16 @@ static void resolve_attr(cell_t *c)
   c->flags = a_uline ? F_UNDERLINE : 0;
 }
 
-static void put_glyph(unsigned char ch, int special)
+/* 書き込みで全角ペアを割る場合、相方のセルを空白に戻す (孤立した半分を残さない) */
+static void break_pair(int r, int c)
+{
+  if (c < 0 || c >= COLS) return;
+  if ((cur[r][c].flags & F_WIDE) && c + 1 < COLS) clear_cell(&cur[r][c + 1]);
+  else if ((cur[r][c].flags & F_WIDECONT) && c - 1 >= 0) clear_cell(&cur[r][c - 1]);
+}
+
+/* コードポイントを現在位置に置く。width=1 (半角) / 2 (全角)。special で DEC 罫線グリフ。 */
+static void put_cell(unsigned short cp, int special, int width)
 {
   cell_t *c;
   if (pend_wrap) {        /* 前回末尾に置いた後の遅延折り返し */
@@ -306,14 +349,26 @@ static void put_glyph(unsigned char ch, int special)
     if (cy == bot) scroll(1); else if (cy < ROWS - 1) cy++;
     pend_wrap = 0;
   }
+  if (width == 2 && cx == COLS - 1) {   /* 全角が右端に 1 桁しか入らない: 空けて次行へ */
+    break_pair(cy, cx); clear_cell(&cur[cy][cx]);
+    cx = 0;
+    if (cy == bot) scroll(1); else if (cy < ROWS - 1) cy++;
+  }
+  break_pair(cy, cx);
   c = &cur[cy][cx];
-  c->ch = ch;
+  c->cp = cp;
   resolve_attr(c);
   if (special) c->flags |= F_SPECIAL;
-  if (cx == COLS - 1) {
-    if (decawm) pend_wrap = 1;   /* 折り返しは次の文字まで遅延 */
+  if (width == 2) {
+    c->flags |= F_WIDE;
+    break_pair(cy, cx + 1);
+    c = &cur[cy][cx + 1];
+    c->cp = 0x20; resolve_attr(c); c->flags |= F_WIDECONT;
+    if (cx + 1 == COLS - 1) { if (decawm) pend_wrap = 1; }
+    else cx += 2;
   } else {
-    cx++;
+    if (cx == COLS - 1) { if (decawm) pend_wrap = 1; }
+    else cx++;
   }
 }
 
@@ -580,9 +635,9 @@ static int is_wide(long cp)
 static void put_cp(long cp)
 {
   int special = g_special[gl];
-  if (cp >= 0x20 && cp < 0x7f) { put_glyph((unsigned char)cp, special); return; }
+  if (cp >= 0x20 && cp < 0x7f) { put_cell((unsigned short)cp, special, 1); return; }
   if (cp == 0x7f) return;
-  if (cp >= 0x2500 && cp <= 0x257f) {   /* Unicode 罫線 → DEC 特殊グリフに寄せる */
+  if (cp >= 0x2500 && cp <= 0x257f) {   /* Unicode 罫線 → DEC 特殊グリフに寄せる (半角) */
     unsigned char m = 0;
     switch (cp) {
       case 0x2500: case 0x2501: m = 0x71; break;  /* ─ */
@@ -598,13 +653,17 @@ static void put_cp(long cp)
       case 0x253c: case 0x254b: m = 0x6e; break;  /* ┼ */
       default: m = 0; break;
     }
-    if (m) { put_glyph(m, 1); return; }
-    put_glyph('+', 0); return;
+    if (m) { put_cell(m, 1, 1); return; }
+    put_cell('+', 0, 1); return;
   }
-  if (cp == 0x2592) { put_glyph(0x61, 1); return; }   /* ▒ */
-  /* その他は '?' (全角相当は 2 セル使って桁をずらさない) */
-  put_glyph('?', 0);
-  if (is_wide(cp)) put_glyph('?', 0);
+  if (cp == 0x2592) { put_cell(0x61, 1, 1); return; }   /* ▒ */
+  if (is_wide(cp)) {
+    unsigned short jis = ucs_to_jis(cp);
+    if (jis) put_cell((unsigned short)cp, 0, 2);   /* 全角: CGROM 16x16 漢字 */
+    else { put_cell('?', 0, 1); put_cell('?', 0, 1); }  /* 変換不能な全角は '??' で桁を保つ */
+    return;
+  }
+  put_cell('?', 0, 1);   /* 半角の未対応文字 */
 }
 
 void vt_write(const unsigned char *p, int n)
@@ -623,7 +682,7 @@ void vt_write(const unsigned char *p, int n)
         break;
       case S_ESC: do_esc(b); break;
       case S_ESC_INT: /* '#' の次 */
-        if (b == '8') { int r, c; for (r = 0; r < ROWS; r++) for (c = 0; c < COLS; c++) { cur[r][c].ch = 'E'; resolve_attr(&cur[r][c]); } }
+        if (b == '8') { int r, c; for (r = 0; r < ROWS; r++) for (c = 0; c < COLS; c++) { cur[r][c].cp = 'E'; resolve_attr(&cur[r][c]); } }
         state = S_GROUND; break;
       case S_CHARSET:
         g_special[cs_which] = (b == '0');   /* '0'=DEC 特殊, 'B'/'A' などは ASCII */
@@ -731,10 +790,13 @@ int vt_key(unsigned char *out, int max)
 }
 
 /* ================= デバッグ用 (vtcat がスナップショットを取るため) ================= */
-/* 論理画面の 1 セルを取り出す。out[0]=ch, out[1]=fg, out[2]=bg, out[3]=flags。 */
-void vt_get_cell(int r, int c, unsigned char out[4])
+/* 論理画面の 1 セルを取り出す。cp=コードポイント, fg/bg=色, fl=フラグ。 */
+void vt_get_cell(int r, int c, unsigned short *cp, unsigned char *fg, unsigned char *bg, unsigned char *fl)
 {
-  if (r < 0 || r >= ROWS || c < 0 || c >= COLS) { out[0] = ' '; out[1] = 7; out[2] = 0; out[3] = 0; return; }
-  out[0] = cur[r][c].ch; out[1] = cur[r][c].fg; out[2] = cur[r][c].bg; out[3] = cur[r][c].flags;
+  if (r < 0 || r >= ROWS || c < 0 || c >= COLS) { if (cp) *cp = ' '; if (fg) *fg = 7; if (bg) *bg = 0; if (fl) *fl = 0; return; }
+  if (cp) *cp = cur[r][c].cp;
+  if (fg) *fg = cur[r][c].fg;
+  if (bg) *bg = cur[r][c].bg;
+  if (fl) *fl = cur[r][c].flags;
 }
 void vt_get_cursor(int *x, int *y) { if (x) *x = cx; if (y) *y = cy; }

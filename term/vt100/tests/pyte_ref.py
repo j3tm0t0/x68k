@@ -12,5 +12,6 @@ stream = pyte.ByteStream(screen)
 stream.feed(data)
 with open(outfile, "w", encoding="utf-8") as f:
     for line in screen.display:
-        # pyte は COLS 幅に空白詰めして返す
-        f.write(line[:cols].ljust(cols) + "\n")
+        # pyte の display は各列セルの文字を連ねたもの (全角の継続セルは空文字、空白セルは ' ')。
+        # 全角があると行の文字数は列数より短くなる。vtdump.c の出力と同じ形なのでそのまま書く。
+        f.write(line + "\n")

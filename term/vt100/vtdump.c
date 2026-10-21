@@ -35,17 +35,19 @@ static void put_utf8(FILE *f, long cp)
   else { fputc(0xe0 | (cp >> 12), f); fputc(0x80 | ((cp >> 6) & 0x3f), f); fputc(0x80 | (cp & 0x3f), f); }
 }
 
-/* 画面の文字だけを COLS x ROWS で書き出す */
+/* 画面の文字を COLS x ROWS で書き出す。全角の継続セル (F_WIDECONT) は出さない
+ * (pyte の display と合わせる: 全角は 1 文字 + 空の右セルで、文字列長はセル数より短くなる)。 */
 void vt_dump_text(FILE *f, int cols, int rows)
 {
   int r, c;
   for (r = 0; r < rows; r++) {
     for (c = 0; c < cols; c++) {
-      unsigned char cell[4];
+      unsigned short cpv; unsigned char fg, bg, fl;
       long cp;
-      vt_get_cell(r, c, cell);
-      if (cell[3] & 2) cp = special_to_cp(cell[0]);  /* F_SPECIAL */
-      else cp = cell[0];
+      vt_get_cell(r, c, &cpv, &fg, &bg, &fl);
+      if (fl & 8) continue;                                /* F_WIDECONT: 右半分は出さない */
+      if (fl & 2) cp = special_to_cp((unsigned char)cpv);  /* F_SPECIAL */
+      else cp = cpv;
       if (cp < 0x20) cp = ' ';
       put_utf8(f, cp);
     }
@@ -59,9 +61,9 @@ void vt_dump_attr(FILE *f, int cols, int rows)
   int r, c;
   for (r = 0; r < rows; r++) {
     for (c = 0; c < cols; c++) {
-      unsigned char cell[4];
-      vt_get_cell(r, c, cell);
-      fprintf(f, "%x,%x,%x ", cell[1], cell[2], cell[3]);
+      unsigned short cpv; unsigned char fg, bg, fl;
+      vt_get_cell(r, c, &cpv, &fg, &bg, &fl);
+      fprintf(f, "%x,%x,%x ", fg, bg, fl);
     }
     fputc('\n', f);
   }
