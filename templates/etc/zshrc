@@ -43,6 +43,11 @@ function cc {
 #     ドライバの既定は標準の RSDRV.SYS + IOCS _SET232C (rsspeed.x)。X68000 Z は IOCS 経由の設定だけ UART に効く
 #     tmsio / bsio は PPP のときだけ。tmsio.x は Z では UART の速度が SRAM の既定値のままになり、
 #     bsio.x は RTS/CTS 固定 (3 線接続では未検証)
+#   netup pico : Pico W (x68kzremotedrv の netpipe ファーム) の SCSI ID 6 越しに Pi の slipudp.py と SLIP でつなぐ
+#                (Pi 側は MODE=pico。アドレスはシリアルの SLIP と同じ 192.168.68.2 <-> .1、Pi で NAT)
+#   netup bridge [IP] : Pico W が IP (既定 $NETZIP) を代わりに名乗り、Z を LAN 上の 1 台にする (Pi も NAT も不要)。
+#                ルーターは $NETGW (既定 192.168.1.1)、DNS は $NETDNS (既定は $NETGW)。IP は DHCP の範囲外を使う
+#     pico / bridge と RS-232C の切り替え、bridge の IP の変更は再起動が要る (slipd.x のスレッドが最初の設定のまま残る)
 #   netdown : PPP 切断・常駐解除 (PPP のとき) → xip.x -r
 #   ppp.x の速度は /etc/conf.ppp の raspi<速度> ラベル (raspi9600 / raspi19200 / raspi38400) で合わせる
 function x68build {   # x68build <name> : /usr/src/<name> を make して /usr/bin に入れる (無ければ)
@@ -53,6 +58,28 @@ function x68build {   # x68build <name> : /usr/src/<name> を make して /usr/b
 function netup {
   local speed=${1:-$NETSPEED} drv=$2
   [ -z "$speed" ] && speed=38400
+  if [ "$1" = pico ] || [ "$1" = bridge ]; then
+    local my peer dns
+    if [ "$1" = bridge ]; then
+      my=${2:-$NETZIP} peer=${NETGW:-192.168.1.1}
+      dns=${NETDNS:-$peer}
+      [ -z "$my" ] && { echo "netup: bridge には IP が要る (netup bridge 192.168.1.68、または NETZIP=)"; return 1; }
+    else
+      my=192.168.68.2 peer=192.168.68.1 dns=8.8.8.8
+    fi
+    [ -n "$NETUP_DONE" ] && xip.x -r >nul 2>&1
+    xip.x -w ${NETWIN:-4096} -n ${NETNICE:-2} || return 1
+    ifconfig.x lp0 up
+    ifconfig.x ep0 up $my
+    ifconfig.x ep0 netmask 128.0.0.0
+    inetdconf.x +router $peer
+    ifconfig.x ep0 netmask 255.255.255.255
+    inetdconf.x +dns $dns
+    if [ "$1" = bridge ]; then slipd.x -z $my; else slipd.x -z; fi
+    NETUP_DONE=1
+    echo "netup: $1  $my (router $peer)"
+    return 0
+  fi
   if [ "$NETMODE" = slip ]; then
     [ -n "$NETUP_DONE" ] && xip.x -r >nul 2>&1
     x68build rsspeed
