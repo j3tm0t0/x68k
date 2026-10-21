@@ -3,6 +3,9 @@
 X68000 / X68000 Z 用の SSH クライアント。Z から Linux ホストへ `ssh` して
 コマンドを実行することを目指す (例: `ssh.x moto@192.168.1.108 uname -a`)。
 
+クライアント本体 (dropbear 移植) は [dropbear/](dropbear) にある。
+この階層 (tcptest*.c) は libsocket の下地確認と xip の挙動調査の記録。
+
 TCP/IP は ESP/X の xip.x (常駐スタック)。ソケットは **elf2x68k 同梱の
 `libsocket.a`** を使う。これは xip.x / inetd.x を `__sock_search_ti_entry`
 で見つけて BSD ソケット API (`socket`/`connect`/`recv`/`send`/`poll`/
