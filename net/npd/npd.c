@@ -103,6 +103,7 @@ static int zidle = ZIDLE;
 static struct { char tag[8]; uint32_t xchg, retry, err, drops; } zstat = { "SLPDZSTA" };
 /* 交換の失敗の内訳 (書き込み, 読み込み, 古い応答ばかり, 長さが変, 残りのセクタの読み込み) */
 static struct { char tag[8]; uint32_t wr, rd, stale, len, rd2; } zerr = { "SLPDZERR" };
+static uint32_t zstat_tos;              /* TOS を 0 にしたパケットの数 */
 /* 調査用のトレース (交換ごとに 時刻 1/100 秒, 送信バイト, 受信バイト, 渡したパケット数)。"SLPDTRAC" の後ろ: 位置, 記録 256 件 */
 #define ZTRACE  256
 static struct { char tag[8]; uint32_t pos; struct { int32_t t; uint16_t tx, rx; uint16_t pk, pad; } e[ZTRACE]; } ztrace = { "SLPDTRAC" };
@@ -233,6 +234,21 @@ static void rec_in(uint8_t *s, int n)
       break;
     if (len >= 20 && (ip[0] >> 4) == 4 && (ip[0] & 15) >= 5 && ((ip[2] << 8) | ip[3]) == len) {
       long arg[2];
+      if (ip[1]) {
+        /* xip.x は TOS (DSCP) が 0 でない TCP のデータに RST を返して捨てる (KA9Q NOS 由来)。OpenSSH の sshd は
+           IPQoS でデータに TOS 0xB8 を付けるので、接続はできても最初のデータで切られた。渡す前に 0 にし、
+           IP ヘッダのチェックサムを差分で直す (RFC 1624。TCP のチェックサムに TOS は入らない) */
+        uint32_t c = (uint16_t)~((ip[10] << 8) | ip[11]);
+        c += (uint16_t)~((ip[0] << 8) | ip[1]);
+        c += ip[0] << 8;
+        c = (c & 0xffff) + (c >> 16);
+        c = (c & 0xffff) + (c >> 16);
+        c = (uint16_t)~c;
+        ip[1] = 0;
+        ip[10] = c >> 8;
+        ip[11] = c;
+        zstat_tos++;
+      }
       arg[0] = len;
       arg[1] = (long)(s + 2);
       tap('R', ip, len);
