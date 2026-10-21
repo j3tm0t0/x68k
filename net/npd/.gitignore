@@ -1,0 +1,4 @@
+*.o
+*.elf
+npd.sys
+npd.x
