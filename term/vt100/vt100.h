@@ -47,8 +47,9 @@ void vt_default_size(int *cols, int *rows);
 
 /* --- デバッグ用: 論理画面の取り出し (vtcat / ホストテスト用) --- */
 /* cp=コードポイント, fg=前景色, bg=背景色, fl=フラグ
- * (F_UNDERLINE=1, F_SPECIAL=2, F_WIDE=4 全角左, F_WIDECONT=8 全角右) */
+ * (F_UNDERLINE=1, F_SPECIAL=2, F_WIDE=4 全角左, F_WIDECONT=8 全角右, F_EMOJI=16 絵文字) */
 void vt_get_cell(int r, int c, unsigned short *cp, unsigned char *fg, unsigned char *bg, unsigned char *fl);
 void vt_get_cursor(int *x, int *y);
+unsigned long vt_emoji_cp(int idx);   /* F_EMOJI セルの cp (インデックス) -> Unicode コードポイント */
 
 #endif /* VT100_H */

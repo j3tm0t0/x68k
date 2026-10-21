@@ -35,6 +35,7 @@ unsigned char vt_host_cg[0x1000];
 #endif
 #include "vt100.h"
 #include "kanjitab.h"   /* UTF-8(Unicode) -> JIS X0208 (genkanji.py 生成) */
+#include "emojitab.h"   /* 絵文字 16x16・16色 (genemoji.py 生成、Twemoji 由来) */
 
 /* ---- 画面の寸法 ---- */
 #define MAXCOLS 96
@@ -68,6 +69,7 @@ typedef struct {
 #define F_SPECIAL   0x02   /* cp を DEC 罫線グリフ表で描く */
 #define F_WIDE      0x04   /* 全角の左セル (16 ドット幅で描く) */
 #define F_WIDECONT  0x08   /* 全角の右セル (描かない。左が両方を描く) */
+#define F_EMOJI     0x10   /* cp は絵文字表のインデックス。16x16・16色で描く (F_WIDE と併用) */
 
 static cell_t scr_main[MAXROWS][MAXCOLS];
 static cell_t scr_alt[MAXROWS][MAXCOLS];
@@ -198,6 +200,25 @@ static const unsigned char *kanji_glyph(unsigned short jis)
 #endif
 }
 
+/* 絵文字 16x16・16色 (4bpp) を 4 プレーンに直接描く (セルの fg/bg は使わず各ピクセル自身の色)。 */
+static void blit_emoji(int col, int row, int idx)
+{
+  const unsigned char *bm = emojitab[idx].bm;   /* 16 行 x 8 バイト, 2px/byte, 上位ニブル = 左 */
+  int s, p, px;
+  for (s = 0; s < 16; s++) {
+    unsigned char pl[4][2];
+    volatile unsigned char *v;
+    for (p = 0; p < 4; p++) { pl[p][0] = 0; pl[p][1] = 0; }
+    for (px = 0; px < 16; px++) {
+      unsigned char n = (px & 1) ? (bm[s * 8 + px / 2] & 0x0f) : (bm[s * 8 + px / 2] >> 4);
+      int half = px >> 3, bit = 7 - (px & 7);
+      for (p = 0; p < 4; p++) if ((n >> p) & 1) pl[p][half] |= (unsigned char)(1 << bit);
+    }
+    v = TVRAM + (unsigned long)(row * CH + s) * VBYTES + col;
+    for (p = 0; p < 4; p++) { v[p * PLANE] = pl[p][0]; v[1 + p * PLANE] = pl[p][1]; }
+  }
+}
+
 /* 1 セルを VRAM に描く (スーパーバイザ前提)。全角は左セルで 16 ドット幅 (2 バイト) を描く。 */
 static void blit(int col, int row, const cell_t *c)
 {
@@ -205,6 +226,7 @@ static void blit(int col, int row, const cell_t *c)
   unsigned char fgm[4], bgm[4];
   const unsigned char *gp;
   if (c->flags & F_WIDECONT) return;   /* 右半分は左の F_WIDE セルが描く */
+  if (c->flags & F_EMOJI) { blit_emoji(col, row, c->cp); return; }   /* cp = 絵文字インデックス */
   for (p = 0; p < 4; p++) {
     fgm[p] = (fg >> p) & 1 ? 0xff : 0x00;
     bgm[p] = (bg >> p) & 1 ? 0xff : 0x00;
@@ -340,8 +362,9 @@ static void break_pair(int r, int c)
   else if ((cur[r][c].flags & F_WIDECONT) && c - 1 >= 0) clear_cell(&cur[r][c - 1]);
 }
 
-/* コードポイントを現在位置に置く。width=1 (半角) / 2 (全角)。special で DEC 罫線グリフ。 */
-static void put_cell(unsigned short cp, int special, int width)
+/* コードポイント/インデックスを現在位置に置く。width=1 (半角) / 2 (全角)。
+ * extra は追加フラグ (F_SPECIAL = DEC 罫線 / F_EMOJI = cp は絵文字インデックス)。 */
+static void put_cell(unsigned short cp, int extra, int width)
 {
   cell_t *c;
   if (pend_wrap) {        /* 前回末尾に置いた後の遅延折り返し */
@@ -358,7 +381,7 @@ static void put_cell(unsigned short cp, int special, int width)
   c = &cur[cy][cx];
   c->cp = cp;
   resolve_attr(c);
-  if (special) c->flags |= F_SPECIAL;
+  c->flags |= extra;
   if (width == 2) {
     c->flags |= F_WIDE;
     break_pair(cy, cx + 1);
@@ -628,6 +651,7 @@ static int is_wide(long cp)
   return (cp >= 0x1100 && cp <= 0x115f) || (cp >= 0x2e80 && cp <= 0xa4cf) ||
          (cp >= 0xac00 && cp <= 0xd7a3) || (cp >= 0xf900 && cp <= 0xfaff) ||
          (cp >= 0xff00 && cp <= 0xff60) || (cp >= 0xffe0 && cp <= 0xffe6) ||
+         (cp >= 0x1f300 && cp <= 0x1faff) || (cp >= 0x1f000 && cp <= 0x1f2ff) ||
          (cp >= 0x20000 && cp <= 0x3fffd);
 }
 
@@ -635,7 +659,10 @@ static int is_wide(long cp)
 static void put_cp(long cp)
 {
   int special = g_special[gl];
-  if (cp >= 0x20 && cp < 0x7f) { put_cell((unsigned short)cp, special, 1); return; }
+  if (cp == 0xfe0f || cp == 0x200d) return;   /* 異体字セレクタ VS16 / ZWJ は無視 (幅 0) */
+  { int ei = emoji_index((unsigned long)cp);   /* 絵文字: 16x16・16色で全角 2 セル */
+    if (ei >= 0) { put_cell((unsigned short)ei, F_EMOJI, 2); return; } }
+  if (cp >= 0x20 && cp < 0x7f) { put_cell((unsigned short)cp, special ? F_SPECIAL : 0, 1); return; }
   if (cp == 0x7f) return;
   if (cp >= 0x2500 && cp <= 0x257f) {   /* Unicode 罫線 → DEC 特殊グリフに寄せる (半角) */
     unsigned char m = 0;
@@ -653,10 +680,10 @@ static void put_cp(long cp)
       case 0x253c: case 0x254b: m = 0x6e; break;  /* ┼ */
       default: m = 0; break;
     }
-    if (m) { put_cell(m, 1, 1); return; }
+    if (m) { put_cell(m, F_SPECIAL, 1); return; }
     put_cell('+', 0, 1); return;
   }
-  if (cp == 0x2592) { put_cell(0x61, 1, 1); return; }   /* ▒ */
+  if (cp == 0x2592) { put_cell(0x61, F_SPECIAL, 1); return; }   /* ▒ */
   if (is_wide(cp)) {
     unsigned short jis = ucs_to_jis(cp);
     if (jis) put_cell((unsigned short)cp, 0, 2);   /* 全角: CGROM 16x16 漢字 */
@@ -800,3 +827,5 @@ void vt_get_cell(int r, int c, unsigned short *cp, unsigned char *fg, unsigned c
   if (fl) *fl = cur[r][c].flags;
 }
 void vt_get_cursor(int *x, int *y) { if (x) *x = cx; if (y) *y = cy; }
+/* 絵文字インデックス -> 実際の Unicode コードポイント (F_EMOJI セルの cp を渡す)。 */
+unsigned long vt_emoji_cp(int idx) { return (idx >= 0 && idx < EMOJITAB_N) ? emojitab[idx].cp : '?'; }

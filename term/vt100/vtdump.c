@@ -32,7 +32,9 @@ static void put_utf8(FILE *f, long cp)
 {
   if (cp < 0x80) fputc((int)cp, f);
   else if (cp < 0x800) { fputc(0xc0 | (cp >> 6), f); fputc(0x80 | (cp & 0x3f), f); }
-  else { fputc(0xe0 | (cp >> 12), f); fputc(0x80 | ((cp >> 6) & 0x3f), f); fputc(0x80 | (cp & 0x3f), f); }
+  else if (cp < 0x10000) { fputc(0xe0 | (cp >> 12), f); fputc(0x80 | ((cp >> 6) & 0x3f), f); fputc(0x80 | (cp & 0x3f), f); }
+  else { fputc(0xf0 | (cp >> 18), f); fputc(0x80 | ((cp >> 12) & 0x3f), f);
+         fputc(0x80 | ((cp >> 6) & 0x3f), f); fputc(0x80 | (cp & 0x3f), f); }
 }
 
 /* 画面の文字を COLS x ROWS で書き出す。全角の継続セル (F_WIDECONT) は出さない
@@ -46,7 +48,8 @@ void vt_dump_text(FILE *f, int cols, int rows)
       long cp;
       vt_get_cell(r, c, &cpv, &fg, &bg, &fl);
       if (fl & 8) continue;                                /* F_WIDECONT: 右半分は出さない */
-      if (fl & 2) cp = special_to_cp((unsigned char)cpv);  /* F_SPECIAL */
+      if (fl & 16) cp = (long)vt_emoji_cp(cpv);            /* F_EMOJI: インデックス -> コードポイント */
+      else if (fl & 2) cp = special_to_cp((unsigned char)cpv);  /* F_SPECIAL */
       else cp = cpv;
       if (cp < 0x20) cp = ' ';
       put_utf8(f, cp);

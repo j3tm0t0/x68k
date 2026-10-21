@@ -10,12 +10,16 @@ all: vtcat.x
 kanjitab.h: genkanji.py
 	python3 -I genkanji.py > $@
 
-vtcat.x: $(SRC) vt100.h kanjitab.h
+# 絵文字表 emojitab.h はコミット済み (Twemoji PNG を genemoji.py で 16x16・16色に変換)。
+# 絵文字を足すときは Twemoji の <コードポイント>.png を集めて再生成する (要 Pillow):
+#   python3 genemoji.py <PNGディレクトリ> > emojitab.h
+
+vtcat.x: $(SRC) vt100.h kanjitab.h emojitab.h
 	$(CC) $(CFLAGS) -o $@ $(SRC) -s
 
 # Mac 上でパーサ・スクロール・属性だけを pyte と比べる (VRAM/IOCS はスタブ)
 HOSTCC  = cc
-vthost: $(SRC) vt100.h kanjitab.h
+vthost: $(SRC) vt100.h kanjitab.h emojitab.h
 	$(HOSTCC) -O2 -Wall -DVT_HOSTTEST -o $@ $(SRC)
 
 clean:
