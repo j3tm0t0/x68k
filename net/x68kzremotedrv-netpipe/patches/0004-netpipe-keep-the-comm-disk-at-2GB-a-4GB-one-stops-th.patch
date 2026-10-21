@@ -1,7 +1,7 @@
 From 29450942efc07203b7632fea193720d4b916bdc7 Mon Sep 17 00:00:00 2001
 From: moto <j3tm0t0@gmail.com>
 Date: Wed, 21 Oct 2026 09:24:54 +0900
-Subject: [PATCH 4/8] netpipe: keep the comm disk at 2GB; a 4GB one stops the Z
+Subject: [PATCH 4/9] netpipe: keep the comm disk at 2GB; a 4GB one stops the Z
  from booting
 
 With ID6 at 0xfffffe00 bytes the Z refused the whole disk set and showed

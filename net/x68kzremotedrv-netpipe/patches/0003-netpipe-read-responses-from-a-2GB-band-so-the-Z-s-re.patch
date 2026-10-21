@@ -1,7 +1,7 @@
 From 3d3106a96e9eae7488c5ccb87b4c6b407db244fa Mon Sep 17 00:00:00 2001
 From: moto <j3tm0t0@gmail.com>
 Date: Wed, 21 Oct 2026 07:00:22 +0900
-Subject: [PATCH 3/8] netpipe: read responses from a 2GB band so the Z's read
+Subject: [PATCH 3/9] netpipe: read responses from a 2GB band so the Z's read
  cache never serves stale ones
 
 The Z's Linux caches reads of the comm disk. The old 0x80000-sector band

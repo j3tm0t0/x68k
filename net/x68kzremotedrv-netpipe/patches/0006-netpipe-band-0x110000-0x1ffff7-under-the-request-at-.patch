@@ -1,7 +1,7 @@
 From ee135f63701a388f3c54f6fa5afb91f0309e9913 Mon Sep 17 00:00:00 2001
 From: moto <j3tm0t0@gmail.com>
 Date: Wed, 21 Oct 2026 10:25:59 +0900
-Subject: [PATCH 6/8] netpipe: band 0x110000-0x1ffff7 under the request at
+Subject: [PATCH 6/9] netpipe: band 0x110000-0x1ffff7 under the request at
  0x100000
 
 scsiremote.sys reads 0x200000-0x3fffff, so the band has to stay below it.

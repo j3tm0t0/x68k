@@ -10,6 +10,8 @@
  *         送信リングに積んですぐ戻る。slipd.x が ETD 命令 17 で 1 バイトずつ取り出して _OUT232C で書く。
  *   受信: slipd.x が _INP232C で読んで SLIP をほどき、ETD 命令 16 で渡してくるので、見出しを付けて
  *         xip.x の受信ハンドラを呼ぶ。
+ *   レコード (ETD 命令 20 で切り替え。Pico W の netpipe のブリッジ用): 送信リングに SLIP ではなく
+ *         [長さ 2][IP パケット][偶数にそろえる詰め物] を積み、slipd.x は ETD 命令 19 でまとめて取り出す。
  * 以前は SCC の受信・送信割り込みを自前で横取りしていたが、xip.x のヒープやスタックが壊れて
  * バスエラー / アドレスエラー / 画面のスクロール崩れが起きた。ROM の割り込み処理に任せる今の形では起きない。
  *
@@ -51,15 +53,33 @@ static uint8_t running;
    xip.x -r で IP の受信ハンドラが外れたら 0 に戻し、次の netup の slipd.x で再開する */
 static uint8_t accepting;
 
+/* 送信リングにレコードで積む (ETD 命令 20) */
+static uint8_t rectx;
+
 /* 統計 (etd_get_statistics) */
 static uint32_t st_rx, st_tx, st_drop;
 
 #define TX_PUT(c) (txbuf[h] = (c), h = (h + 1) & (TXSIZE - 1))
 
-/* IP パケットを SLIP にして送信リングに積む。入りきらないときは捨てる (TCP が再送する) */
+/* IP パケットを SLIP にして (rectx ならレコードにして) 送信リングに積む。入りきらないときは捨てる (TCP が再送する) */
 static void slip_send(const uint8_t *p, long n)
 {
   uint16_t h = tx_head;
+  if (rectx) {
+    if (((tx_tail - h - 1) & (TXSIZE - 1)) < n + 3) {
+      st_drop++;
+      return;
+    }
+    TX_PUT(n >> 8);
+    TX_PUT(n);
+    while (n-- > 0)
+      TX_PUT(*p++);
+    if (h & 1)                             /* リングの先頭からの位置は常に偶数 (レコードの長さが偶数) */
+      TX_PUT(0);
+    tx_head = h;
+    st_tx++;
+    return;
+  }
   if (((tx_tail - h - 1) & (TXSIZE - 1)) < 2 * n + 2) {
     st_drop++;
     return;
@@ -157,6 +177,28 @@ long etd_dispatch(long cmd, long *a)
     }
     return c;
   }
+  case 19: {                               /* (slip.sys 独自) 送信リングからレコードをまとめて取り出す:
+                                              a[0] = 書く先, a[1] = 最大バイト数。戻り値 = 書いたバイト数 */
+    uint8_t *d = (uint8_t *)a[0];
+    long max = a[1], n = 0;
+    uint16_t t = tx_tail, hd = tx_head;
+    while (t != hd) {
+      long len = (txbuf[t] << 8) | txbuf[(t + 1) & (TXSIZE - 1)];
+      long rl = 2 + ((len + 1) & ~1);
+      if (n + rl > max)
+        break;
+      while (rl-- > 0) {
+        d[n++] = txbuf[t];
+        t = (t + 1) & (TXSIZE - 1);
+      }
+    }
+    tx_tail = t;
+    return n;
+  }
+  case 20:                                 /* (slip.sys 独自) a = 1 でレコード、0 で SLIP。送信リングは捨てる */
+    rectx = a != 0;
+    tx_tail = tx_head;
+    return 0;
   case 18:                                 /* (slip.sys 独自) slipd.x の起動: 受信の受け入れを始める。戻り値 = スレッドが動いていれば 1 */
     i = running;
     running = 1;

@@ -1,7 +1,7 @@
 From cdd609dc5eff4fc6b44fec0f07f265e95dbae5cb Mon Sep 17 00:00:00 2001
 From: moto <j3tm0t0@gmail.com>
 Date: Wed, 21 Oct 2026 06:46:48 +0900
-Subject: [PATCH 2/8] netpipe: bridge mode (proxy ARP for the Z's IP, forward
+Subject: [PATCH 2/9] netpipe: bridge mode (proxy ARP for the Z's IP, forward
  IPv4 between SLIP and Wi-Fi)
 
 The Z sends its IP in the request header. Frames for that IP are taken

@@ -1,7 +1,7 @@
 From a1bbb2517e7d6a1213f7bcb92f9c0084ac7252f2 Mon Sep 17 00:00:00 2001
 From: moto <j3tm0t0@gmail.com>
 Date: Wed, 21 Oct 2026 09:30:32 +0900
-Subject: [PATCH 5/8] netpipe: move the band below scsiremote.sys's
+Subject: [PATCH 5/9] netpipe: move the band below scsiremote.sys's
  0x200000-0x3fffff
 
 Requests go to 0x1000 and responses are read from 0x2000-0x1ffff7 (about

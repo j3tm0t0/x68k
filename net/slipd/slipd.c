@@ -243,6 +243,8 @@ static void thread(void)
 #define ZSECTS  8
 #define ZDATA   (ZSECTS * 512 - 16)
 #define ZMAGIC  0x58364e50              /* "X6NP" */
+#define ZMAGICR 0x58364e52              /* "X6NR": SLIP をやめ、IP パケットを長さ付きのレコードで運ぶ (ブリッジだけ)。
+                                           Z へ: [長さ 2][空き 14][IP][詰め物] / Z から: [長さ 2][IP][詰め物] */
 #define ZIDLE   6                       /* やり取りの直後の問い合わせ間隔 (1/100 秒、-i で変えられる) */
 #define ZIDLE2  5                       /* 2 秒やり取りが無ければこの間隔に延ばす (帯を回る速さも落とす) */
 
@@ -253,6 +255,7 @@ static uint32_t zseq;
 static uint32_t zmyip;                  /* -z の後ろの IP アドレス。0 でなければ Pico がブリッジする (Z が LAN 上の 1 台になる) */
 static int zsect = ZRLBA;
 static int zidle = ZIDLE;
+static int zrec;                        /* レコードで運ぶ (slip.sys と Pico のファームが対応していれば) */
 static struct { char tag[8]; uint32_t xchg, retry, err, drops; } zstat = { "SLPDZSTA" };
 /* 調査用のトレース (交換ごとに 時刻 1/100 秒, 送信バイト, 受信バイト, 渡したパケット数)。"SLPDTRAC" の後ろ: 位置, 記録 256 件 */
 #define ZTRACE  256
@@ -274,12 +277,15 @@ static int zstep(int d)
  * +4 LBA, +8 バイト数, +12 バッファ, +16/+18 状態。ほかの SCSI の呼び出しは start.S の scsi_hook が待たせる */
 #define MB ((volatile uint8_t *)0xea0060)
 extern volatile uint16_t scsi_inrom;
+extern volatile uint8_t scsi_zown;      /* slipd.x の命令が終わって段階 (+1) を 0 に戻すまでの間 1 */
 static int zio(int op, int lba, int nsect, void *buf)
 {
   int sr, r;
   for (;;) {
     __asm__ volatile("move.w %%sr,%0\n\tori.w #0x0700,%%sr" : "=d"(sr));
-    if (!scsi_inrom && !(MB[0] & 0x80))
+    /* B: の scsiremote.sys などは、選択・命令・データ・状態を別々の IOCS で呼ぶ。その合間 (ROM の外) でも
+       段階 (+1) は 0 でないので、それも待つ */
+    if (!scsi_inrom && !(MB[0] & 0x80) && !(MB[1] & 15))
       break;
     __asm__ volatile("move.w %0,%%sr" : : "d"(sr));
     _dos_change_pr();
@@ -291,15 +297,17 @@ static int zio(int op, int lba, int nsect, void *buf)
   *(volatile uint32_t *)(MB + 12) = (uint32_t)buf;
   MB[0] = 0x80;
   MB[1] = 4;
+  scsi_zown = 1;
   __asm__ volatile("move.w %0,%%sr" : : "d"(sr));
   while (MB[0] & 0x80)
     _dos_change_pr();
-  /* 終わったあとに ROM がもう次の命令を出していたら、段階も状態もその命令のもの。触らずに成功とみなす
-     (読み込みは番号で確かめるので、失敗していても読み直しになるだけ) */
+  /* 終わったあと、ほかの SCSI の呼び出しが先に段階を 0 に戻していたら (scsi_hook)、状態はもう分からない。
+     成功とみなす (読み込みは番号で確かめるので、失敗していても読み直しになるだけ) */
   r = 0;
   __asm__ volatile("move.w %%sr,%0\n\tori.w #0x0700,%%sr" : "=d"(sr));
-  if (!scsi_inrom && !(MB[0] & 0x80)) {
+  if (scsi_zown) {
     MB[1] = 0;
+    scsi_zown = 0;
     r = *(volatile uint16_t *)(MB + 16) | *(volatile uint16_t *)(MB + 18);
   }
   __asm__ volatile("move.w %0,%%sr" : : "d"(sr));
@@ -312,7 +320,7 @@ static int zxchg(int txlen, int *more, int first)
 {
   struct zhdr *q = (struct zhdr *)zreq, *r = (struct zhdr *)zres;
   int try, n;
-  q->magic = ZMAGIC;
+  q->magic = zrec ? ZMAGICR : ZMAGIC;
   q->seq = ++zseq;
   q->len = txlen;
   q->more = ZDATA;
@@ -322,7 +330,7 @@ static int zxchg(int txlen, int *more, int first)
   for (try = 0; ; try++) {
     if (zread(zstep(8), first, zres) != 0)
       return -1;
-    if (r->magic == ZMAGIC && r->seq == zseq)
+    if (r->magic == q->magic && r->seq == zseq)
       break;
     zstat.retry++;
     if (try >= 64)
@@ -343,6 +351,31 @@ static int zxchg(int txlen, int *more, int first)
   return n;
 }
 
+/* Pico から来たレコードを 1 個ずつ xip.x に渡す。空き 14 バイトに slip.sys が Ethernet の見出しを書くので、写さずに済む */
+static void rec_in(uint8_t *s, int n)
+{
+  while (n >= 16) {
+    int len = (s[0] << 8) | s[1];
+    int rl = 16 + ((len + 1) & ~1);
+    uint8_t *ip = s + 16;
+    if (rl > n)
+      break;
+    if (len >= 20 && (ip[0] >> 4) == 4 && (ip[0] & 15) >= 5 && ((ip[2] << 8) | ip[3]) == len) {
+      long arg[2];
+      arg[0] = len;
+      arg[1] = (long)(s + 2);
+      tap('R', ip, len);
+      if (call_etd(etd, 16, arg) > 0)
+        stat.rx++;
+    } else {
+      tap('B', ip, len);
+      stat.bad++;
+    }
+    s += rl;
+    n -= rl;
+  }
+}
+
 static int ticks(void)
 {
   return _iocs_ontime().sec;            /* 1/100 秒 (0 時に戻る) */
@@ -355,10 +388,18 @@ static void zthread(void)
     int n = 0, now, r, more = 0;
     long c;
     stat.loops++;
-    while (n < ZDATA && (c = call_etd(etd, 17, 0)) >= 0) {
-      zreq[16 + n++] = c;
-      tap_tx(c & 0xff);
-    }
+    if (zrec) {
+      long arg[2];
+      arg[0] = (long)(zreq + 16);
+      arg[1] = ZDATA;
+      n = call_etd(etd, 19, arg);
+      if (n > 2)
+        tap('T', zreq + 18, n - 2);
+    } else
+      while (n < ZDATA && (c = call_etd(etd, 17, 0)) >= 0) {
+        zreq[16 + n++] = c;
+        tap_tx(c & 0xff);
+      }
     now = ticks();
     if (n == 0 && hot == 0 && (unsigned)(now - last) < ((unsigned)(now - act) < 200 ? zidle : ZIDLE2)) {
       _dos_change_pr();
@@ -368,6 +409,11 @@ static void zthread(void)
     r = zxchg(n, &more, (unsigned)(now - act) < 20 ? ZSECTS : 1);
     if (r < 0) {
       zstat.err++;
+      if (zrec && zstat.xchg == 0 && zstat.err >= 3) {
+        /* Pico のファームがレコードを知らない ("X6NR" の要求を受け付けない): SLIP に戻す */
+        zrec = 0;
+        call_etd(etd, 20, 0);
+      }
       while ((unsigned)(ticks() - now) < 100)   /* Pico が居ない・つながらない: 1 秒待つ */
         _dos_change_pr();
       continue;
@@ -375,7 +421,10 @@ static void zthread(void)
     stat.tx += n;
     {
       uint32_t rx0 = stat.rx;
-      slip_in_buf(zres + 16, r);
+      if (zrec)
+        rec_in(zres + 16, r);
+      else
+        slip_in_buf(zres + 16, r);
       if (n || r) {
         int k = ztrace.pos++ % ZTRACE;
         act = now;
@@ -439,6 +488,9 @@ int slipd_main(void)
     _dos_print("slipd: 受信を再開しました (常駐済み)\r\n");
     return 0;
   }
+  /* slip.sys はスーパーバイザ領域にあるので、ユーザーモードで呼ぶとバスエラーになる (ここはまだスーパーバイザ) */
+  if (zmode && zmyip && call_etd(etd, 20, (void *)1) == 0)
+    zrec = 1;                           /* 古い slip.sys は命令 20 に -1 を返す */
   if (!zmode && !grow_rsdrv())
     _dos_print("slipd: RSDRV.SYS の受信バッファを広げられません (1KB のまま)\r\n");
   if (ssp > 0) _dos_super(ssp);
@@ -486,7 +538,8 @@ int slipd_main(void)
     if (r < 0)
       _dos_print("slipd: スレッドを起こせません\r\n");
   }
-  _dos_print(!zmode ? "slipd: SLIP thread started\r\n" : zmyip ? "slipd: SLIP thread started (SCSI ID 6 netpipe, bridge)\r\n"
+  _dos_print(!zmode ? "slipd: SLIP thread started\r\n" : zrec ? "slipd: SLIP thread started (SCSI ID 6 netpipe, bridge, records)\r\n"
+                    : zmyip ? "slipd: SLIP thread started (SCSI ID 6 netpipe, bridge)\r\n"
                     : "slipd: SLIP thread started (SCSI ID 6 netpipe, UDP)\r\n");
   {
     /* 常駐する大きさは BSS (スレッドのスタック) まで含める。a1 (prg_end) だと BSS が入らず、
