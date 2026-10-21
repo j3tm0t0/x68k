@@ -37,6 +37,21 @@ prof_vdisp:
     movem.l %sp@+,%d0/%a0
 1:  rte
 
+/* IOCS _SCSIDRV ($F5) の入口に挟むフック。slipd.x が SCSI のメールボックス (0xEA0060) を直に使っている間は、
+ * ほかの SCSI の呼び出し (B: の scsiremote.sys など) を、その命令が終わるまで待たせる。ROM の読み書きの入口は
+ * メールボックスが使用中かどうかを見ずに書き換えるので、待たせないと互いの命令を壊す。
+ * ROM を呼んでいる間は scsi_inrom を数え、slipd.x はそれが 0 のときだけ命令を出す */
+    .global scsi_hook, scsi_inrom, scsi_old
+scsi_hook:
+    addq.w  #1,scsi_inrom
+1:  tst.b   0xea0060
+    bmi.s   1b
+    pea     2f
+    move.l  scsi_old,%sp@-
+    rts
+2:  subq.w  #1,scsi_inrom
+    rts
+
     .data
     .even
     .global zprof
@@ -49,6 +64,9 @@ zprof:
     .bss
     .even
     .global mem_ptr, prg_end, cmd_line
+scsi_old:   .long 0
+scsi_inrom: .short 0
+    .even
 mem_ptr:  .long 0
 prg_end:  .long 0
 cmd_line: .long 0

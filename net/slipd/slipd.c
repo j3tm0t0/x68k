@@ -268,6 +268,46 @@ static int zstep(int d)
 /* first: 最初の読み込みのセクタ数。データが続いているときは 8 (一度に読み切る)、静かなときは 1。
  * Z の SCSI は Pico との USB のやり取りが終わるまで ROM が待ち続けるので、1 コマンドが数 ms の CPU になる。
  * バイト数よりコマンドの回数を減らす方が効く */
+/* SCSI の読み書きを、ROM (Pseudo SCSI BIOS) を通さずメールボックスで行う。ROM は命令を出したあと、Pico との
+ * USB のやり取りが終わるまで nop で空回りする (プロファイルでは CPU の 25% 以上)。ここでは終わるまで
+ * _CHANGE_PR で xip.x などに譲る。メールボックス: +0 bit7 使用中, +1 段階 (4 で開始), +2 ID, +3 SCSI 命令,
+ * +4 LBA, +8 バイト数, +12 バッファ, +16/+18 状態。ほかの SCSI の呼び出しは start.S の scsi_hook が待たせる */
+#define MB ((volatile uint8_t *)0xea0060)
+extern volatile uint16_t scsi_inrom;
+static int zio(int op, int lba, int nsect, void *buf)
+{
+  int sr, r;
+  for (;;) {
+    __asm__ volatile("move.w %%sr,%0\n\tori.w #0x0700,%%sr" : "=d"(sr));
+    if (!scsi_inrom && !(MB[0] & 0x80))
+      break;
+    __asm__ volatile("move.w %0,%%sr" : : "d"(sr));
+    _dos_change_pr();
+  }
+  MB[2] = ZID;
+  MB[3] = op;
+  *(volatile uint32_t *)(MB + 4) = lba;
+  *(volatile uint32_t *)(MB + 8) = nsect * 512;
+  *(volatile uint32_t *)(MB + 12) = (uint32_t)buf;
+  MB[0] = 0x80;
+  MB[1] = 4;
+  __asm__ volatile("move.w %0,%%sr" : : "d"(sr));
+  while (MB[0] & 0x80)
+    _dos_change_pr();
+  /* 終わったあとに ROM がもう次の命令を出していたら、段階も状態もその命令のもの。触らずに成功とみなす
+     (読み込みは番号で確かめるので、失敗していても読み直しになるだけ) */
+  r = 0;
+  __asm__ volatile("move.w %%sr,%0\n\tori.w #0x0700,%%sr" : "=d"(sr));
+  if (!scsi_inrom && !(MB[0] & 0x80)) {
+    MB[1] = 0;
+    r = *(volatile uint16_t *)(MB + 16) | *(volatile uint16_t *)(MB + 18);
+  }
+  __asm__ volatile("move.w %0,%%sr" : : "d"(sr));
+  return r ? -1 : 0;
+}
+#define zread(lba, n, buf)  zio(0x28, lba, n, buf)
+#define zwrite(lba, n, buf) zio(0x2a, lba, n, buf)
+
 static int zxchg(int txlen, int *more, int first)
 {
   struct zhdr *q = (struct zhdr *)zreq, *r = (struct zhdr *)zres;
@@ -277,10 +317,10 @@ static int zxchg(int txlen, int *more, int first)
   q->len = txlen;
   q->more = ZDATA;
   q->stat = zmyip;
-  if (_iocs_s_writeext(ZWLBA, (16 + txlen + 511) / 512, ZID, 1, zreq) != 0)
+  if (zwrite(ZWLBA, (16 + txlen + 511) / 512, zreq) != 0)
     return -1;
   for (try = 0; ; try++) {
-    if (_iocs_s_readext(zstep(8), first, ZID, 1, zres) != 0)
+    if (zread(zstep(8), first, zres) != 0)
       return -1;
     if (r->magic == ZMAGIC && r->seq == zseq)
       break;
@@ -295,7 +335,7 @@ static int zxchg(int txlen, int *more, int first)
   n = r->len;
   if (n > ZDATA)
     return -1;
-  if (16 + n > first * 512 && _iocs_s_readext(zsect + first, (16 + n - 1) / 512 + 1 - first, ZID, 1, zres + first * 512) != 0)
+  if (16 + n > first * 512 && zread(zsect + first, (16 + n - 1) / 512 + 1 - first, zres + first * 512) != 0)
     return -1;
   zstat.xchg++;
   zstat.drops = r->stat;
@@ -409,6 +449,16 @@ int slipd_main(void)
     h *= 2654435761u;
     zseq = h;
     zsect = ZRLBA + (h >> 8) % (ZRSPAN / 8) * 8;
+  }
+  if (zmode) {
+    /* SCSI の入口にフックを挟む (zio を参照)。スレッドを作る前に、スーパーバイザで */
+    extern void scsi_hook(void);
+    extern uint32_t scsi_old;
+    volatile uint32_t *vec = (volatile uint32_t *)(0x400 + 0xf5 * 4);
+    int s = _dos_super(0);
+    scsi_old = *vec;
+    *vec = (uint32_t)scsi_hook;
+    if (s > 0) _dos_super(s);
   }
   if (zmode) {
     /* 簡易プロファイラ (start.S の prof_vdisp、zprof.x で使う)。垂直同期の割り込みが空いていなければ使わない */
