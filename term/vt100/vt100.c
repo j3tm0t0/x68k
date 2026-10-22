@@ -16,8 +16,9 @@
  * VRAM・パレット・CGROM はスーパーバイザ空間。触る関数の頭で _dos_super(0)、末尾で戻す。
  */
 #ifdef VT_HOSTTEST
-/* Mac 上でパーサ・スクロール・属性だけを pyte と比べるためのスタブ版。
- * VRAM/パレット/CGROM はホストメモリに逃がし、IOCS/DOS 呼び出しは無害化する。 */
+/* Mac 上で試すスタブ版。VRAM/パレット/CGROM はホストメモリに逃がし、IOCS/DOS 呼び出しは無害化する。
+ * CGROM (0xF00000〜、768KB) は vthost が CGROM イメージファイルを vt_host_cgrom に読み込む。
+ * 描画は実機と同じ blit を通るので、vt_host_vram を PNG にすれば実機の画面と同じ絵になる。 */
 static int _dos_super(int x) { (void)x; return 0; }
 static void _dos_breakck(int x) { (void)x; }
 static void _iocs_b_curon(void) {}
@@ -26,7 +27,7 @@ static int _iocs_b_keysns(void) { return 0; }
 static int _iocs_b_keyinp(void) { return 0; }
 unsigned char vt_host_vram[4 * 0x20000];
 unsigned short vt_host_pal[16];
-unsigned char vt_host_cg[0x1000];
+unsigned char vt_host_cgrom[0xC0000];   /* CGROM 0xF00000-0xFBFFFF の写し */
 #else
 #define __DOS_INLINE__
 #define __IOCS_INLINE__
@@ -44,16 +45,18 @@ unsigned char vt_host_cg[0x1000];
 #define CH      16         /* セル高 (ドット) */
 #define VBYTES  128        /* 1 ライン 128 バイト (1 プレーン) */
 #define PLANE   0x20000UL  /* プレーン間の距離 */
+typedef unsigned int u32;  /* 32bit 転送用 (ホストの long は 8 バイトなので int) */
 
 #ifdef VT_HOSTTEST
 #define TVRAM  ((volatile unsigned char *)vt_host_vram)
 #define TPAL   ((volatile unsigned short *)vt_host_pal)
-#define CGROM16 ((const unsigned char *)vt_host_cg)
+#define CGBASE ((const unsigned char *)vt_host_cgrom)
 #else
 #define TVRAM  ((volatile unsigned char *)0xE00000UL)
 #define TPAL   ((volatile unsigned short *)0xE82200UL)
-#define CGROM16 ((const unsigned char *)0xF3A800UL)   /* 8x16 ANK フォント */
+#define CGBASE ((const unsigned char *)0xF00000UL)    /* CGROM 先頭 (16x16 漢字) */
 #endif
+#define CGROM16 (CGBASE + 0x3A800)   /* 8x16 ANK フォント (0xF3A800) */
 
 /* ---- セル ---- */
 /* cp: 描くコードポイント。0x20-0x7e は ANK、それ以外は Unicode (漢字など)。UTF-8 デコーダ
@@ -197,16 +200,11 @@ static const unsigned char *glyph_of(const cell_t *c)   /* 8x16 ANK / DEC 罫線
 /* 16x16 漢字グリフ (32 バイト = 2 バイト/行) の先頭。JIS 区点から CGROM アドレスを計算する。 */
 static const unsigned char *kanji_glyph(unsigned short jis)
 {
-#ifdef VT_HOSTTEST
-  static const unsigned char zero[32] = { 0 };
-  (void)jis; return zero;
-#else
   int ku = (jis >> 8) - 0x20, ten = (jis & 0xff) - 0x20;
-  if (ku < 1 || ku > 94 || ten < 1 || ten > 94 || (ku >= 9 && ku <= 15)) return (const unsigned char *)0xF00000UL;
+  if (ku < 1 || ku > 94 || ten < 1 || ten > 94 || (ku >= 9 && ku <= 15)) return CGBASE;
   /* CGROM には 9〜15 区が無い。1〜8 区 (非漢字) の直後に 16 区 (第 1 水準、0xF05E00) が続く */
   if (ku >= 16) ku -= 7;
-  return (const unsigned char *)(0xF00000UL + (unsigned long)((ku - 1) * 94 + (ten - 1)) * 32);
-#endif
+  return CGBASE + (unsigned long)((ku - 1) * 94 + (ten - 1)) * 32;
 }
 
 /* 絵文字 16x16・16色 (4bpp) を 4 プレーンに直接描く (セルの fg/bg は使わず各ピクセル自身の色)。 */
@@ -296,8 +294,8 @@ static void vram_move_lines(int dst_line, int src_line, int nlines)
 #endif
   for (p = 0; p < 4; p++) {
     volatile unsigned char *base = TVRAM + (unsigned long)p * PLANE;
-    volatile unsigned long *d = (volatile unsigned long *)(base + (long)dst_line * VBYTES);
-    volatile unsigned long *s = (volatile unsigned long *)(base + (long)src_line * VBYTES);
+    volatile u32 *d = (volatile u32 *)(base + (long)dst_line * VBYTES);
+    volatile u32 *s = (volatile u32 *)(base + (long)src_line * VBYTES);
     long n = bytes / 4, i;
     if ((unsigned long)d <= (unsigned long)s) {
       for (i = 0; i < n; i++) d[i] = s[i];

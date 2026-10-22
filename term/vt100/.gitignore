@@ -2,5 +2,9 @@
 *.x.elf*
 *.o
 vthost
-tests/venv/
+vthost_old
+tests/venv
 tests/fixtures/*.out
+# CGROM イメージ (XEiJ 同梱の CGROM_XEiJ.DAT の写し。配布物なので入れない。tests/fetch_cgrom.sh で用意する)
+tests/cgrom/
+__pycache__/
