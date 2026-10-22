@@ -13,3 +13,7 @@ tcptest.x: tcptest.c
 clean:
 	rm -f *.x *.o *.elf*
 .PHONY: all clean
+
+# 送信の試験 (xip の大きな write の不具合の確認。相手は sendsink.py)
+sendtest.x: sendtest.c
+	$(CC) $(CFLAGS) $< -o $@ $(LDLIBS)

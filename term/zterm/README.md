@@ -186,7 +186,22 @@ musl-gcc は要らない)。`rustup target add aarch64-unknown-linux-musl x86_64
 - DECRQM で ?2026 (同期更新) に対応と答えるので Claude Code は BSU/ESU を使う。ESU が来ないまま死んだときのため
   同期中の保留は最長 500 ms。
 
-## 実機 (X68000 Z) での手順 (未実施のチェックリスト)
+## 実機 (X68000 Z) の結果 (2026-10-22)
+
+`b:dbz.x -Z [-oAccel=all] -i b:idx68k moto@192.168.1.122 top -d 1 -n 5` (raspi5):
+- 最初の版は転送の途中で sshd が "Bad packet length" で切った。原因は xip: ノンブロッキングのソケットへの 4096 バイト超の
+  write が、全部送ったのに -1 を返し、dropbear が送り直していた (net/ssh/dropbear/README.md の `__wrap_write`)。1 回 4096 に
+  切って解決。
+- 直した版: 転送 (sending → pushed → go → hello → top → 正常終了) と 2 回目のキャッシュ (cached → go → hello) が通った。
+  ACCEL なし 1 回・ACCEL あり 2 回の転送のうち、ACCEL ありの 1 回だけ転送の終わり近くで sshd が
+  "message authentication code incorrect" を出して切った (再現せず。原因未確定)。
+- **時間**: 転送 257 KB に約 3 分 (ACCEL ありで接続から終了まで 3 分 20 秒)、キャッシュありは ACCEL で 19 秒、なしで 78 秒。
+  律速は Z の chacha20-poly1305 で **約 1.5 KB/s** (net/ssh/crypttest。TCP の送信だけなら 4096 ずつで 9〜11 KB/s)。
+  受信も同じ速さでしか復号できないので、素の VT の Claude Code (4.4 KB/s) は Z では実時間に復号しきれない。zterm の
+  1 KB/s 前後に減らすことがそのまま効く。転送を縮める (xz・ヘルパの小型化) と暗号の 68000 向け高速化 (poly1305 の
+  64 ビット乗算) が次の課題。
+
+## 実機 (X68000 Z) での手順 (チェックリスト)
 
 B: (Pi の /srv/x68000z/HFS) の配置:
 ```
@@ -199,11 +214,11 @@ B:/home/.ssh/known_hosts    既存 (-y を付けない)
 
 1. ビルド: `term/zterm/server/dist.sh` → `dist/` を Pi の `/srv/x68000z/HFS/zterm/` へ。
    `ZTERM=1 FAST=1 ./build.sh /srv/.../sshz.x` (ACCEL も試すなら `ACCEL=1 ACCELDIR=...`)。
-2. 素の動作確認 (ヘルパのキャッシュ無し): Pi で `rm -rf ~/.cache/zterm` → Z で `b:sshz.x -Z -i b:\id_x68k moto@<Pi>`。
+2. 素の動作確認 (ヘルパのキャッシュ無し) **[済: 上の結果]**: Pi で `rm -rf ~/.cache/zterm` → Z で `b:sshz.x -Z -i b:\id_x68k moto@<Pi>`。
    - ハンドシェイク後に `zterm: sending B:/zterm/linux-aarch64.gz (... bytes)`、`zterm: pushed`、`zterm: go` が出て画面が切り替わるか。
    - **転送時間を測る** (257 KB を Z の chacha20-poly1305 で送る。見積もり 20 秒前後)。Pi の `~/.cache/zterm/` に
      `zterm-<版>-Linux-aarch64` ができ、`--version` が通るか。
-3. 2 回目 (キャッシュあり): `zterm: cached` → すぐ画面が出るか。
+3. 2 回目 (キャッシュあり): `zterm: cached` → すぐ画面が出るか。**[済]**
 4. 画面: プロンプト・`ls --color`・漢字 (`echo 日本語`)・絵文字・`top`・`vim`・`less`・`exit` で Human68k に戻り、
    画面がプレーン 0,1 に潰れてプロンプトが正しい行に出るか (x68k_tty_cleanup)。
 5. キー: 矢印 (vim の通常モード = DECCKM で ESC O A に直るか)、Ctrl-C、BS、ROLL UP/DOWN、F1-F10。
