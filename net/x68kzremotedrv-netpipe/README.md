@@ -34,6 +34,7 @@ USB キーボード (0012) を入れるときは `cmake -DHID_KEYBOARD=ON ..` (�
 | `src/virtual_disk.c` | ID 6 の読み書きを netpipe に回す |
 | `src/connect.c` | Wi-Fi の省電力を切る (応答が 50〜300ms 遅れて TCP が遅くなるため) |
 | `src/accel.c` / `accel_ops.c` / `accel_proto.h` / `monocypher/` | 0011: 暗号アクセラレータ (X25519 / Ed25519 を Z の代わりに計算する。[../accel](../accel)) |
+| `driver/bootwait.S` / `src/virtual_disk.c` | 0016: 待ち画面に X68000 Z のバナーと動き、[S] で設定画面 (接続中でも使える) |
 | `src/bootwait.c` / `driver/bootwait1.S` / `driver/bootwait.S` / `test/bootwait/waiter_test.py` | 0015: BOOTWAIT_SCREEN (既定オン)。HDS の先頭 16KB をフラッシュに控え、開けるまで Z の画面に接続待ちを出す |
 | `src/msc_disk.c` / `virtual_disk.c` / `connect.c` / `test/bootwait/` | 0014: BOOTWAIT (既定オン)。HDS が開けるまで NOT READY で待たせ、接続は裏で繰り直し続ける |
 | `src/msclog.c` / `hidkbd.c` | 0013: 起動時の調査用の MSC ログ (`-DMSC_LOG=ON`、UDP 6870) と、6869 の `status` |
@@ -117,7 +118,13 @@ python3 -uc 'import socket,time;s=socket.socket(2,2);s.bind(("",6870));[print(ti
   キャッシュの古い答えは捨てる。形は `src/bootwait_proto.h`)
   - 開けて控えと同じ: 応答に本物の IPL (と和) が載る。$2000 に写し、d4 を戻して飛ぶ (キャッシュの分割表とドライバは本物と同じ)
   - 控えと違う: 「HDS が変わりました。Z の電源を入れ直してください」で止まる (古い分割表で起動させない)。控えは書き直すので次の電源投入で直る
-  - F1: 設定メニュー (hdsboot と同じ)
+  - S か F1: 設定画面 (hdsboot の F1 と同じ settingui.bin を ID 6 の LBA 0x100 から読む)。0016 から、Pico が接続中でも使える
+    (設定画面の命令は接続を待たず、接続タスクが Wi-Fi に繋ぎにいっている間は NOT READY で待たせる。変えた設定は次の繰り直しで使われる)。
+    設定で HDS を変えたら Z の電源を入れ直す (画面にも出す。変えた HDS が開くと「HDS が変わりました」になる)
+- 0016: 画面の上に 5 行の「X68000 Z」バナー (ふつうの ASCII。`\` は X68k では円記号なので使わない) と、
+  `[Pico W] ....o.... [X68000 Z]` の動き
+- HDS がすでに開いている普通の起動は hdsboot のまま (速さは変わらない)。そのときに設定画面に入るのは今までどおり起動時に F1。
+  遠隔からは `x68key hold 600; x68key combo ctrl f11 del; x68key hold 5000; x68key combo f1` (未確認)
 - `x68key status` の `snap=`: none (控えなし) / stored (控えあり、まだ開けていない) / ok (同じ) / updated (書き直した) / served (控えで起動を始め、同じだった) / changed
 - Z 自身が HDS の先頭を書き換えた (FORMAT や分割の変更) あとの、次の「SMB が遅い」起動は一度だけ「HDS が変わりました」で止まる
 - 試験: `make -C test/bootwait` (待ち IPL の前半と後半を Unicorn の 68000 で、ホスト向けに組んだ本物の bootwait.c と組み合わせて動かす。
