@@ -118,9 +118,18 @@ int accel_open(void)
   caps = 0;
   if (!etd)
     return -1;
-  if (call(ACCEL_OP_PING, 0, 0, 0, &ver) != ACCEL_ST_OK) {
-    etd = 0;
-    return -2;
+  {
+    /* PING は短い時間切れで (古いファームだと答えが来ない。ssh.x を 15 秒も待たせない) */
+    unsigned saved = timeout_cs;
+    int st;
+    if (timeout_cs > 300)
+      timeout_cs = 300;
+    st = call(ACCEL_OP_PING, 0, 0, 0, &ver);
+    timeout_cs = saved;
+    if (st != ACCEL_ST_OK) {
+      etd = 0;
+      return -2;
+    }
   }
   return caps;
 }

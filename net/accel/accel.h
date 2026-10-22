@@ -11,7 +11,7 @@
 #include <stdint.h>
 #include "accel_proto.h"
 
-int accel_open(void);                       /* 戻り値: caps (0 以上) / -1 npd.sys が無い / -2 Pico が答えない */
+int accel_open(void);                       /* 戻り値: caps (0 以上) / -1 npd.sys が無い / -2 Pico が答えない (3 秒待つ) */
 int accel_caps(void);                       /* accel_open の結果 (開いていなければ 0) */
 int accel_x25519(uint8_t q[32], const uint8_t n[32], const uint8_t p[32]);      /* 0 / -1 */
 int accel_x25519_base(uint8_t q[32], const uint8_t n[32]);                      /* 0 / -1 */

@@ -51,7 +51,8 @@ ssh.x ──accel.c──> npd.sys (ETD 20/21/22) ──ETD 19──> npd.x ─�
 - **Pico 側** (x68kzremotedrv の `accel` ブランチ = [`../x68kzremotedrv-netpipe/patches/0011-*.patch`](../x68kzremotedrv-netpipe/patches/))
   - `src/netpipe.c`: `bridge_out_rec` が先頭 0xA5 のレコードを `accel_submit` に渡す。`np_exchange` は応答があれば応答レコードを
     **先頭** に載せる (最初のセクタに入る。`resbuf` を書くのは USB タスクだけなので `rxring` には触らない)。
-  - `src/accel.c`: FreeRTOS タスク (優先度 1、スタック 6KB)。`np_exchange` は USB タスクの MSC 書き込みの中で呼ばれ、戻るまで Z の
+  - `src/accel.c`: FreeRTOS タスク (優先度 1、スタック 6KB)。起動時に `accel: ready` (タスクを作れなければ `accel: cannot create`)、
+    演算ごとに `accel: op N id ... status S ... us` を Pico のログ (UART / 設定画面のログ) に出す。`np_exchange` は USB タスクの MSC 書き込みの中で呼ばれ、戻るまで Z の
     SCSI 書き込みが終わらないので、そこでは計算しない。要求を写して通知 → タスクが計算 → 結果を置く (proxy echo の
     `echo_pkt` / `echo_len` と同じ受け渡し)。計算中に別の要求が来たら `BUSY` を即答。直前と同じ要求 (id と中身が一致) なら
     計算せずに同じ結果を返す (Z が交換を取りこぼして出し直したとき)。
@@ -74,7 +75,7 @@ ssh.x ──accel.c──> npd.sys (ETD 20/21/22) ──ETD 19──> npd.x ─�
 
 ```sh
 cd net/accel/tests
-python3 -m venv venv && venv/bin/pip install cryptography    # 1 回
+python3 -m venv venv && venv/bin/pip install cryptography    # 1 回 (venv は .gitignore 済み。VENV=... で別の場所も可)
 ./run.sh 300
 ```
 
@@ -116,8 +117,9 @@ Z 側の 59 秒に対して 100 倍以上速い。Monocypher の公式ページ�
 
 1. **Pico** (2 台目、netpipe 用): BOOTSEL で `picotool load -x /Users/moto/Dropbox/src/github.com/yunkya2/x68kzremotedrv-accel/build/x68kzremotedrv.uf2`。
    設定 (フラッシュ 0x1F0000) は残る。
-2. **Z**: `net/npd/npd.sys` (1.1) を `\SYS\npd.sys` に、`net/npd/npd.x` と `net/accel/acceltest.x` を B: に置く。リセット。
-   `npd.x 192.168.1.68` (B:PNETN.BAT 等) でスレッドを上げる。
+2. **Z**: CONFIG.SYS が読み込む npd.sys を `net/npd/npd.sys` (1.1、起動時に `npd.sys 1.1 (accel)` と出る) に置き換える
+   (A: の HDS イメージなら書き直し。npd.sys 1.0 のままだと ETD 20 が -1 を返し `accel_open` が -1 になる)。
+   `net/npd/npd.x` と `net/accel/acceltest.x` を B: に置く。リセット。`npd.x 192.168.1.68` (B:PNETN.BAT 等) でスレッドを上げる。
 3. `b:acceltest.x -n 3` → 全部 OK、Z の往復と Pico の µs を記録する。`FAIL accel_open = -2` なら Pico が答えていない
    (古いファーム / npd.x が動いていない)。`sst.x` に ETD 24 は無いので、必要なら ETD 24 で req/res/stale を見る道具を足す。
 4. **ssh**: ssh ブランチの `build.sh` に `dropbear/build-snippet.sh` の 2 か所を挿し、`ACCEL=1 FAST=1 ./build.sh` →

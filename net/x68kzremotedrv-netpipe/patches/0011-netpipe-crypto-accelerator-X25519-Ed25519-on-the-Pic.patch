@@ -1,4 +1,4 @@
-From 0fcbd3a8f728d20409fbadd857f02b3489632e18 Mon Sep 17 00:00:00 2001
+From a143c7e24f62139f7de5e060b787987e73937ac7 Mon Sep 17 00:00:00 2001
 From: moto <j3tm0t0@gmail.com>
 Date: Thu, 22 Oct 2026 09:14:56 +0900
 Subject: [PATCH] netpipe: crypto accelerator (X25519/Ed25519 on the Pico) via
@@ -25,7 +25,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01S5R6WJAV75Fci9XiiCqM54
 ---
  CMakeLists.txt                      |    5 +
- src/accel.c                         |  111 +
+ src/accel.c                         |  119 ++
  src/accel.h                         |   11 +
  src/accel_ops.c                     |   86 +
  src/accel_ops.h                     |    7 +
@@ -37,7 +37,7 @@ Claude-Session: https://claude.ai/code/session_01S5R6WJAV75Fci9XiiCqM54
  src/monocypher/monocypher.c         | 2956 +++++++++++++++++++++++++++
  src/monocypher/monocypher.h         |  321 +++
  src/netpipe.c                       |   16 +-
- 13 files changed, 4487 insertions(+), 1 deletion(-)
+ 13 files changed, 4495 insertions(+), 1 deletion(-)
  create mode 100644 src/accel.c
  create mode 100644 src/accel.h
  create mode 100644 src/accel_ops.c
@@ -75,10 +75,10 @@ index 49755ce..1ab61ec 100644
          ${CMAKE_CURRENT_LIST_DIR}/iconv
 diff --git a/src/accel.c b/src/accel.c
 new file mode 100644
-index 0000000..3036196
+index 0000000..9b2beb7
 --- /dev/null
 +++ b/src/accel.c
-@@ -0,0 +1,111 @@
+@@ -0,0 +1,119 @@
 +/*
 + * accel.c -- X68000 Z の SSH クライアント (ssh.x) の代わりに X25519 / Ed25519 を計算する (暗号アクセラレータ)
 + *
@@ -93,6 +93,7 @@ index 0000000..3036196
 + * 同時に 1 つだけ。計算中に別の要求が来たら ACCEL_ST_BUSY を即答する。直前と同じ要求 (id と中身が一致) が
 + * 来たら計算せずに同じ結果を返す (Z が交換を取りこぼして出し直したとき)。
 + */
++#include <stdio.h>
 +#include <string.h>
 +#include "pico/stdlib.h"
 +#include "pico/time.h"
@@ -137,6 +138,8 @@ index 0000000..3036196
 +        res_len = m;
 +        req_len = 0;                /* ここで次の要求を受け付ける */
 +        st_done++;
++        printf("accel: op %d id %u status %d %lu us\n", req[1], (unsigned)accel_get16(req + 2), last_res[4],
++               (unsigned long)accel_get32(last_res + 6));
 +    }
 +}
 +
@@ -144,7 +147,12 @@ index 0000000..3036196
 +{
 +    if (accel_th != NULL)
 +        return;
-+    xTaskCreate(accel_task, "AccelThread", ACCEL_STACK, NULL, 1, &accel_th);
++    if (xTaskCreate(accel_task, "AccelThread", ACCEL_STACK, NULL, 1, &accel_th) != pdPASS) {
++        accel_th = NULL;
++        printf("accel: cannot create the task (heap?) -- accelerator disabled\n");
++        return;
++    }
++    printf("accel: ready (X25519/Ed25519 on the Pico, Monocypher)\n");
 +}
 +
 +/* 要求レコードの中身を受け取る (USB タスク)。計算はタスクに任せてすぐ戻る */
