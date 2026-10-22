@@ -293,6 +293,15 @@ void x68k_vc_loop(void)
     }
 }
 
+/* recv_msg_channel_open_failure (サーバがセッションを開かなかった、MaxSessions など) から: そのコンソールを捨てる */
+void x68k_vc_openfail(int chan)
+{
+  int k = vc_of(chan);
+  if (k < 0) return;
+  vc_drop(k);
+  vc_status("open failed");
+}
+
 /* --- ioctl: TIOCGWINSZ だけ VT の寸法 (96x32) を返す。他は -1 --- */
 int ioctl(int fd, unsigned long request, ...)
 {

@@ -188,6 +188,15 @@ static void test_t(void)
   CHECK(!strcmp(b, "console two"), "console 2 after closing 3: '%s'", b);
   CHECK(verify(), "verify after close");
 
+  /* サーバがチャネルを開かなかった (MaxSessions など): そのコンソールを捨てて前に戻る */
+  key(0x66, 0, 0x02);
+  rd(vc[1].chan, b, sizeof b);
+  CHECK(vc_act == 3, "ctrl+f4");
+  x68k_vc_loop();
+  x68k_vc_openfail(vc[3].chan);
+  CHECK(!vc[3].used && vc_act == 1, "open failure drops console 4 (act %d)", vc_act);
+  settle();
+  CHECK(verify(), "verify after open failure");
   /* 裏のコンソール 1 を閉じる: 表はそのまま */
   CHECK(x68k_vc_closed(0) == 1 && vc_act == 1 && !vc[0].used, "close hidden console 1");
   settle();
