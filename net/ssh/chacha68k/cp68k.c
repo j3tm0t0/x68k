@@ -125,10 +125,12 @@ void poly68k_finish(poly68k_state *st, unsigned char tag[16])
   memset(st, 0, sizeof *st);
 }
 
+/* 表引きにするブロック数の下限 (試験で変えられるよう変数。cpbench は MULU 版だけも測る。C 版では使わない) */
+unsigned long poly68k_tab_min = 22;
+
 #ifdef CP68K_POLY_ASM
 /* 表引き版 (gen_poly.py の poly68k_blocks_tab)。表は 64KB の領域 1 つ (b ごとに 256 バイトの枠、TA と TB)。
    表を作るのに ~7 万クロックかかるので、22 ブロック (352 バイト) 未満は MULU 版 (1 ブロック ~6600 クロック、表引きは ~3000) */
-#define POLY68K_TAB_MIN 22
 extern void poly68k_table_asm(char *slot0, const uint32_t R[5]);
 extern void poly68k_blocks_tab(poly68k_state *st, const unsigned char *m, unsigned long n, unsigned long hibit, const char *base);
 static uint32_t poly68k_tab[65536 / 4];
@@ -161,7 +163,7 @@ void poly68k_mac(unsigned char tag[16], const unsigned char *m, unsigned long le
   unsigned long n = len >> 4;
   poly68k_init(&st, key);
 #ifdef CP68K_POLY_ASM
-  if (n >= POLY68K_TAB_MIN && ((uintptr_t)m & 1) == 0) {
+  if (n >= poly68k_tab_min && ((uintptr_t)m & 1) == 0) {
     poly68k_tables(&st);
     poly68k_blocks_tab(&st, m, n, 1, POLY68K_BASE);
   } else

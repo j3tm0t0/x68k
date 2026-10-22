@@ -3,6 +3,7 @@
 #   Human68k をホストのディレクトリから起動し、AUTOEXEC.BAT が cpbench.x を走らせて DONE.TXT を作るのを待つ。
 #   java -jar が HeadlessException で落ちる環境 (GUI の無いセッション) では XEIJ_ITERM=1 で iTerm 経由 (open -a iTerm) で起動する。
 # 使い方: tests/xeij_cpbench.sh [CPBENCH.X] [cpbench の引数...]
+#   XEIJ_CMD='CPBENCH.X -V > CPBENCH.TXT' のように AUTOEXEC の 1 行を差し替えられる (ssh.x の起動確認など。X は CPBENCH.X として置く)
 set -euo pipefail
 cd "$(dirname "$0")"
 X=${1:-cpbench.x}; shift || true
@@ -14,7 +15,7 @@ rm -rf "$OUT"; mkdir -p "$B" "$OUT/tmp"
 cp "$XEIJ/data/HUMAN.SYS" "$XEIJ/data/COMMAND.X" "$B/"
 cp "$X" "$B/CPBENCH.X"
 printf 'FILES = 30\r\nBUFFERS = 20 1024\r\nLASTDRIVE = Z:\r\n' > "$B/CONFIG.SYS"
-printf 'CPBENCH.X %s CPBENCH.TXT\r\nCOPY CONFIG.SYS DONE.TXT\r\n' "$*" > "$B/AUTOEXEC.BAT"
+printf '%s\r\nCOPY CONFIG.SYS DONE.TXT\r\n' "${XEIJ_CMD:-CPBENCH.X $* CPBENCH.TXT}" > "$B/AUTOEXEC.BAT"
 cat > "$OUT/run.command" <<CMD
 #!/bin/bash
 "$JAVA" -Djava.io.tmpdir="$OUT/tmp" -jar "$XEIJ/XEiJ.jar" -config=default -saveonexit=off \

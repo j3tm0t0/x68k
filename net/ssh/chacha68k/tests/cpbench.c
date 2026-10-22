@@ -1,12 +1,14 @@
 /* cpbench.c -- X68000 (XEiJ / Z) で chacha20-poly1305@openssh.com を libtomcrypt と cp68k で回し、
  * 結果が同じか確かめて速さを比べる。dropbear の chachapoly.c の encrypt と同じ手順 (net/ssh/crypttest と同じ)。
- * usage: cpbench [-n PACKETS] [-l LEN] [OUTFILE]   既定 16384 バイト x 8 パケットずつ。時間は _iocs_ontime (1/100 秒) */
+ * usage: cpbench [-n PACKETS] [-l LEN] [OUTFILE]   既定 16384 バイト x 8 パケットずつ。時間は _iocs_ontime (1/100 秒)
+ * cp68k は Poly1305 の表引き版と MULU 版 (表を使わない) の両方を測る (実機で表のメモリアクセスが遅い場合の確認)。 */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <x68k/iocs.h>
 #include "tomcrypt.h"
 #include "cp68k.h"
+extern unsigned long poly68k_tab_min;
 
 static unsigned long fnv(const unsigned char *p, unsigned long n, unsigned long h)
 {
@@ -82,7 +84,25 @@ int main(int argc, char **argv)
   for (i = 0; i < npk; i++) seal_68k(i, len, out2);
   t = cs_since(t);
   fprintf(f, "cp68k:       %lu x %lu bytes in %ld.%02ld s = %ld B/s\n", npk, len, t / 100, t % 100, t ? (long)(npk * len * 100 / t) : 0);
-  fprintf(f, "last packet: %s\n", memcmp(out1, out2, len + 16) ? "DIFF" : "same");
+  {
+    unsigned long keep = poly68k_tab_min;
+    poly68k_tab_min = ~0UL;   /* MULU 版だけ */
+    t = now();
+    for (i = 0; i < npk; i++) seal_68k(i, len, out2);
+    t = cs_since(t);
+    poly68k_tab_min = keep;
+    fprintf(f, "last packet: %s\n", memcmp(out1, out2, len + 16) ? "DIFF" : "same");
+    fprintf(f, "cp68k MULU:  %lu x %lu bytes in %ld.%02ld s = %ld B/s\n", npk, len, t / 100, t % 100, t ? (long)(npk * len * 100 / t) : 0);
+  }
+  /* 短いパケット (打鍵・エコー) */
+  t = now();
+  for (i = 0; i < 100; i++) seal_68k(i, 52, out2);
+  t = cs_since(t);
+  fprintf(f, "cp68k:       100 x 52 bytes in %ld.%02ld s\n", t / 100, t % 100);
+  t = now();
+  for (i = 0; i < 100; i++) seal_ltc(i, 52, out1);
+  t = cs_since(t);
+  fprintf(f, "libtomcrypt: 100 x 52 bytes in %ld.%02ld s\n", t / 100, t % 100);
   fclose(f);
   return bad;
 }
