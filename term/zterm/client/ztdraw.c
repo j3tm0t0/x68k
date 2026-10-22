@@ -60,13 +60,15 @@ static long pr_nhit, pr_nmiss;
 static unsigned pr_epoch;        /* Enter などで進む。前の epoch の予測が当たっても信用にしない */
 #define PR_TIMEOUT 1500
 
-#ifdef VT_HOSTTEST
+#if defined(VT_SIM_TXRAS)
+static long pr_ms(void) { return 0; }   /* 68000 シミュレータ (libc 無し) */
+#elif defined(VT_HOSTTEST)
 #include <sys/time.h>
 static long pr_ms(void) { struct timeval tv; gettimeofday(&tv, 0); return tv.tv_sec * 1000L + tv.tv_usec / 1000; }
 #else
 static long pr_ms(void) { return (long)_iocs_ontime().sec * 10; }   /* 1/100 秒 (日付が変わると戻るが、外れ扱いになるだけ) */
 #endif
-#ifdef VT_HOSTTEST
+#if defined(VT_HOSTTEST) && !defined(VT_SIM_TXRAS)
 #include <stdio.h>
 #include <stdlib.h>
 #define PRDBG(...) do { if (getenv("ZTPR")) { fprintf(stderr, "[pr %ld] ", pr_ms() % 100000); fprintf(stderr, __VA_ARGS__); } } while (0)
