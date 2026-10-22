@@ -31,6 +31,7 @@ void _iocs_txrascpy(int d1, int d2, int d3);   /* 68000 シミュレータでの
 unsigned char vt_host_vram[4 * 0x20000];
 unsigned short vt_host_pal[16];
 unsigned char vt_host_cgrom[0xC0000];   /* CGROM 0xF00000-0xFBFFFF の写し */
+unsigned short vt_host_r21;             /* CRTC R21 (68000 シミュレータは同時アクセスを演じる。ホスト版はただの変数) */
 #else
 #define __DOS_INLINE__
 #define __IOCS_INLINE__
@@ -54,10 +55,12 @@ typedef unsigned int u32;  /* 32bit 転送用 (ホストの long は 8 バイト
 #ifdef VT_HOSTTEST
 #define TVRAM  ((volatile unsigned char *)vt_host_vram)
 #define TPAL   ((volatile unsigned short *)vt_host_pal)
+#define CRTC_R21 (*(volatile unsigned short *)&vt_host_r21)
 #define CGBASE ((const unsigned char *)vt_host_cgrom)
 #else
 #define TVRAM  ((volatile unsigned char *)0xE00000UL)
 #define TPAL   ((volatile unsigned short *)0xE82200UL)
+#define CRTC_R21 (*(volatile unsigned short *)0xE8002AUL)   /* bit8 同時アクセス、bit4-7 その対象プレーン、bit0-3 ラスタコピーのプレーン */
 #define CGBASE ((const unsigned char *)0xF00000UL)    /* CGROM 先頭 (16x16 漢字) */
 #endif
 #define CGROM16 (CGBASE + 0x3A800)   /* 8x16 ANK フォント (0xF3A800) */
@@ -75,6 +78,14 @@ typedef struct {
 #define AT_FG(a) ((a) >> 12)
 #define AT_BG(a) (((a) >> 8) & 15)
 #define AT_FL(a) ((a) & 0xff)
+/* 属性語の上位バイト (fg<<4|bg) と下位バイト (flags) をメモリから直接読む (68000 は 12 ビットのシフトが遅い) */
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#define AT_HI(c) (((const unsigned char *)&(c)->at)[0])
+#define AT_LO(c) (((const unsigned char *)&(c)->at)[1])
+#else
+#define AT_HI(c) (((const unsigned char *)&(c)->at)[1])
+#define AT_LO(c) (((const unsigned char *)&(c)->at)[0])
+#endif
 /* セル 1 つ = 4 バイトを 32bit 1 語として比べる・写す (flush の走査・消去・スクロールが最頻なので速く)。
  * may_alias で cell_t を 32bit として読む (厳密な別名規則での最適化に崩されないように)。
  * 32bit の値の中の並びはエンディアンで違うので、値を組み立てるときはセルに書いてから読む (clr_cell)。 */
@@ -86,6 +97,7 @@ typedef u32 __attribute__((may_alias)) cell_u32;
 #define F_WIDE      0x04   /* 全角の左セル (16 ドット幅で描く) */
 #define F_WIDECONT  0x08   /* 全角の右セル (描かない。左が両方を描く) */
 #define F_EMOJI     0x10   /* cp は絵文字表のインデックス。16x16・16色で描く (F_WIDE と併用) */
+#define BLANKCELL(x) ((x)->cp == 0x20 && AT_FL((x)->at) == 0)   /* 空白 (下線なし): 字形が 0 なので背景色だけで見える */
 
 /* 行は行ポインタで引く (スクロールは行ポインタを回すだけで、セルを動かさない)。cur[r][c] / drawn[r][c] で読み書きする */
 static cell_t store_main[MAXROWS][MAXCOLS];
@@ -352,25 +364,72 @@ static void pl_inv2(volatile unsigned char *v, const unsigned char *g)
 #undef PN
 }
 
-/* 1 セルを VRAM に描く (スーパーバイザ前提)。全角は左セルで 16 ドット幅 (2 バイト) を描く。 */
-static void blit(int col, int row, const cell_t *c)
+/* ---- テキスト VRAM の同時アクセス (CRTC R21 bit8 + bit4-7) ----
+ * 同時アクセスを有効にすると、プレーン 0 の位置への書き込みが選んだプレーン全部に入る。1 セルの 4 プレーンは
+ * 「0 で塗る / 0xff で塗る / グリフ / 反転グリフ」の 4 通りしかないので、同じ書き方のプレーンをまとめて 1 回で書ける
+ * (白地に黒の字ならグリフ 1 回 + 0 塗り 1 回。旧版は 4 プレーンを 1 枚ずつ)。IPLROM も画面消去に使っている機能だが、
+ * 念のため vt_init で画面外のラインに書いて確かめ (sa_probe)、効かなければプレーンごとに書く。
+ * R21 を触るのは flush の中だけ: 読み書き両方のある cursor_xor・TXRASCOPY (IOCS が R21 の下位を書く) の前に戻す。 */
+static int sa_ok;              /* 同時アクセスが使える (vt_init で確かめた) */
+static int sa_cur;             /* いま R21 に設定しているプレーン (0 = 同時アクセスを切ってある) */
+static unsigned short r21_save;
+static void sa_mask(int m)
+{
+  if (sa_cur == m) return;
+  if (!sa_cur) r21_save = CRTC_R21;
+  CRTC_R21 = (unsigned short)(0x100 | (m << 4));
+  sa_cur = m;
+}
+static void sa_off(void) { if (sa_cur) { CRTC_R21 = r21_save; sa_cur = 0; } }
+/* 画面外のライン 1020 で同時アクセスを試す: プレーン 1-3 を選んでプレーン 0 の位置に書き、プレーン 0 は変わらず
+ * 1-3 に入れば使える (バイトと 32bit の両方)。書いた所は元に戻す。スーパーバイザで呼ぶ。 */
+static int sa_probe(void)
+{
+  volatile unsigned char *v = TVRAM + 1020UL * VBYTES + 100;
+  unsigned char keep[4][4];
+  int p, k, ok = 1;
+  for (p = 0; p < 4; p++) for (k = 0; k < 4; k++) keep[p][k] = v[p * PLANE + k];
+  for (p = 0; p < 4; p++) for (k = 0; k < 4; k++) v[p * PLANE + k] = 0;
+  sa_mask(0xe);
+  v[0] = 0x5a;
+  *(volatile u32 *)(v + 0) = 0x12345678U;   /* v は 4 の倍数 (1020*128+100) */
+  v[0] = 0xa5;
+  sa_off();
+  if (v[0] != 0 || v[1] != 0) ok = 0;
+  for (p = 1; p < 4 && ok; p++)
+    if (v[p * PLANE] != 0xa5 || v[p * PLANE + 1] != 0x34 || v[p * PLANE + 3] != 0x78) ok = 0;
+  for (p = 0; p < 4; p++) for (k = 0; k < 4; k++) v[p * PLANE + k] = keep[p][k];
+  return ok;
+}
+/* プレーンの組 m (bit p = プレーン p) に、v (プレーン 0 の位置) から X を書く。同時アクセスなら 1 回、無ければ 1 枚ずつ */
+#define PASS(m, X) do { \
+    if (sa_ok) { volatile unsigned char *v = v0; sa_mask(m); X; } \
+    else { int p_; for (p_ = 0; p_ < 4; p_++) if (((m) >> p_) & 1) { volatile unsigned char *v = v0 + p_ * PLANE; X; } } \
+  } while (0)
+
+/* 1 セルを VRAM に描く (スーパーバイザ前提)。全角は左セルで 16 ドット幅 (2 バイト) を描く。
+ * old はいま VRAM に描いてあるセル (drawn。NULL なら分からない): 前も今も同じ値で塗りつぶしのプレーンは書かない。
+ * 空白 (下線なし) の字形は 0 なので、前景色に依らず背景色で塗るのと同じ (same_look が前景色だけ違う空白を描かずに
+ * 済ませるので、drawn の空白の前景色は VRAM と関係ない。空白は前も今も背景色だけで見る)。 */
+static void blit(int col, int row, const cell_t *c, const cell_t *old)
 {
 #ifdef VT_PROF_NOBLIT
-  (void)col; (void)row; (void)c; PROF(0, 1); return;   /* 計測: 描画を抜いた版 (解析・差分走査だけの時間) */
+  (void)col; (void)row; (void)c; (void)old; PROF(0, 1); return;   /* 計測: 描画を抜いた版 (解析・差分走査だけの時間) */
 #endif
-  int fg = AT_FG(c->at), bg = AT_BG(c->at), fl = AT_FL(c->at), p, wide = 0;
+  int fg = AT_FG(c->at), bg = AT_BG(c->at), fl = AT_FL(c->at), wide = 0, m0, m1, mg, mi;
   const unsigned char *gp;
   unsigned char ul[32];
-  volatile unsigned char *v;
+  volatile unsigned char *v0;
   if (fl & F_WIDECONT) return;   /* 右半分は左の F_WIDE セルが描く */
   PROF(0, 1);
-  if (fl & F_EMOJI) { blit_emoji(col, row, c->cp); return; }   /* cp = 絵文字インデックス */
+  if (fl & F_EMOJI) { sa_off(); blit_emoji(col, row, c->cp); return; }   /* cp = 絵文字インデックス */
   if (fl & F_WIDE) {
     unsigned short jis = jis_of(c->cp);
     if (jis) { gp = kanji_glyph(jis); wide = 1; }
     else gp = glyph_of(c);   /* 変換できない全角は空白相当 (put_cp 側で '?' に落とすので通常来ない) */
   } else {
     gp = glyph_of(c);
+    if (BLANKCELL(c)) fg = bg;
   }
   if (fl & F_UNDERLINE) {   /* 下線: 最下ラスタを埋めた写しを使う */
     int i, n = wide ? 32 : 16;
@@ -378,14 +437,48 @@ static void blit(int col, int row, const cell_t *c)
     ul[n - 1] = 0xff; if (wide) ul[n - 2] = 0xff;
     gp = ul;
   }
-  v = TVRAM + (unsigned long)row * CH * VBYTES + col;
-  for (p = 0; p < 4; p++, v += PLANE) {
-    int f = (fg >> p) & 1, b = (bg >> p) & 1;
-    if (f == b) { pl_fill(v, f ? 0xff : 0); if (wide) pl_fill(v + 1, f ? 0xff : 0); }
-    else if (wide) { if (f) { pl_copy2(v, gp); pl_copy2(v + 1, gp + 1); } else { pl_inv2(v, gp); pl_inv2(v + 1, gp + 1); } }
-    else if (f) pl_copy1(v, gp);
-    else pl_inv1(v, gp);
+  m1 = fg & bg;               /* 0xff で塗るプレーン */
+  m0 = ~(fg | bg) & 15;       /* 0 で塗る */
+  mg = fg & ~bg;              /* グリフ */
+  mi = ~fg & bg & 15;         /* 反転グリフ */
+  if (old && !wide && !(AT_FL(old->at) & (F_EMOJI | F_WIDECONT))) {   /* 前も同じ値の塗りつぶしなら書かない */
+    int ofg = AT_FG(old->at), obg = AT_BG(old->at);
+    if (BLANKCELL(old)) ofg = obg;
+    m1 &= ~(ofg & obg);
+    m0 &= ofg | obg;
   }
+  v0 = TVRAM + (unsigned long)row * CH * VBYTES + col;
+  if (m0) PASS(m0, { pl_fill(v, 0); if (wide) pl_fill(v + 1, 0); });
+  if (m1) PASS(m1, { pl_fill(v, 0xff); if (wide) pl_fill(v + 1, 0xff); });
+  if (mg) PASS(mg, { if (wide) { pl_copy2(v, gp); pl_copy2(v + 1, gp + 1); } else pl_copy1(v, gp); });
+  if (mi) PASS(mi, { if (wide) { pl_inv2(v, gp); pl_inv2(v + 1, gp + 1); } else pl_inv1(v, gp); });
+}
+
+/* 最頻の「下線なし・半角・罫線でない」セルを描く (blit と同じ絵。v0 はそのセルのプレーン 0・最上ラスタ)。
+ * 行の先頭アドレスを flush が 1 回だけ計算し、グリフは ASCII なら CGROM を直接引く。 */
+static void blit_plain(volatile unsigned char *v0, const cell_t *c, const cell_t *old)
+{
+#ifdef VT_PROF_NOBLIT
+  (void)v0; (void)c; (void)old; PROF(0, 1); return;
+#endif
+  unsigned cp = c->cp;
+  unsigned a = AT_HI(c), fg = a >> 4, bg = a & 15, m0, m1, mg, mi;
+  const unsigned char *gp;
+  PROF(0, 1);
+  if (cp == 0x20) { fg = bg; gp = CGROM16; }   /* 空白: 背景色で塗るだけ */
+  else if (cp - 0x21 < 0x5e && cp != 0x5c && cp != 0x7e) gp = CGROM16 + (cp << 4);
+  else gp = glyph_of(c);
+  m1 = fg & bg; m0 = ~(fg | bg) & 15; mg = fg & ~bg; mi = ~fg & bg & 15;
+  if (!(AT_LO(old) & (F_EMOJI | F_WIDECONT))) {   /* 前も同じ値の塗りつぶしなら書かない */
+    unsigned oa = AT_HI(old), ofg = oa >> 4, obg = oa & 15;
+    if (BLANKCELL(old)) ofg = obg;
+    m1 &= ~(ofg & obg);
+    m0 &= ofg | obg;
+  }
+  if (mg) PASS(mg, pl_copy1(v, gp));
+  if (m0) PASS(m0, pl_fill(v, 0));
+  if (m1) PASS(m1, pl_fill(v, 0xff));
+  if (mi) PASS(mi, pl_inv1(v, gp));
 }
 
 /* カーソルセルを反転する (XOR なので同じ呼び出しで消える) */
@@ -498,33 +591,37 @@ static void scroll(int n)
 
 /* ================= flush: logical と drawn の差分を描く ================= */
 /* 見た目が同じか: 同じ字・属性。空白 (下線なし) どうしなら前景色は見えないので背景だけ比べる */
-#define BLANKCELL(x) ((x)->cp == 0x20 && AT_FL((x)->at) == 0)
 static int same_look(const cell_t *a, const cell_t *b)
 {
   if (a->cp != b->cp || ((a->at ^ b->at) & 0x0fff)) return 0;
   return a->at == b->at || BLANKCELL(a);
 }
 
-/* 1 行 (COLS 桁 x 16 ライン x 4 プレーン) を背景色で塗る。空白だけの行 (消去・スクロールで空いた行) 用 */
-static void row_fill(int row, int bg)
+/* 1 行 (COLS 桁 x 16 ライン x 4 プレーン) を背景色で塗る。空白だけの行 (消去・スクロールで空いた行) 用。
+ * 同時アクセスなら 0 のプレーンと 1 のプレーンの 2 回 (背景が黒なら 1 回) で済む */
+static void row_fill1(volatile unsigned char *base, unsigned char b)
 {
-  int p, s, c;
-  for (p = 0; p < 4; p++) {
-    volatile unsigned char *base = TVRAM + (unsigned long)p * PLANE + (unsigned long)row * CH * VBYTES;
-    unsigned char b = (bg >> p) & 1 ? 0xff : 0x00;
-    if ((COLS & 3) == 0) {
-      u32 w = b ? 0xffffffffU : 0;
-      for (s = 0; s < CH; s++) {
-        volatile u32 *v = (volatile u32 *)(base + s * VBYTES);
-        for (c = 0; c < COLS / 4; c++) v[c] = w;
-      }
-    } else {
-      for (s = 0; s < CH; s++) for (c = 0; c < COLS; c++) base[s * VBYTES + c] = b;
+  int s, c;
+  if ((COLS & 3) == 0) {
+    u32 w = b ? 0xffffffffU : 0;
+    for (s = 0; s < CH; s++) {
+      volatile u32 *v = (volatile u32 *)(base + s * VBYTES);
+      for (c = 0; c < COLS / 4; c++) v[c] = w;
     }
+  } else {
+    for (s = 0; s < CH; s++) for (c = 0; c < COLS; c++) base[s * VBYTES + c] = b;
   }
 }
+static void row_fill(int row, int bg)
+{
+  volatile unsigned char *v0 = TVRAM + (unsigned long)row * CH * VBYTES;
+  if (bg & 15) PASS(bg & 15, row_fill1(v, 0xff));
+  if (~bg & 15) PASS(~bg & 15, row_fill1(v, 0));
+}
 
-static void flush(void)
+/* vt_write に展開させない (巨大な関数でレジスタが足りず、描画の内側のループで変数がスタックに溢れる) */
+#define NOINLINE __attribute__((noinline))
+static NOINLINE void flush(void)
 {
   int r, c, s, i;
   static unsigned char diff[MAXCOLS];
@@ -556,8 +653,17 @@ static void flush(void)
         continue;
       }
     }
-    for (i = 0; i < nd; i++) { c = diff[i]; blit(c, r, &lrow[c]); drow[c] = lrow[c]; }
+    {
+      volatile unsigned char *rv = TVRAM + (unsigned long)r * CH * VBYTES;
+      for (i = 0; i < nd; i++) {
+        c = diff[i];
+        if (AT_LO(&lrow[c]) & (F_UNDERLINE | F_SPECIAL | F_WIDE | F_WIDECONT | F_EMOJI)) blit(c, r, &lrow[c], &drow[c]);
+        else blit_plain(rv + c, &lrow[c], &drow[c]);
+        drow[c] = lrow[c];
+      }
+    }
   }
+  sa_off();
   if (cur_vis) { cursor_xor(cx, cy); csr_shown = 1; csr_x = cx; csr_y = cy; }
   sup_leave(s);
 }
@@ -1126,7 +1232,7 @@ static unsigned char cpk_fl[CPK_N], cpk_kind[CPK_N];
  *   左隣を、右端のセルが対の左半分だったなら右隣を消す (break_pair と同じ規則)。
  *   右端に 1 桁しか残らない全角 (と 2 セルの代用) は遅い道 (put_cell の「空けて次行へ」) に任せる。
  *   右端の後は pend_wrap: cx は最後の字の左端 (半角なら COLS-1、全角なら COLS-2) のまま。 */
-static int put_run(const unsigned char *p, int n)
+static NOINLINE int put_run(const unsigned char *p, int n)
 {
   const unsigned char *s = p, *e = p + n;
   cell_t *row = cur[cy], *c;
@@ -1310,11 +1416,14 @@ void vt_init(int cols, int rows)
   csr_shown = 0;
   for (c = 0; c < MAXCOLS; c++) tabstop[c] = (c % 8 == 0) ? 1 : 0;
   s = sup_enter();
+  sa_cur = 0;
+  sa_ok = sa_probe();
   palette_setup();
   _iocs_b_curoff();           /* BIOS のカーソルは使わない (自前で描く) */
   for (r = 0; r < ROWS; r++)
     { for (c = 0; c < COLS; c++) { clear_cell(&cur[r][c]); drawn[r][c] = cur[r][c]; } row_fill(r, c_bg); }
   for (r = 0; r < MAXROWS; r++) { rlo[r] = MAXCOLS; rhi[r] = 0; }
+  sa_off();
   sup_leave(s);
   _dos_breakck(0);            /* Ctrl-C ブレークを止める (キーはこちらで拾う) */
 }
@@ -1323,6 +1432,7 @@ void vt_fini(void)
 {
   int s, i;
   s = sup_enter();
+  sa_off();
   if (csr_shown) { cursor_xor(csr_x, csr_y); csr_shown = 0; }
   if (pal_saved) for (i = 0; i < 16; i++) TPAL[i] = pal_save[i];
   _iocs_b_curon();
@@ -1386,7 +1496,7 @@ int vt_host_verify(void)
   int r, c, p, ok = 1;
   for (p = 0; p < 4 * 0x20000; p++) save[p] = vt_host_vram[p];
   for (r = 0; r < ROWS; r++)
-    for (c = 0; c < COLS; c++) blit(c, r, &cur[r][c]);
+    for (c = 0; c < COLS; c++) blit(c, r, &cur[r][c], 0);
   if (csr_shown) cursor_xor(csr_x, csr_y);
   for (p = 0; p < 4 && ok; p++)
     for (r = 0; r < ROWS * CH && ok; r++)

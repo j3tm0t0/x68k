@@ -7,7 +7,7 @@
 #include <string.h>
 #include "m68k.h"
 static unsigned char mem[0x1000000];
-static unsigned vram_at = 0xffffffffu, pal_at;   /* vt_host_vram / vt_host_pal のアドレス */
+static unsigned vram_at = 0xffffffffu, pal_at, r21_at = 0xffffffffu;   /* vt_host_vram / vt_host_pal / vt_host_r21 のアドレス */
 static unsigned long long extra;          /* TXRASCOPY の待ち (CPU は IOCS 内で H-sync を待って止まる) */
 static long ntxras;
 #define RASTER_CYC 318                    /* 1 ラスタ (4 ライン) = 水平 1 周期 31.5kHz ≒ 31.8us = 318 クロック @10MHz */
@@ -29,11 +29,20 @@ static void txras(void)
 #define TVRAM_WAIT 2
 static unsigned long long vwait;
 #define VW(a) do { if ((unsigned)((a) - vram_at) < 0x80000u) vwait += TVRAM_WAIT; } while (0)
+/* CRTC R21 の同時アクセス (bit8 + bit4-7 のプレーン選択): テキスト VRAM への書き込みはプレーン 0 の位置として
+ * 選んだプレーン全部に入る (XEiJ の MemoryMappedDevice.MMD_TXT と同じ。ビットマスク bit9 は使わないので省く) */
+static void vput(unsigned a, unsigned v)
+{
+  unsigned r21 = r21_at != 0xffffffffu ? (mem[r21_at] << 8) | mem[r21_at + 1] : 0, off, p;
+  if (!(r21 & 0x100) || (unsigned)(a - vram_at) >= 0x80000u) { mem[a] = v; return; }
+  off = (a - vram_at) & 0x1ffff;
+  for (p = 0; p < 4; p++) if (r21 & (0x10 << p)) mem[vram_at + p * 0x20000 + off] = v;
+}
 unsigned int m68k_read_memory_8(unsigned int a) { a &= 0xffffff; VW(a); return mem[a]; }
 unsigned int m68k_read_memory_16(unsigned int a) { a &= 0xffffff; VW(a); return (mem[a] << 8) | mem[a + 1]; }
 unsigned int m68k_read_memory_32(unsigned int a) { return (m68k_read_memory_16(a) << 16) | m68k_read_memory_16(a + 2); }
-void m68k_write_memory_8(unsigned int a, unsigned int v) { a &= 0xffffff; VW(a); mem[a] = v; }
-void m68k_write_memory_16(unsigned int a, unsigned int v) { a &= 0xffffff; VW(a); mem[a] = v >> 8; mem[a + 1] = v; }
+void m68k_write_memory_8(unsigned int a, unsigned int v) { a &= 0xffffff; VW(a); vput(a, v & 0xff); }
+void m68k_write_memory_16(unsigned int a, unsigned int v) { a &= 0xffffff; VW(a); vput(a, (v >> 8) & 0xff); vput(a + 1, v & 0xff); }
 void m68k_write_memory_32(unsigned int a, unsigned int v) { m68k_write_memory_16(a, v >> 16); m68k_write_memory_16(a + 2, v); if ((a & 0xffffff) == 0x7fffd0 && v == 1) txras(); }
 unsigned int m68k_read_disassembler_16(unsigned int a) { return m68k_read_memory_16(a); }
 unsigned int m68k_read_disassembler_32(unsigned int a) { return m68k_read_memory_32(a); }
@@ -45,7 +54,7 @@ int main(int argc, char **argv)
   unsigned cg = 0; char line[256]; FILE *nm; long fsz; unsigned long long cyc = 0, cyc0 = 0;
   fload(argv[1], mem + 0x1000, 0x700000);
   nm = fopen(argv[2], "r");
-  while (fgets(line, sizeof line, nm)) { unsigned a; char t, s[200]; if (sscanf(line, "%x %c %199s", &a, &t, s) == 3) { if (!strcmp(s, "vt_host_cgrom")) cg = a; if (!strcmp(s, "vt_host_vram")) vram_at = a; if (!strcmp(s, "vt_host_pal")) pal_at = a; } }
+  while (fgets(line, sizeof line, nm)) { unsigned a; char t, s[200]; if (sscanf(line, "%x %c %199s", &a, &t, s) == 3) { if (!strcmp(s, "vt_host_cgrom")) cg = a; if (!strcmp(s, "vt_host_vram")) vram_at = a; if (!strcmp(s, "vt_host_pal")) pal_at = a; if (!strcmp(s, "vt_host_r21")) r21_at = a; } }
   fclose(nm);
   if (cg) fload(argv[3], mem + cg, 0xc0000);   /* 旧版 (vt_host_cg) は CGROM 無しで走らせる */
   fsz = fload(argv[4], mem + 0x800000, 0x300000);
