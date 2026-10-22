@@ -83,7 +83,7 @@ ESP/X libnetwork (rcmd.x) が追加で使うもの: `recvline` (arg[3] = fd, buf
 | ノンブロッキング connect | EIO で失敗 | -1 + "SYN SENT" (→ EINPROGRESS)。次の tick で ESTABLISHED、poll の POLLOUT で分かる |
 | ブロッキング connect | 0 | 0 (ESTABLISHED になるまで中で待つ。-1 を返すと libsocket が EINPROGRESS にする) |
 | ノンブロッキング write > 4096 | 全部送るのに -1 (EAGAIN) を返す | 受信側の空きまで受け取ってその数を返す (部分書き込み)。0 は返さない |
-| ブロッキング write | | 1 バイト以上受け取れるまで中で待ち、受け取った数を返す |
+| ブロッキング write | | 全部受け取るまで中で待つ (相手が切れたらそこまでの数) |
 | 受信 TOS ≠ 0 | TCP データを捨てる | (ループバックには無関係) |
 | EOF の通知 | | 受信バッファが空で相手が送信を閉じたら socklen(fd,0) = **-1** (poll は POLLERR、続く read が 0)。そのため EOF 後の getsockopt(SO_SOCKLENRECV) は EBADF になる |
 
