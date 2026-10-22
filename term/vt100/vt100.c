@@ -373,7 +373,7 @@ static void pl_inv2(volatile unsigned char *v, const unsigned char *g)
  * R21 を触るのは flush の中だけ: 読み書き両方のある cursor_xor・TXRASCOPY (IOCS が R21 の下位を書く) の前に 0 に戻す
  * (R21 は読まない。実機で読めるか確かめていないので。起動時は 0 で、IOCS の TXRASCOPY は呼ぶたびに自分で設定する)。 */
 static int sa_ok;              /* 同時アクセスが使える (vt_init で確かめた) */
-static int sa_cur;             /* いま R21 に設定しているプレーン (0 = 同時アクセスを切ってある) */
+static unsigned short sa_cur; /* いま R21 に設定しているプレーン (0 = 同時アクセスを切ってある) */
 static void sa_mask(int m)
 {
   if (sa_cur == m) return;
@@ -456,7 +456,9 @@ static void blit(int col, int row, const cell_t *c, const cell_t *old)
 
 /* 属性語の上位バイト (fg<<4|bg) -> プレーンの書き方。bit0-3 グリフ / bit4-7 0 塗り / bit8-11 0xff 塗り / bit12-15 反転グリフ。
  * pm_old は「前の絵がそのプレーンで塗りつぶし」の印 (bit4-7 = 0 で塗ってある / bit8-11 = 0xff で塗ってある)。 */
-static unsigned short pm_new[256], pm_old[256];
+static unsigned short pm_tab[512];   /* [0..255] = pm_new、[256..511] = pm_old (vt_blitrow は 1 本の表として引く) */
+#define pm_new pm_tab
+#define pm_old (pm_tab + 256)
 static void pm_build(void)
 {
   int a;
@@ -491,6 +493,67 @@ static void blit_plain(volatile unsigned char *v0, const cell_t *c, const cell_t
   if (m & 0x0f00) { volatile unsigned char *v = v0; sa_mask((m >> 8) & 15); pl_fill(v, 0xff); }
   if (m & 0xf000) { volatile unsigned char *v = v0; sa_mask(m >> 12); pl_inv1(v, gp); }
 }
+
+#if defined(__mc68000__) && !defined(VT_PROF_NOBLIT)
+/* blit_plain の 68000 手書き版 (同時アクセスが使えるときだけ)。C だとセルごとの判定・表引き・レジスタの出し入れに
+ * グリフの 16 バイト転送の倍以上かかっていた。行の差分セル diff[0..nd-1] を前から描き、drawn も写す。
+ * ASCII 以外・下線・全角・罫線・\・~ のセルに来たらそこで止め、処理した数を返す (そのセルは C の blit が描く)。
+ *   引数 (スタック): rv=行のプレーン 0 の先頭, lrow, drow, diff, nd, pm=pm_tab, cg=CGROM16, r21=&CRTC_R21, cur=&sa_cur
+ *   d0=処理数 d1=桁 d2=桁*4 d3=グリフの位置 d5=書き方 d6=いまの R21 プレーン d7=nd
+ *   a0=rv a1=lrow a2=drow a3=diff a4=pm a5=グリフ/R21 a6=セルの VRAM */
+int vt_blitrow(volatile unsigned char *rv, cell_t *lrow, cell_t *drow, const unsigned char *diff, int nd,
+               const unsigned short *pm, const unsigned char *cg, volatile unsigned short *r21, unsigned short *cur);
+#define BR_R21 /* d4 = プレーン (0 以外)。違えば R21 = 0x100 | d4<<4 */ \
+  "	cmp.w	%d4,%d6\n	beq.s	1f\n	move.w	%d4,%d6\n	lsl.w	#4,%d4\n	ori.w	#0x100,%d4\n" \
+  "	movea.l	76(%sp),%a5\n	move.w	%d4,(%a5)\n1:\n"
+#define BR_G16(X) X(0) X(1) X(2) X(3) X(4) X(5) X(6) X(7) X(8) X(9) X(10) X(11) X(12) X(13) X(14) X(15)
+#define BR_CP(i) "	move.b	(%a5)+," #i "*128(%a6)\n"
+#define BR_INV(i) "	move.b	(%a5)+,%d4\n	not.b	%d4\n	move.b	%d4," #i "*128(%a6)\n"
+#define BR_FILL(i) "	move.b	%d4," #i "*128(%a6)\n"
+__asm__(
+"	.text\n	.even\n	.globl	vt_blitrow\n"
+"vt_blitrow:\n"
+"	movem.l	%d2-%d7/%a2-%a6,-(%sp)\n"
+"	movea.l	48(%sp),%a0\n	movea.l	52(%sp),%a1\n	movea.l	56(%sp),%a2\n	movea.l	60(%sp),%a3\n"
+"	move.l	64(%sp),%d7\n	movea.l	68(%sp),%a4\n	movea.l	80(%sp),%a5\n	move.w	(%a5),%d6\n"
+"	moveq	#0,%d0\n	tst.w	%d7\n	beq	.Lbr_done\n"
+".Lbr_loop:\n"
+"	moveq	#0,%d1\n	move.b	(%a3,%d0.w),%d1\n	move.w	%d1,%d2\n	add.w	%d2,%d2\n	add.w	%d2,%d2\n"
+"	move.b	3(%a1,%d2.w),%d3\n	andi.b	#0x1f,%d3\n	bne	.Lbr_done\n"          /* 下線・罫線・全角・絵文字 */
+"	move.w	(%a1,%d2.w),%d3\n	moveq	#0,%d4\n	move.b	2(%a1,%d2.w),%d4\n"   /* d3=cp d4=fg<<4|bg */
+"	cmpi.w	#0x20,%d3\n	bne.s	.Lbr_nb\n"
+"	andi.w	#15,%d4\n	move.w	%d4,%d5\n	lsl.w	#4,%d5\n	or.w	%d5,%d4\n	bra.s	.Lbr_at\n"   /* 空白: fg = bg */
+".Lbr_nb:\n"
+"	cmpi.w	#0x21,%d3\n	bcs	.Lbr_done\n	cmpi.w	#0x7e,%d3\n	bcc	.Lbr_done\n	cmpi.w	#0x5c,%d3\n	beq	.Lbr_done\n"
+".Lbr_at:\n"
+"	lsl.w	#4,%d3\n	add.w	%d4,%d4\n	move.w	(%a4,%d4.w),%d5\n"           /* d3=グリフの位置 d5=pm_new[a] */
+"	move.b	3(%a2,%d2.w),%d4\n	andi.b	#0x18,%d4\n	bne.s	.Lbr_pass\n"     /* 前が絵文字・全角の右半分: 分からない */
+"	moveq	#0,%d4\n	move.b	2(%a2,%d2.w),%d4\n"
+"	cmpi.w	#0x20,(%a2,%d2.w)\n	bne.s	.Lbr_on\n	tst.b	3(%a2,%d2.w)\n	bne.s	.Lbr_on\n"
+"	andi.w	#15,%d4\n	move.w	%d4,%d1\n	lsl.w	#4,%d1\n	or.w	%d1,%d4\n	move.b	(%a3,%d0.w),%d1\n"   /* 前が空白: fg = bg */
+".Lbr_on:\n"
+"	add.w	%d4,%d4\n	addi.w	#512,%d4\n	move.w	(%a4,%d4.w),%d4\n	not.w	%d4\n	and.w	%d4,%d5\n"   /* d5 &= ~pm_old[oa] */
+".Lbr_pass:\n"
+"	lea	(%a0,%d1.w),%a6\n"
+"	move.w	%d5,%d4\n	andi.w	#15,%d4\n	beq	.Lbr_p0\n" BR_R21
+"	movea.l	72(%sp),%a5\n	adda.w	%d3,%a5\n" BR_G16(BR_CP)
+".Lbr_p0:\n"
+"	move.w	%d5,%d4\n	lsr.w	#4,%d4\n	andi.w	#15,%d4\n	beq	.Lbr_p1\n" BR_R21
+"	moveq	#0,%d4\n" BR_G16(BR_FILL)
+".Lbr_p1:\n"
+"	move.w	%d5,%d4\n	lsr.w	#8,%d4\n	andi.w	#15,%d4\n	beq	.Lbr_pi\n" BR_R21
+"	moveq	#-1,%d4\n" BR_G16(BR_FILL)
+".Lbr_pi:\n"
+"	move.w	%d5,%d4\n	lsr.w	#8,%d4\n	lsr.w	#4,%d4\n	beq	.Lbr_next\n" BR_R21
+"	movea.l	72(%sp),%a5\n	adda.w	%d3,%a5\n" BR_G16(BR_INV)
+".Lbr_next:\n"
+"	move.l	(%a1,%d2.w),(%a2,%d2.w)\n"                                          /* drawn = 論理画面 */
+"	addq.w	#1,%d0\n	cmp.w	%d7,%d0\n	bcs	.Lbr_loop\n"
+".Lbr_done:\n"
+"	movea.l	80(%sp),%a5\n	move.w	%d6,(%a5)\n"
+"	movem.l	(%sp)+,%d2-%d7/%a2-%a6\n	rts\n");
+#define BLIT_ASM 1
+#endif
 
 /* カーソルセルを反転する (XOR なので同じ呼び出しで消える) */
 static void cursor_xor(int col, int row)
@@ -663,11 +726,29 @@ static NOINLINE void flush(void)
     if (hi >= COLS) hi = COLS - 1;
     lrow = cur[r]; drow = drawn[r];
     /* 1 回目: 書き換え範囲で描き直しの要るセルを拾う (同じなら飛ばす。空白で前景色だけ違うものは控えだけ直す) */
+#ifdef __mc68000__
+    {   /* 同じセルを飛ばすのは cmpm.l / dbne の 2 命令のループで (C の比較ループの半分以下のクロック) */
+      const cell_u32 *l = (const cell_u32 *)&lrow[lo], *d = (const cell_u32 *)&drow[lo];
+      short cnt = (short)(hi - lo);   /* dbne の回数 (残りのセル数 - 1) */
+      for (;;) {
+        unsigned char ne;
+        __asm__ volatile ("1:\tcmpm.l\t(%0)+,(%1)+\n\tdbne\t%2,1b\n\tsne\t%3"
+                          : "+a"(l), "+a"(d), "+d"(cnt), "=d"(ne) : : "cc");
+        if (!ne) break;   /* 最後まで同じ */
+        c = (int)((const cell_t *)l - lrow) - 1;   /* 食い違ったセル (両方とも 1 つ先まで進んでいる) */
+        if (same_look(&lrow[c], &drow[c])) drow[c] = lrow[c];
+        else diff[nd++] = (unsigned char)c;
+        if (cnt == 0) break;   /* 食い違いで抜けたとき cnt はその先の残り数 */
+        cnt--;
+      }
+    }
+#else
     for (c = lo; c <= hi; c++) {
       if (CELLEQ(&lrow[c], &drow[c])) continue;
       if (same_look(&lrow[c], &drow[c])) drow[c] = lrow[c];
       else diff[nd++] = (unsigned char)c;
     }
+#endif
     if (nd == 0) continue;
     if (nd > 8) {   /* 空白だけの行 (消去・スクロールで空いた行) で描き直しが多い: 行ごと塗る */
       int bg0 = AT_BG(lrow[0].at), blank = 1;
@@ -683,6 +764,14 @@ static NOINLINE void flush(void)
     {
       volatile unsigned char *rv = TVRAM + (unsigned long)r * CH * VBYTES;
       for (i = 0; i < nd; i++) {
+#ifdef BLIT_ASM
+        if (sa_ok && !(AT_LO(&lrow[diff[i]]) & 0x1f)) {   /* ASCII・下線なしのセルは手書きの版でまとめて (止まったセルだけ下の C で) */
+          int k = vt_blitrow(rv, lrow, drow, diff + i, nd - i, pm_tab, CGROM16, &CRTC_R21, &sa_cur);
+          PROF(0, k);
+          i += k;
+          if (i >= nd) break;
+        }
+#endif
         c = diff[i];
         if (!sa_ok || (AT_LO(&lrow[c]) & (F_UNDERLINE | F_SPECIAL | F_WIDE | F_WIDECONT | F_EMOJI))) blit(c, r, &lrow[c], &drow[c]);
         else blit_plain(rv + c, &lrow[c], &drow[c]);
