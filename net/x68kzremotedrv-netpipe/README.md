@@ -34,6 +34,7 @@ USB キーボード (0012) を入れるときは `cmake -DHID_KEYBOARD=ON ..` (�
 | `src/virtual_disk.c` | ID 6 の読み書きを netpipe に回す |
 | `src/connect.c` | Wi-Fi の省電力を切る (応答が 50〜300ms 遅れて TCP が遅くなるため) |
 | `src/accel.c` / `accel_ops.c` / `accel_proto.h` / `monocypher/` | 0011: 暗号アクセラレータ (X25519 / Ed25519 を Z の代わりに計算する。[../accel](../accel)) |
+| `driver/mkbootwait.py` | 0024: 横並びのロゴに戻し、ロゴの行だけ副題の左端にそろえる |
 | `driver/mkbootwait.py` / `driver/bootwait.S` | 0023: ロゴを縦積みに (上に紋章、下に 1 行の「PICO Z LOADER」) |
 | `driver/mkbootwait.py` | 0022: 画面の左右の釣り合い (状態欄・◆ の行を中央に、下のバーを枠の線にそろえる、ロゴを見た目の中心に) |
 | `driver/mkbootwait.py` / `driver/bootwait.S` | 0021: 「Pico Z Loader」のロゴ (電源の輪と Z、Orbitron の PICO Z / LOADER) |
@@ -128,6 +129,8 @@ python3 -uc 'import socket,time;s=socket.socket(2,2);s.bind(("",6870));[print(ti
   - S か F1: 設定画面 (hdsboot の F1 と同じ settingui.bin を ID 6 の LBA 0x100 から読む)。0016 から、Pico が接続中でも使える
     (設定画面の命令は接続を待たず、接続タスクが Wi-Fi に繋ぎにいっている間は NOT READY で待たせる。変えた設定は次の繰り直しで使われる)。
     設定で HDS を変えたら Z の電源を入れ直す (画面にも出す。変えた HDS が開くと「HDS が変わりました」になる)
+- 0024: 0023 の縦積みはやめ、0022 の横並びに戻した。ロゴの行だけ左に寄せ、左端を副題の左端にそろえる
+  (輪が副題の「Pico Z Loader」の上に来る)。ロゴの持ち方 (帯 x プレーン、art_blits) は 0023 のまま
 - 0023: ロゴを縦積みに。上に電源の輪と Z、その下に 1 行で「PICO Z LOADER」(PICO 白、Z 水色、LOADER 灰青)、どちらも中央。
   副題は「for X68000 Z ・ Raspberry Pi Pico W / x68kzremotedrv」、下の行を詰め直した。ロゴは横の帯 x プレーンごとに持ち
   (空のプレーンは持たない)、表 (art_blits) で描く
