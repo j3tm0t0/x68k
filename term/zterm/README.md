@@ -139,15 +139,29 @@ python3 ../../vt100/tests/vram2png.py out.bin out.png
 
 | 負荷 | 素の VT (pty の出力) | zterm D=0 | zterm D=150ms |
 |---|---|---|---|
-| `top -d 0.2` | 8.3 KB/s | 0.8 KB/s | 1.2 KB/s |
+| `top -d 0.2` | 8.5-8.8 KB/s | 1.3 KB/s | 1.1 KB/s |
 | Claude Code の応答の流し込み (記録を 128B/20ms で再生) | 4.4 KB/s | 1.4 KB/s | 1.1 KB/s |
-| Claude Code 風の全画面描き直し 20 FPS (`spinner.py`) | 43 KB/s | 0.73 KB/s | 0.37 KB/s |
+| Claude Code 風の全画面描き直し 20 FPS (`spinner.py`) | 43 KB/s | 0.72 KB/s | 0.38 KB/s |
+| 長い文字の垂れ流し (`claude --help` の記録を 256B/10ms で再生) | 14.6 KB/s | 9.5 KB/s | 6.0 KB/s |
 
+  どれも zthost の `-V` (フレームごとの VRAM 不変条件) は 0 件。垂れ流しは新しい文字そのものなので減らしようがなく、
+  遅い Z (D=150) では画面から流れ去った分を送らない分だけ減る。
   Z の受信は暗号 (chacha20-poly1305) を 68000 で解くので、受け取るバイト数がそのまま CPU 時間になる。
-- **Z の描画時間** (`tests/simbench.sh`、68000 のサイクル数の見積もり): 入力を同じ 1400 バイトずつに区切ったとき、
-  Claude Code の流し込み 1.13 s → 0.56 s、less UTF-8 1.22 → 0.28、tmux 0.54 → 0.15。top・vim は 1.1〜1.2 倍
-  (描画そのものが主で、解析は既に速い)。区切りの途中の画面 (消した直後など) まで描くと逆に増える例 (claude_help、
-  gitlog) があり、実際の接続では上の「静かになるまで待つ」と ACK の間引きでそういう途中の画面を飛ばす。
+- **Z の描画時間** (`tests/simbench.sh`、68000 10MHz のサイクル数の見積もり。入力を同じ 1400 バイトずつに区切り、
+  素の VT は vt_write、zterm はその区切りごとの 1 フレームを ztd_frame):
+
+| フィクスチャ | vt_write | zterm | 比 |
+|---|---|---|---|
+| app_claude_stream | 1.13 s | 0.56 s | 2.0x |
+| app_claude | 0.70 s | 0.30 s | 2.3x |
+| app_claude_help (垂れ流し) | 3.12 s | 2.02 s | 1.5x |
+| app_tmux | 0.54 s | 0.15 s | 3.7x |
+| app_lessu8 | 1.22 s | 0.28 s | 4.3x |
+| jp_less | 1.35 s | 0.63 s | 2.1x |
+| app_top / top / vim / app_vimjp | | | 1.1-1.2x |
+
+  vt100.c の解析は既に速く、残りは VRAM への描画そのもの。zterm の効き目はこの表 (同じ区切り) より、実際の接続での
+  間引き (Z が遅いほど間の画面を飛ばす) と受信バイト数の減少 (= 68000 での復号の時間) の方が大きい。
 
 ## ヘルパの大きさ (opt-level=z, LTO, strip, panic=abort。musl は静的)
 

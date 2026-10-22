@@ -243,13 +243,20 @@ static void zt_keys_fill(void)
 }
 static int zt_ready(void) { return zc_pending() > 0; }
 
-/* cli-main.c (getopts の前) から: -Z を argv から抜く */
+/* cli-main.c (getopts の前) から: -Z を argv から抜く。ホスト名 (値を取らない最初の非オプション) より後は
+   リモートのコマンドなので触らない (ssh.x -Z host grep -Z ... の -Z は残す) */
 int x68k_zterm_args(int *argc, char **argv)
 {
-  int i, j;
+  static const char valopt[] = "pilLRocmWKIJbB";   /* 値を取る dbclient のオプション */
+  int i, j, host = 0;
   for (i = j = 0; i < *argc; i++) {
-    if (i > 0 && !strcmp(argv[i], "-Z")) { zt_want = 1; continue; }
-    argv[j++] = argv[i];
+    const char *a = argv[i];
+    if (i > 0 && !host) {
+      if (!strcmp(a, "-Z")) { zt_want = 1; continue; }
+      if (a[0] == '-' && a[1] && !a[2] && strchr(valopt, a[1]) && i + 1 < *argc) { argv[j++] = argv[i++]; a = argv[i]; }
+      else if (a[0] != '-') host = 1;
+    }
+    argv[j++] = (char *)a;
   }
   argv[j] = 0;
   *argc = j;

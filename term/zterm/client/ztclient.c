@@ -26,11 +26,13 @@ static int z_exit = -1;
 static void (*logfn)(const char *);
 
 static void zlog(const char *m) { if (logfn) logfn(m); }
+static void oput(const unsigned char *p, int n);
 void zc_log(void (*fn)(const char *)) { logfn = fn; }
 
 static void fail(const char *m)
 {
   if (st == ZC_FAIL) return;
+  if (st == ZC_RUN) { static const unsigned char q[2] = { 'q', 0 }; oput(q, 2); }   /* リモートの zterm にも終わってもらう (チャネルが閉じる) */
   if (!z_err[0]) { strncpy(z_err, m, sizeof z_err - 1); z_err[sizeof z_err - 1] = 0; }   /* 最初の原因を残す */
   st = ZC_FAIL;
   if (push_fp) { fclose(push_fp); push_fp = 0; }
@@ -115,7 +117,7 @@ static void start_push(const char *arch, int gz)
     if (push_fp) fclose(push_fp);
     push_fp = 0;
     oput((const unsigned char *)"0\n", 2);   /* スクリプトは FAIL nobinary で終わる */
-    sprintf(z_err, "zterm: no helper %s", path);
+    snprintf(z_err, sizeof z_err, "zterm: no helper %s", path);
     zlog(z_err);
     st = ZC_WAITGO;
     return;
