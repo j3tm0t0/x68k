@@ -1,4 +1,4 @@
-From d54ddbbc95769ee5815964eaa1d3353a1985b4a9 Mon Sep 17 00:00:00 2001
+From 0fcbd3a8f728d20409fbadd857f02b3489632e18 Mon Sep 17 00:00:00 2001
 From: moto <j3tm0t0@gmail.com>
 Date: Thu, 22 Oct 2026 09:14:56 +0900
 Subject: [PATCH] netpipe: crypto accelerator (X25519/Ed25519 on the Pico) via
@@ -75,7 +75,7 @@ index 49755ce..1ab61ec 100644
          ${CMAKE_CURRENT_LIST_DIR}/iconv
 diff --git a/src/accel.c b/src/accel.c
 new file mode 100644
-index 0000000..4b45423
+index 0000000..3036196
 --- /dev/null
 +++ b/src/accel.c
 @@ -0,0 +1,111 @@
@@ -160,8 +160,8 @@ index 0000000..4b45423
 +        st_dup++;
 +        return;
 +    }
-+    if (req_len != 0) {
-+        /* 計算中。id を返して BUSY を即答する (Z 側は自前の計算に切り替える) */
++    if (req_len != 0 || res_len != 0) {
++        /* 計算中 (または前の結果をまだ渡していない)。id を返して BUSY を即答する (Z 側は自前の計算に切り替える) */
 +        busy_len = accel_res_build(busy_res, payload[1], accel_get16(payload + 2), ACCEL_ST_BUSY, 0, 0, NULL, 0);
 +        st_busy++;
 +        return;

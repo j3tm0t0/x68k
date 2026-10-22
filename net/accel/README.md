@@ -90,7 +90,7 @@ python3 -m venv venv && venv/bin/pip install cryptography    # 1 回
 
 ## Pico の大きさと速さ
 
-ファーム (netpipe ブランチ e3c98c9 → accel d54ddbb、arm-gnu-toolchain 14.3、`-O3`):
+ファーム (netpipe ブランチ e3c98c9 → accel 0011 パッチ、arm-gnu-toolchain 14.3、`-O3`):
 
 | | text | bss |
 |---|---|---|
