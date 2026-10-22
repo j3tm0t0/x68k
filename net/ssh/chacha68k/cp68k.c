@@ -125,12 +125,38 @@ void poly68k_finish(poly68k_state *st, unsigned char tag[16])
   memset(st, 0, sizeof *st);
 }
 
+#ifdef CP68K_POLY_ASM
+/* 表引き版 (gen_poly.py の poly68k_blocks_tab)。表は TA[256][8] の後に TB[256][8] (16KB)。
+   表を作るのに ~8.6 万クロックかかるので、26 ブロック (416 バイト) 未満は MULU 版 (1 ブロック ~6600 クロック、表引きは ~3300) */
+#define POLY68K_TAB_MIN 26
+extern void poly68k_table_asm(uint32_t *tab, const uint32_t R[5]);
+extern void poly68k_blocks_tab(poly68k_state *st, const unsigned char *m, unsigned long n, unsigned long hibit, const uint32_t *tab);
+static uint32_t poly68k_tab[2 * 256 * 8];
+static void poly68k_tables(const poly68k_state *st)
+{
+  uint32_t R[5], R8[5];
+  int i;
+  for (i = 0; i < 4; i++) R[i] = st->r[2 * i] | ((uint32_t)st->r[2 * i + 1] << 16);
+  R[4] = 0;
+  R8[0] = R[0] << 8;
+  for (i = 1; i < 5; i++) R8[i] = (R[i] << 8) | (R[i - 1] >> 24);
+  poly68k_table_asm(poly68k_tab, R);
+  poly68k_table_asm(poly68k_tab + 256 * 8, R8);
+}
+#endif
+
 void poly68k_mac(unsigned char tag[16], const unsigned char *m, unsigned long len, const unsigned char key[32])
 {
   poly68k_state st;
   unsigned char buf[16] __attribute__((aligned(2)));
   unsigned long n = len >> 4;
   poly68k_init(&st, key);
+#ifdef CP68K_POLY_ASM
+  if (n >= POLY68K_TAB_MIN && ((uintptr_t)m & 1) == 0) {
+    poly68k_tables(&st);
+    poly68k_blocks_tab(&st, m, n, 1, poly68k_tab);
+  } else
+#endif
   if (n) {
     if (((uintptr_t)m & 1) == 0) poly68k_blocks(&st, m, n, 1);
     else {   /* 奇数番地は 68000 で語アクセスできないので 1 ブロックずつ写す */
