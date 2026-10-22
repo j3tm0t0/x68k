@@ -82,6 +82,11 @@ static cell_t (*cur)[MAXCOLS] = scr_main;   /* いま表示している面 */
 
 static int COLS = MAXCOLS, ROWS = MAXROWS;
 
+/* 行ごとの「論理画面を書き換えた」印。flush は印の付いた行だけ drawn と比べる (全 3072 セルの走査を避ける) */
+static unsigned char rdirty[MAXROWS];
+#define TOUCH(r) (rdirty[r] = 1)
+static void touch_rows(int r0, int r1) { int r; for (r = r0; r <= r1; r++) rdirty[r] = 1; }
+
 /* ---- カーソル・属性の状態 ---- */
 static int cx, cy;            /* カーソル位置 (0 起算) */
 static int pend_wrap;         /* DECAWM の遅延折り返し待ち */
@@ -129,6 +134,14 @@ static int outq_len;
 /* パレットの退避 */
 static unsigned short pal_save[16];
 static int pal_saved;
+
+/* ---- 計測 (-DVT_PROF で数える。vtcat -b が表示する) ---- */
+#ifdef VT_PROF
+long vt_prof[8];   /* 0=blit したセル 1=scroll 呼び出し 2=TXRASCOPY 3=32bit 転送の行 4=flush 5=vt_write 6=put_cell 7=行塗り */
+#define PROF(i, n) (vt_prof[i] += (n))
+#else
+#define PROF(i, n)
+#endif
 
 /* ---- スーパーバイザ ---- */
 /* 戻り値を _dos_super に渡して戻す。負なら元からスーパーバイザなので触らない。 */
@@ -267,18 +280,55 @@ static void blit_emoji(int col, int row, int idx)
   }
 }
 
+/* 1 プレーン x 16 ラスタを書く小関数。ラスタ間は VBYTES (128) なので v[i*128] は 68000 の d16(An) で届き、
+ * 展開すると 1 バイト 1 命令 (move.b (a1)+,d16(a0) 等) になる。プレーンごとに「前景/背景のビット」の組で
+ * 4 通り: 0/0 は 0、1/1 は 0xff、1/0 はグリフ、0/1 は反転グリフ (旧版は 1 ラスタごとに 4 プレーン分の
+ * AND/OR を計算しており 1 セル数千クロックかかっていた)。st はグリフの 1 ラスタのバイト数 (半角 1 / 全角 2)。 */
+#define R16(X) X(0) X(1) X(2) X(3) X(4) X(5) X(6) X(7) X(8) X(9) X(10) X(11) X(12) X(13) X(14) X(15)
+static void pl_fill(volatile unsigned char *v, unsigned char b)
+{
+#define PF(i) v[(i) * VBYTES] = b;
+  R16(PF)
+#undef PF
+}
+static void pl_copy1(volatile unsigned char *v, const unsigned char *g)
+{
+#define PC(i) v[(i) * VBYTES] = g[i];
+  R16(PC)
+#undef PC
+}
+static void pl_inv1(volatile unsigned char *v, const unsigned char *g)
+{
+#define PN(i) v[(i) * VBYTES] = (unsigned char)~g[i];
+  R16(PN)
+#undef PN
+}
+static void pl_copy2(volatile unsigned char *v, const unsigned char *g)
+{
+#define PC(i) v[(i) * VBYTES] = g[(i) * 2];
+  R16(PC)
+#undef PC
+}
+static void pl_inv2(volatile unsigned char *v, const unsigned char *g)
+{
+#define PN(i) v[(i) * VBYTES] = (unsigned char)~g[(i) * 2];
+  R16(PN)
+#undef PN
+}
+
 /* 1 セルを VRAM に描く (スーパーバイザ前提)。全角は左セルで 16 ドット幅 (2 バイト) を描く。 */
 static void blit(int col, int row, const cell_t *c)
 {
-  int fg = c->fg, bg = c->bg, s, p, wide = 0;
-  unsigned char fgm[4], bgm[4];
+#ifdef VT_PROF_NOBLIT
+  (void)col; (void)row; (void)c; PROF(0, 1); return;   /* 計測: 描画を抜いた版 (解析・差分走査だけの時間) */
+#endif
+  int fg = c->fg, bg = c->bg, p, wide = 0;
   const unsigned char *gp;
+  unsigned char ul[32];
+  volatile unsigned char *v;
   if (c->flags & F_WIDECONT) return;   /* 右半分は左の F_WIDE セルが描く */
+  PROF(0, 1);
   if (c->flags & F_EMOJI) { blit_emoji(col, row, c->cp); return; }   /* cp = 絵文字インデックス */
-  for (p = 0; p < 4; p++) {
-    fgm[p] = (fg >> p) & 1 ? 0xff : 0x00;
-    bgm[p] = (bg >> p) & 1 ? 0xff : 0x00;
-  }
   if (c->flags & F_WIDE) {
     unsigned short jis = ucs_to_jis(c->cp);
     if (jis) { gp = kanji_glyph(jis); wide = 1; }
@@ -286,24 +336,19 @@ static void blit(int col, int row, const cell_t *c)
   } else {
     gp = glyph_of(c);
   }
-  for (s = 0; s < CH; s++) {
-    unsigned char g0, g1 = 0;
-    if (wide) { g0 = gp[s * 2]; g1 = gp[s * 2 + 1]; }
-    else g0 = gp[s];
-    if ((c->flags & F_UNDERLINE) && s == CH - 1) { g0 = 0xff; if (wide) g1 = 0xff; }
-    {
-      volatile unsigned char *v = TVRAM + (unsigned long)(row * CH + s) * VBYTES + col;
-      v[0 * PLANE] = (unsigned char)((g0 & fgm[0]) | (~g0 & bgm[0]));
-      v[1 * PLANE] = (unsigned char)((g0 & fgm[1]) | (~g0 & bgm[1]));
-      v[2 * PLANE] = (unsigned char)((g0 & fgm[2]) | (~g0 & bgm[2]));
-      v[3 * PLANE] = (unsigned char)((g0 & fgm[3]) | (~g0 & bgm[3]));
-      if (wide) {
-        v[1 + 0 * PLANE] = (unsigned char)((g1 & fgm[0]) | (~g1 & bgm[0]));
-        v[1 + 1 * PLANE] = (unsigned char)((g1 & fgm[1]) | (~g1 & bgm[1]));
-        v[1 + 2 * PLANE] = (unsigned char)((g1 & fgm[2]) | (~g1 & bgm[2]));
-        v[1 + 3 * PLANE] = (unsigned char)((g1 & fgm[3]) | (~g1 & bgm[3]));
-      }
-    }
+  if (c->flags & F_UNDERLINE) {   /* 下線: 最下ラスタを埋めた写しを使う */
+    int i, n = wide ? 32 : 16;
+    for (i = 0; i < n; i++) ul[i] = gp[i];
+    ul[n - 1] = 0xff; if (wide) ul[n - 2] = 0xff;
+    gp = ul;
+  }
+  v = TVRAM + (unsigned long)row * CH * VBYTES + col;
+  for (p = 0; p < 4; p++, v += PLANE) {
+    int f = (fg >> p) & 1, b = (bg >> p) & 1;
+    if (f == b) { pl_fill(v, f ? 0xff : 0); if (wide) pl_fill(v + 1, f ? 0xff : 0); }
+    else if (wide) { if (f) { pl_copy2(v, gp); pl_copy2(v + 1, gp + 1); } else { pl_inv2(v, gp); pl_inv2(v + 1, gp + 1); } }
+    else if (f) pl_copy1(v, gp);
+    else pl_inv1(v, gp);
   }
 }
 
@@ -327,9 +372,11 @@ static void vram_move_lines(int dst_line, int src_line, int nlines)
 {
   int p;
   long bytes = (long)nlines * VBYTES;
+  PROF(3, nlines);
 #ifndef VT_HOSTTEST
   if (dst_line < src_line && (dst_line & 3) == 0 && (src_line & 3) == 0 && (nlines & 3) == 0) {
     _iocs_txrascpy(((src_line / 4) << 8) | (dst_line / 4), nlines / 4, 0x000f);
+    PROF(2, 1);
     return;
   }
 #endif
@@ -353,6 +400,7 @@ static void scroll(int n)
 {
   int r, col, keep;
   if (n == 0) return;
+  PROF(1, 1);
   if (n > bot - top + 1) n = bot - top + 1;
   if (-n > bot - top + 1) n = -(bot - top + 1);
   keep = (bot - top + 1) - (n > 0 ? n : -n);
@@ -362,32 +410,77 @@ static void scroll(int n)
       for (col = 0; col < COLS; col++) { cur[r][col] = cur[r + n][col]; drawn[r][col] = drawn[r + n][col]; }
     /* VRAM を上へ */
     if (keep > 0) vram_move_lines(top * CH, (top + n) * CH, keep * CH);
+    /* 空いた行は論理画面だけ消す。VRAM のその行はずらす前の絵が残っていて drawn もその絵のまま
+     * (上の移動で触っていない) なので、flush は前の行と違うセルだけ描けばよい (less の 1 行送りなど) */
     for (r = bot - n + 1; r <= bot; r++)
-      for (col = 0; col < COLS; col++) { clear_cell(&cur[r][col]); drawn[r][col] = cur[r][col]; blit(col, r, &cur[r][col]); }
+      for (col = 0; col < COLS; col++) clear_cell(&cur[r][col]);
   } else {
     n = -n;
     for (r = bot; r >= top + n; r--)
       for (col = 0; col < COLS; col++) { cur[r][col] = cur[r - n][col]; drawn[r][col] = drawn[r - n][col]; }
     if (keep > 0) vram_move_lines((top + n) * CH, top * CH, keep * CH);
     for (r = top; r < top + n; r++)
-      for (col = 0; col < COLS; col++) { clear_cell(&cur[r][col]); drawn[r][col] = cur[r][col]; blit(col, r, &cur[r][col]); }
+      for (col = 0; col < COLS; col++) clear_cell(&cur[r][col]);
   }
+  touch_rows(top, bot);
 }
 
 /* ================= flush: logical と drawn の差分を描く ================= */
+/* 見た目が同じか: 同じ字・属性。空白 (下線なし) どうしなら前景色は見えないので背景だけ比べる */
+#define BLANKCELL(x) ((x)->cp == 0x20 && (x)->flags == 0)
+static int same_look(const cell_t *a, const cell_t *b)
+{
+  if (a->cp != b->cp || a->bg != b->bg || a->flags != b->flags) return 0;
+  return a->fg == b->fg || BLANKCELL(a);
+}
+
+/* 1 行 (COLS 桁 x 16 ライン x 4 プレーン) を背景色で塗る。空白だけの行 (消去・スクロールで空いた行) 用 */
+static void row_fill(int row, int bg)
+{
+  int p, s, c;
+  for (p = 0; p < 4; p++) {
+    volatile unsigned char *base = TVRAM + (unsigned long)p * PLANE + (unsigned long)row * CH * VBYTES;
+    unsigned char b = (bg >> p) & 1 ? 0xff : 0x00;
+    if ((COLS & 3) == 0) {
+      u32 w = b ? 0xffffffffU : 0;
+      for (s = 0; s < CH; s++) {
+        volatile u32 *v = (volatile u32 *)(base + s * VBYTES);
+        for (c = 0; c < COLS / 4; c++) v[c] = w;
+      }
+    } else {
+      for (s = 0; s < CH; s++) for (c = 0; c < COLS; c++) base[s * VBYTES + c] = b;
+    }
+  }
+}
+
 static void flush(void)
 {
   int r, c, s;
+  PROF(4, 1);
   s = sup_enter();
   if (csr_shown) { cursor_xor(csr_x, csr_y); csr_shown = 0; }   /* 先にカーソルを消す */
-  for (r = 0; r < ROWS; r++)
+  for (r = 0; r < ROWS; r++) {
+    cell_t *lrow = cur[r], *drow = drawn[r];
+    int ndiff = 0, blank = 1, bg0;
+    if (!rdirty[r]) continue;
+    rdirty[r] = 0;
+    bg0 = lrow[0].bg;
     for (c = 0; c < COLS; c++) {
-      cell_t *lc = &cur[r][c], *dc = &drawn[r][c];
-      if (lc->cp != dc->cp || lc->fg != dc->fg || lc->bg != dc->bg || lc->flags != dc->flags) {
-        blit(c, r, lc);
-        *dc = *lc;
-      }
+      if (!same_look(&lrow[c], &drow[c])) ndiff++;
+      if (!BLANKCELL(&lrow[c]) || lrow[c].bg != bg0) blank = 0;
     }
+    if (ndiff == 0) { for (c = 0; c < COLS; c++) drow[c] = lrow[c]; continue; }
+    if (blank && ndiff > 8) {   /* 空白だけの行で描き直しが多い: 行ごと塗る */
+      row_fill(r, bg0);
+      PROF(7, 1);
+      for (c = 0; c < COLS; c++) drow[c] = lrow[c];
+      continue;
+    }
+    for (c = 0; c < COLS; c++) {
+      if (!same_look(&lrow[c], &drow[c])) blit(c, r, &lrow[c]);
+      drow[c] = lrow[c];
+    }
+  }
   if (cur_vis) { cursor_xor(cx, cy); csr_shown = 1; csr_x = cx; csr_y = cy; }
   sup_leave(s);
 }
@@ -406,6 +499,7 @@ static void resolve_attr(cell_t *c)
 static void break_pair(int r, int c)
 {
   if (c < 0 || c >= COLS) return;
+  TOUCH(r);
   if ((cur[r][c].flags & F_WIDE) && c + 1 < COLS) clear_cell(&cur[r][c + 1]);
   else if ((cur[r][c].flags & F_WIDECONT) && c - 1 >= 0) clear_cell(&cur[r][c - 1]);
 }
@@ -415,6 +509,7 @@ static void break_pair(int r, int c)
 static void put_cell(unsigned short cp, int extra, int width)
 {
   cell_t *c;
+  PROF(6, 1);
   if (pend_wrap) {        /* 前回末尾に置いた後の遅延折り返し */
     cx = 0;
     if (cy == bot) scroll(1); else if (cy < ROWS - 1) cy++;
@@ -422,11 +517,12 @@ static void put_cell(unsigned short cp, int extra, int width)
   }
   if (width == 2 && COLS < 2) { cp = '?'; extra = 0; width = 1; }   /* 1 桁幅の画面に全角は置けない */
   if (width == 2 && cx == COLS - 1) {   /* 全角が右端に 1 桁しか入らない: 空けて次行へ */
-    break_pair(cy, cx); clear_cell(&cur[cy][cx]);
+    break_pair(cy, cx); clear_cell(&cur[cy][cx]); TOUCH(cy);
     cx = 0;
     if (cy == bot) scroll(1); else if (cy < ROWS - 1) cy++;
   }
   break_pair(cy, cx);
+  TOUCH(cy);
   c = &cur[cy][cx];
   c->cp = cp;
   resolve_attr(c);
@@ -450,6 +546,7 @@ static void clamp_cursor(void) { if (cx < 0) cx = 0; if (cx >= COLS) cx = COLS -
 static void erase_cells(int r, int c0, int c1)
 {
   int c;
+  TOUCH(r);
   for (c = c0; c <= c1 && c < COLS; c++) clear_cell(&cur[r][c]);
 }
 
@@ -534,6 +631,7 @@ static void do_sgr(void)
 /* ================= モード設定 ================= */
 static void switch_screen(int to_alt, int clear_on_enter)
 {
+  touch_rows(0, ROWS - 1);
   if (to_alt && !alt_active) {
     cur = scr_alt; alt_active = 1;
     if (clear_on_enter) { int r, c; for (r = 0; r < ROWS; r++) for (c = 0; c < COLS; c++) clear_cell(&cur[r][c]); }
@@ -650,10 +748,12 @@ static void do_csi(unsigned char f)
     case 'M': insdel_lines(p_def(0, 1)); break;    /* DL */
     case '@': { int cnt = p_def(0, 1), c;    /* ICH */
       if (cnt > COLS - cx) cnt = COLS - cx;
+      TOUCH(cy);
       for (c = COLS - 1; c >= cx + cnt; c--) cur[cy][c] = cur[cy][c - cnt];
       erase_cells(cy, cx, cx + cnt - 1); pend_wrap = 0; break; }
     case 'P': { int cnt = p_def(0, 1), c;    /* DCH */
       if (cnt > COLS - cx) cnt = COLS - cx;
+      TOUCH(cy);
       for (c = cx; c + cnt < COLS; c++) cur[cy][c] = cur[cy][c + cnt];
       erase_cells(cy, COLS - cnt, COLS - 1); pend_wrap = 0; break; }
     case 'X': { int cnt = p_def(0, 1); if (cnt > COLS - cx) cnt = COLS - cx; erase_cells(cy, cx, cx + cnt - 1); break; }  /* ECH */
@@ -745,7 +845,8 @@ static void do_esc(unsigned char b)
       { int r, c; cx = cy = 0; top = 0; bot = ROWS - 1; c_fg = 7; c_bg = 0;
         a_bold = a_uline = a_reverse = 0; decawm = 1; decckm = 0; cur_vis = 1; pend_wrap = 0;
         g_special[0] = g_special[1] = 0; gl = 0; switch_screen(0, 0);
-        for (r = 0; r < ROWS; r++) for (c = 0; c < COLS; c++) clear_cell(&cur[r][c]); }
+        for (r = 0; r < ROWS; r++) for (c = 0; c < COLS; c++) clear_cell(&cur[r][c]);
+        touch_rows(0, ROWS - 1); }
       break;
     case '#': state = S_ESC_INT; return;   /* DECALN 等 (# の後の 1 文字) */
     default:
@@ -884,6 +985,7 @@ static void put_cp(long cp)
 void vt_write(const unsigned char *p, int n)
 {
   int i, sup;
+  PROF(5, 1);
   /* 解析中に scroll()/blit() が VRAM・CGROM を直接触るので、vt_write 全体をスーパーバイザで動かす。
    * flush()/vt_init() 内の sup_enter はこの間は -1 を返す (入れ子は無害)。 */
   sup = sup_enter();
@@ -900,7 +1002,7 @@ void vt_write(const unsigned char *p, int n)
         break;
       case S_ESC: do_esc(b); break;
       case S_ESC_INT: /* '#' の次 */
-        if (b == '8') { int r, c; for (r = 0; r < ROWS; r++) for (c = 0; c < COLS; c++) { cur[r][c].cp = 'E'; resolve_attr(&cur[r][c]); } }
+        if (b == '8') { int r, c; for (r = 0; r < ROWS; r++) for (c = 0; c < COLS; c++) { cur[r][c].cp = 'E'; resolve_attr(&cur[r][c]); } touch_rows(0, ROWS - 1); }
         state = S_GROUND; break;
       case S_ESC_SKIP:   /* 中間バイトは続けて読み、終端 (0x30-0x7e) で終わり */
         if (b == 0x1b) state = S_ESC;
@@ -959,7 +1061,8 @@ void vt_init(int cols, int rows)
   palette_setup();
   _iocs_b_curoff();           /* BIOS のカーソルは使わない (自前で描く) */
   for (r = 0; r < ROWS; r++)
-    for (c = 0; c < COLS; c++) { clear_cell(&cur[r][c]); drawn[r][c] = cur[r][c]; blit(c, r, &cur[r][c]); }
+    { for (c = 0; c < COLS; c++) { clear_cell(&cur[r][c]); drawn[r][c] = cur[r][c]; } row_fill(r, c_bg); }
+  for (r = 0; r < MAXROWS; r++) rdirty[r] = 0;
   sup_leave(s);
   _dos_breakck(0);            /* Ctrl-C ブレークを止める (キーはこちらで拾う) */
 }
@@ -1022,6 +1125,28 @@ int vt_key(unsigned char *out, int max)
 }
 
 /* ================= デバッグ用 (vtcat がスナップショットを取るため) ================= */
+#ifdef VT_HOSTTEST
+/* 試験用の不変条件の確認: いまの VRAM が「論理画面を全部描き直した絵 (+ カーソル)」と同じか。
+ * 差分描画・スクロールの最適化で描き漏れ / 描き過ぎがあれば 0 を返す (vtcat -V が vt_write ごとに呼ぶ)。 */
+int vt_host_verify(void)
+{
+  static unsigned char save[4 * 0x20000];
+  int r, c, p, ok = 1;
+  for (p = 0; p < 4 * 0x20000; p++) save[p] = vt_host_vram[p];
+  for (r = 0; r < ROWS; r++)
+    for (c = 0; c < COLS; c++) blit(c, r, &cur[r][c]);
+  if (csr_shown) cursor_xor(csr_x, csr_y);
+  for (p = 0; p < 4 && ok; p++)
+    for (r = 0; r < ROWS * CH && ok; r++)
+      for (c = 0; c < COLS; c++) {
+        long o = (long)p * PLANE + (long)r * VBYTES + c;
+        if (save[o] != vt_host_vram[o]) { ok = 0; break; }
+      }
+  for (p = 0; p < 4 * 0x20000; p++) vt_host_vram[p] = save[p];
+  return ok;
+}
+#endif
+
 /* 論理画面の 1 セルを取り出す。cp=コードポイント, fg/bg=色, fl=フラグ。 */
 void vt_get_cell(int r, int c, unsigned short *cp, unsigned char *fg, unsigned char *bg, unsigned char *fl)
 {

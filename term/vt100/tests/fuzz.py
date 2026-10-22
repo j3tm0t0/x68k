@@ -2,7 +2,8 @@
 """頑健性試験: 壊れた/極端な制御シーケンスを vthost (ASan/UBSan 版) に食わせ、落ちない・止まらないことを確かめる。
 usage: fuzz.py VTHOST_ASAN OUTDIR [N]
 長い CSI 引数、多すぎる引数、終端の無い OSC/DCS、巨大な IL/DL/ICH/DCH/ECH/SU/SD、壊れた UTF-8、
-全角と右端、スクロール領域の出入りなどを乱数で混ぜる。各入力を 1 秒で打ち切り、異常終了か時間切れなら失敗。"""
+全角と右端、スクロール領域の出入りなどを乱数で混ぜる。各入力を 5 秒で打ち切り、異常終了か時間切れなら失敗。
+vt_write ごとに VRAM が論理画面の描き直しと一致するかも確かめる (-V。VT_CGROM があれば実フォントで)。"""
 import os, random, subprocess, sys
 
 E = b"\x1b"
@@ -62,7 +63,9 @@ def main():
         size = rnd.choice(["96x32", "80x24", "10x5", "1x1", "96x2"])
         chunk = str(rnd.choice([1, 3, 64, 4096]))
         try:
-            r = subprocess.run([vthost, "-c", chunk, "-s", size, "-r", os.devnull, rec, os.devnull],
+            cg = ["-g", os.environ["VT_CGROM"]] if os.environ.get("VT_CGROM") else []
+            vf = ["-V"] if int(chunk) >= 64 else []   # 1 バイトごとの確かめは遅すぎるので大きい刻みのときだけ
+            r = subprocess.run([vthost] + cg + vf + ["-c", chunk, "-s", size, "-r", os.devnull, rec, os.devnull],
                                capture_output=True, timeout=5)
             if r.returncode != 0:
                 fails += 1

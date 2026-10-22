@@ -10,6 +10,7 @@
  *   -v FILE    描画後のテキスト VRAM (4 プレーン x 512 ライン x 128 バイト) とパレット 16 ワード
  *              (ビッグエンディアン) を FILE に書く。tests/vram2png.py で PNG にする
  *   -r FILE    ホストへの応答 (DA/DSR など、vt_key が吐くもの) を FILE に書く
+ *   -V         (vthost のみ) vt_write ごとに VRAM が論理画面の描き直しと一致するか確かめる (差分描画の試験)
  *   -g FILE    (vthost のみ) CGROM イメージ (768KB、0xF00000-0xFBFFFF) を読み込んで実フォントで描く
  */
 #include <stdio.h>
@@ -68,7 +69,7 @@ static void dump_vram(const char *name)
 
 int main(int argc, char **argv)
 {
-  int chunk = 4096, cols = 0, rows = 0, i, off, waitkey = 0, bench = 0;
+  int chunk = 4096, cols = 0, rows = 0, i, off, waitkey = 0, bench = 0, verify = 0;
   const char *attrfile = 0, *infile = 0, *outfile = 0, *vramfile = 0, *replyfile = 0;
   long fsz;
   unsigned char *buf;
@@ -81,6 +82,7 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[i], "-v") && i + 1 < argc) vramfile = argv[++i];
     else if (!strcmp(argv[i], "-r") && i + 1 < argc) replyfile = argv[++i];
 #ifdef VT_HOSTTEST
+    else if (!strcmp(argv[i], "-V")) verify = 1;
     else if (!strcmp(argv[i], "-g") && i + 1 < argc) {
       FILE *g = fopen(argv[++i], "rb");
       if (!g || fread(vt_host_cgrom, 1, 0xC0000, g) != 0xC0000) { fprintf(stderr, "cannot read CGROM %s\n", argv[i]); return 1; }
@@ -106,6 +108,18 @@ int main(int argc, char **argv)
 
   if (cols <= 0 || rows <= 0) vt_default_size(&cols, &rows);
   vt_init(cols, rows);
+#if defined(VT_HOSTTEST) && defined(VT_PROF)
+  if (bench > 0) {   /* ホストでは時間は無意味なので数だけ出す */
+    extern long vt_prof[8];
+    for (off = 0; off < fsz; off += chunk) {
+      int n = (off + chunk <= fsz) ? chunk : (int)(fsz - off);
+      vt_write(buf + off, n);
+    }
+    printf("%s c=%d: %ld bytes | blit %ld scroll %ld txras %ld swlines %ld flush %ld write %ld put %ld rowfill %ld\n", infile, chunk, fsz,
+           vt_prof[0], vt_prof[1], vt_prof[2], vt_prof[3], vt_prof[4], vt_prof[5], vt_prof[6], vt_prof[7]);
+    return 0;
+  }
+#endif
   if (bench > 0) {
 #ifndef VT_HOSTTEST
     struct iocs_time t0, t1;
@@ -121,11 +135,20 @@ int main(int argc, char **argv)
     cs = (long)t1.sec - (long)t0.sec;           /* 1/100 秒単位 */
     if (cs < 0) cs += 24L * 60 * 60 * 100;
     vt_fini();
-    {
-      FILE *bf = fopen(outfile, "wb");
+    {   /* OUTFILE に 1 行追記する (AUTOEXEC で何本も流して 1 つのファイルに集める) */
+      FILE *bf = fopen(outfile, "ab");
       long bps = cs > 0 ? total * 100 / cs : 0;
-      if (bf) { fprintf(bf, "bench: %ld bytes in %ld.%02ld s = %ld bytes/s\n", total, cs / 100, cs % 100, bps); fclose(bf); }
-      printf("bench: %ld bytes in %ld.%02ld s = %ld bytes/s\n", total, cs / 100, cs % 100, bps);
+      char line[256];
+      sprintf(line, "bench %s c=%d: %ld bytes in %ld.%02ld s = %ld bytes/s", infile, chunk, total, cs / 100, cs % 100, bps);
+#ifdef VT_PROF
+      {
+        extern long vt_prof[8];
+        sprintf(line + strlen(line), " | blit %ld scroll %ld txras %ld swlines %ld flush %ld write %ld put %ld rowfill %ld",
+                vt_prof[0], vt_prof[1], vt_prof[2], vt_prof[3], vt_prof[4], vt_prof[5], vt_prof[6], vt_prof[7]);
+      }
+#endif
+      if (bf) { fprintf(bf, "%s\r\n", line); fclose(bf); }
+      printf("%s\n", line);
     }
     free(buf);
     return 0;
@@ -134,7 +157,14 @@ int main(int argc, char **argv)
   for (off = 0; off < fsz; off += chunk) {
     int n = (off + chunk <= fsz) ? chunk : (int)(fsz - off);
     vt_write(buf + off, n);
+#ifdef VT_HOSTTEST
+    if (verify) {
+      extern int vt_host_verify(void);
+      if (!vt_host_verify()) { fprintf(stderr, "%s: VRAM が論理画面と違う (%ld バイト目まで)\n", infile, (long)(off + n)); return 2; }
+    }
+#endif
   }
+  (void)verify;
   vt_get_size(&cols, &rows);
   if (vramfile) dump_vram(vramfile);   /* vt_fini はパレットを戻すので、その前に (カーソルも写る) */
   if (replyfile) {   /* 応答キューを吐かせる (vthost のキーボードは空なので応答だけが出る) */

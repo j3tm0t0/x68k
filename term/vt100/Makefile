@@ -19,11 +19,18 @@ kanjitab.h: genkanji.py
 vtcat.x: $(SRC) vt100.h kanjitab.h emojitab.h widthtab.h
 	$(CC) $(CFLAGS) -o $@ $(SRC) -s
 
+# 計測版 (XEiJ / 実機で tests/xeij_bench.sh が使う): セル描画・スクロールなどを数える。
+# vtbnob.x は blit を抜いた版 (解析と差分走査だけの時間を測る)
+vtbench.x: $(SRC) vt100.h kanjitab.h emojitab.h widthtab.h
+	$(CC) $(CFLAGS) -DVT_PROF -o $@ $(SRC) -s
+vtbnob.x: $(SRC) vt100.h kanjitab.h emojitab.h widthtab.h
+	$(CC) $(CFLAGS) -DVT_PROF -DVT_PROF_NOBLIT -o $@ $(SRC) -s
+
 # Mac 上でパーサ・スクロール・属性だけを pyte と比べる (VRAM/IOCS はスタブ)
 HOSTCC  = cc
 vthost: $(SRC) vt100.h kanjitab.h emojitab.h widthtab.h
 	$(HOSTCC) -O2 -Wall -DVT_HOSTTEST -o $@ $(SRC)
 
 clean:
-	rm -f vtcat.x vtcat.x.elf* vthost
+	rm -f vtcat.x vtbench.x vtbnob.x *.x.elf* vthost
 .PHONY: all clean

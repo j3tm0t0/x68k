@@ -65,6 +65,9 @@ for rec in "${recs[@]}"; do
     rm -f "$base.c$ch".*
   done
   [ $ok = 1 ] && pass "$name (分割 -c 1/-c 7)" || fail "$name (分割 -c 1/-c 7)"
+  # 差分描画の不変条件: 64 バイトごとの vt_write の後、VRAM が論理画面を全部描き直した絵と同じか
+  if msg=$(./vthost ${CGOPT[@]+"${CGOPT[@]}"} -V -c 64 -s ${COLS}x${ROWS} "$rec" /dev/null 2>&1); then pass "$name (VRAM = 論理画面)"
+  else fail "$name (VRAM = 論理画面)"; echo "   $msg"; fi
   if [ -f "tests/fixtures/$name.reply" ]; then   # 問い合わせへの応答
     ./vthost -s ${COLS}x${ROWS} -r "$base.reply" "$rec" /dev/null
     if cmp -s "$base.reply" "tests/fixtures/$name.reply"; then pass "$name (応答)"
@@ -80,7 +83,7 @@ if cc -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=undefined -DVT_H
     "$OUT/vthost_asan" -c 3 -s ${COLS}x${ROWS} -r /dev/null "$rec" /dev/null 2> "$OUT/asan.log" || { ok=0; echo "   $rec"; head -5 "$OUT/asan.log"; }
   done
   [ $ok = 1 ] && pass "asan (フィクスチャ)" || fail "asan (フィクスチャ)"
-  if msg=$($PY tests/fuzz.py "$OUT/vthost_asan" "$OUT/fuzz" ${VT_FUZZ:-300} 2>&1); then pass "fuzz (${VT_FUZZ:-300} 本)"
+  if msg=$(VT_CGROM=$([ -f "$CG" ] && echo "$CG") $PY tests/fuzz.py "$OUT/vthost_asan" "$OUT/fuzz" ${VT_FUZZ:-300} 2>&1); then pass "fuzz (${VT_FUZZ:-300} 本)"
   else fail "fuzz"; echo "$msg" | tail -20; fi
 else
   echo "SKIP  asan/fuzz (cc -fsanitize が使えない)"
