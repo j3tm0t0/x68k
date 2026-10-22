@@ -9,12 +9,14 @@
 # 使い方: tests/simbench.sh [-c CHUNK] [-p] [REV...]
 #   REV を並べると git のその版 (term/vt100) も同じ条件で測って横に並べる (作業ツリーは "work")。
 #   -p は関数ごとの所要割合 (PC サンプリング、インライン展開なし) も出す。
+#   -P は通常版 (インライン展開あり) を 1 命令ずつ実行し、関数ごとのクロックの割合を正確に出す
+#      (命令アドレスごとのクロックは VT_OUT/m68ksim/<名前>.pc、逆アセンブルは work.dis)。
 #   -n は blit を抜いた版 (VT_PROF_NOBLIT、解析と差分走査だけ) を測る (VRAM の照合は飛ばす)。
 # Musashi は VT_OUT/m68ksim/musashi に取ってくる (git clone、固定コミット)。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 CHUNK=1400; PROF=0; XCF=()
-while [ $# -gt 0 ]; do case "$1" in -c) CHUNK=$2; shift 2;; -p) PROF=1; shift;; -n) XCF=(-DVT_PROF_NOBLIT); shift;; *) break;; esac; done
+while [ $# -gt 0 ]; do case "$1" in -c) CHUNK=$2; shift 2;; -p) PROF=1; shift;; -P) PROF=2; shift;; -n) XCF=(-DVT_PROF_NOBLIT); shift;; *) break;; esac; done
 OUT=${VT_OUT:-${TMPDIR:-/tmp}/vttest}/m68ksim
 MUSASHI_REV=313ebf1bd9f4d0d93341eb5ce21fd8a119e9dbdd
 mkdir -p "$OUT"
@@ -69,6 +71,13 @@ for n in $LIST; do
   ./vthost -g "$CG" -c $CHUNK -s ${sz/ /x} -v "$OUT/host.vram" tests/fixtures/$n.rec /dev/null
   if [ ${#XCF[@]} -gt 0 ] || cmp -s "$OUT/sim.vram" "$OUT/host.vram"; then echo; else echo "   VRAM differs from vthost!"; bad=1; fi
 done
+if [ $PROF = 2 ]; then
+  m68k-xelf-objdump -d "$OUT/work.elf" > "$OUT/work.dis"
+  for n in $LIST; do
+    sz=$(awk -v n="$n" '$1 == n { print $2 " " $3 }' tests/fixtures/sizes.txt); sz=${sz:-80 24}
+    echo "== $n"; PROF=2 PCOUT="$OUT/$n.pc" "$OUT/sim" "$OUT/work.bin" "$OUT/work.nm" "$CG" tests/fixtures/$n.rec $CHUNK $sz | head -12
+  done
+fi
 if [ $PROF = 1 ]; then
   build . prof -fno-inline -fno-inline-small-functions -fno-ipa-sra
   for n in $LIST; do

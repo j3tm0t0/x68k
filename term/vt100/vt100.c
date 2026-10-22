@@ -141,7 +141,7 @@ static int csi_priv;                 /* '?' などの private 前置 */
 static int csi_inter;                /* 中間バイト (0x20-0x2f、'$' や ' ' など。最後の 1 つ) */
 #define MAXPARAM 32
 #define MAXPVAL  9999                /* パラメータ値の上限 (桁あふれで負になり配列の外を書かないように) */
-static int param[MAXPARAM], nparam, param_seen;
+static int param[MAXPARAM], nparam;
 static int str_kind;                 /* 文字列シーケンスの種類 (']' 'P' など) */
 static int str_esc;                  /* 文字列中で ESC を見たか (ST 待ち) */
 #define STRBUF 8
@@ -575,42 +575,47 @@ static void attr_update(void)
   clr_cell = CELL32(&z);
 }
 
-/* 書き込みで全角ペアを割る場合、相方のセルを空白に戻す (孤立した半分を残さない) */
+/* 書き込みで全角ペアを割る場合、相方のセルを空白に戻す (孤立した半分を残さない)。
+ * 相方が本当に対の片割れ (F_WIDE の右が F_WIDECONT / F_WIDECONT の左が F_WIDE) のときだけ消す
+ * (ECH などで残った片割れの隣にある普通の字は消さない)。書く前の状態で、書くセルの両端について呼ぶ。 */
 static void break_pair(int r, int c)
 {
+  cell_t *row = cur[r];
   if (c < 0 || c >= COLS) return;
-  touch_span(r, c - 1, c + 1);
-  if ((cur[r][c].at & F_WIDE) && c + 1 < COLS) clear_cell(&cur[r][c + 1]);
-  else if ((cur[r][c].at & F_WIDECONT) && c - 1 >= 0) clear_cell(&cur[r][c - 1]);
+  if ((row[c].at & F_WIDE) && c + 1 < COLS && (row[c + 1].at & F_WIDECONT)) { clear_cell(&row[c + 1]); touch_span(r, c + 1, c + 1); }
+  else if ((row[c].at & F_WIDECONT) && c > 0 && (row[c - 1].at & F_WIDE)) { clear_cell(&row[c - 1]); touch_span(r, c - 1, c - 1); }
+}
+
+/* 遅延折り返し・自動改行: 行頭へ戻り、下端ならスクロール */
+static void wrap_line(void)
+{
+  cx = 0;
+  if (cy == bot) scroll(1); else if (cy < ROWS - 1) cy++;
+  pend_wrap = 0;
 }
 
 /* コードポイント/インデックスを現在位置に置く。width=1 (半角) / 2 (全角)。
- * extra は追加フラグ (F_SPECIAL = DEC 罫線 / F_EMOJI = cp は絵文字インデックス)。 */
+ * extra は追加フラグ (F_SPECIAL = DEC 罫線 / F_EMOJI = cp は絵文字インデックス)。
+ * 連なり (put_run) に乗らない字だけがここを通る。 */
 static void put_cell(unsigned short cp, int extra, int width)
 {
   cell_t *c;
   PROF(6, 1);
-  if (pend_wrap) {        /* 前回末尾に置いた後の遅延折り返し */
-    cx = 0;
-    if (cy == bot) scroll(1); else if (cy < ROWS - 1) cy++;
-    pend_wrap = 0;
-  }
+  if (pend_wrap) wrap_line();   /* 前回末尾に置いた後の遅延折り返し */
   if (width == 2 && COLS < 2) { cp = '?'; extra = 0; width = 1; }   /* 1 桁幅の画面に全角は置けない */
   if (width == 2 && cx == COLS - 1) {   /* 全角が右端に 1 桁しか入らない: 空けて次行へ */
     break_pair(cy, cx); clear_cell(&cur[cy][cx]); touch_span(cy, cx, cx);
-    cx = 0;
-    if (cy == bot) scroll(1); else if (cy < ROWS - 1) cy++;
+    wrap_line();
   }
   break_pair(cy, cx);
+  if (width == 2) break_pair(cy, cx + 1);
   touch_span(cy, cx, cx + width - 1);
   c = &cur[cy][cx];
   c->cp = cp;
   c->at = cur_at | extra;
   if (width == 2) {
     c->at |= F_WIDE;
-    break_pair(cy, cx + 1);
-    c = &cur[cy][cx + 1];
-    c->cp = 0x20; c->at = cur_at | F_WIDECONT;
+    c[1].cp = 0x20; c[1].at = cur_at | F_WIDECONT;
     if (cx + 1 == COLS - 1) { if (decawm) pend_wrap = 1; }
     else cx += 2;
   } else {
@@ -644,7 +649,7 @@ static int p_def(int i, int def) {
 /* 24bit 色をパレット 16 色 (原色 6 + 白黒、各 2 段) に寄せる。RGB の距離で選ぶと中間色 (Claude Code の
  * 橙 215,119,87 など) がみな灰色になるので、彩度があれば色相で 6 色から選び、明るさで bright を決める。
  * 彩度が低ければ明るさだけで 黒/暗灰/灰/白。 */
-static int nearest16(int r, int g, int b)
+static int nearest16_calc(int r, int g, int b)
 {
   int mx = r, mn = r, c, h;
   if (g > mx) mx = g;
@@ -665,6 +670,16 @@ static int nearest16(int r, int g, int b)
     int idx = hue6[((h + 30) % 360) / 60];
     return mx >= 200 ? idx + 8 : idx;
   }
+}
+/* 同じ色が何度も来る (Claude Code は字の色を 38;2;R;G;B で毎回送る) ので、割り算の要る計算を小さな表で省く */
+static int nearest16(int r, int g, int b)
+{
+  static u32 ck[16];
+  static unsigned char cv[16];
+  u32 key = ((u32)r << 16) | ((u32)g << 8) | (u32)b | 0x80000000U;
+  int h = (r ^ (g >> 2) ^ (b >> 4)) & 15;
+  if (ck[h] != key) { ck[h] = key; cv[h] = (unsigned char)nearest16_calc(r, g, b); }
+  return cv[h];
 }
 /* 256 色: 0-15 はそのまま、16-231 は 6x6x6 キューブ、232-255 は灰色。xterm の RGB に直して最寄りの 16 色へ */
 static int map256(int n)
@@ -908,10 +923,11 @@ static void str_byte(unsigned char b)
 }
 
 /* ================= ESC 直後 ================= */
+static void csi_begin(void) { csi_priv = 0; csi_inter = 0; nparam = 0; param[0] = 0; state = S_CSI; }
 static void do_esc(unsigned char b)
 {
   switch (b) {
-    case '[': csi_priv = 0; csi_inter = 0; nparam = 0; param_seen = 0; param[0] = 0; state = S_CSI; return;
+    case '[': csi_begin(); return;
     case ']': case 'P': case '^': case '_': case 'X':
       str_kind = b; str_esc = 0; str_len = 0; state = S_STR; return;
     case '(': cs_which = 0; state = S_CHARSET; return;
@@ -1023,26 +1039,27 @@ static int fallback(long cp, unsigned char *a, unsigned char *m)
   return 1;
 }
 
-/* 確定コードポイントを画面に置く */
-static void put_cp(long cp)
+/* 確定コードポイント (ASCII 以外) をどう置くかを決める。結果は K_* と、置くセルの cp (*code) と追加フラグ (*fl)。
+ * 端末の状態に依らないので、put_run はコードポイントごとに覚えておいて表を引き直さない (cpk_*)。 */
+enum {
+  K_DROP,   /* 幅 0: 捨てる (桁を進めない) */
+  K_N1,     /* 半角 1 セル */
+  K_W2,     /* 全角 1 字 (F_WIDE + F_WIDECONT の 2 セル) */
+  K_N2,     /* 代用字 + 空白の半角 2 セル (字形の無い全角の記号) */
+  K_QQ,     /* '??' (変換できない全角) */
+  K_SLOW    /* put_cp に任せる (C1 制御・ASCII に化けた不正な UTF-8 など) */
+};
+static int cp_kind(long cp, unsigned short *code, unsigned char *fl)
 {
-  int special = g_special[gl];
   unsigned char a, m;
-  if (cp >= 0x20 && cp < 0x7f) { put_cell((unsigned short)cp, special ? F_SPECIAL : 0, 1); return; }   /* ASCII (最頻) */
-  if (cp == 0x7f) return;
+  *fl = 0; *code = '?';
+  if (cp < 0xa0) return K_SLOW;
   if ((cp >= 0x3040 && cp <= 0x9fff && cp != 0x3099 && cp != 0x309a) || (cp >= 0xff01 && cp <= 0xff60)) {
     /* かな・漢字・全角英数 (最頻の全角) は表を引かずに全角と決める */
-    if (jis_of((unsigned long)cp)) put_cell((unsigned short)cp, 0, 2);
-    else { put_cell('?', 0, 1); put_cell('?', 0, 1); }
-    return;
+    if (jis_of((unsigned long)cp)) { *code = (unsigned short)cp; return K_W2; }
+    return K_QQ;
   }
-  /* 幅 0 の文字は捨てる (桁を進めない): 異体字セレクタ、ZWJ/ZWSP・方向制御、結合文字 (widthtab.h)。
-   * 前の文字との合成はしない。絵文字の肌色修飾 (U+1F3FB-1F3FF) は wcwidth では 2 だが、前の絵文字に
-   * 重なって 1 字に見えるのが普通なので捨てる。 */
-  if ((cp >= 0x1f3fb && cp <= 0x1f3ff) || in_ranges(zerotab, (int)ZEROTAB_N, (unsigned long)cp)) return;
-  if (cp >= 0x2705) { int ei = emoji_index((unsigned long)cp);   /* 絵文字: 16x16・16色で全角 2 セル (表の最小は U+2705) */
-    if (ei >= 0) { put_cell((unsigned short)ei, F_EMOJI, 2); return; } }
-  if ((cp >= 0xff61 && cp <= 0xff9f) || cp == 0x00a5 || cp == 0x203e) { put_cell((unsigned short)cp, 0, 1); return; }   /* CGROM の JIS X 0201 にある半角 */
+  /* 罫線・ブロック要素 (TUI で最頻の非 ASCII) は幅 0 の表を引く前に片付ける */
   if (cp >= 0x2500 && cp <= 0x257f) {   /* Unicode 罫線 → DEC 特殊グリフに寄せる (半角) */
     m = 0;
     switch (cp) {
@@ -1059,49 +1076,165 @@ static void put_cp(long cp)
       case 0x253c: case 0x254b: case 0x256c: m = 0x6e; break;  /* ┼ */
       default: m = 0; break;
     }
-    if (m) { put_cell(m, F_SPECIAL, 1); return; }
-    put_cell('+', 0, 1); return;
+    if (m) { *code = m; *fl = F_SPECIAL; }
+    else *code = '+';
+    return K_N1;
   }
-  if (cp >= 0x2580 && cp <= 0x259f) { put_cell((unsigned short)cp, 0, 1); return; }   /* ブロック要素 (自前グリフ) */
+  if (cp >= 0x2580 && cp <= 0x259f) { *code = (unsigned short)cp; return K_N1; }   /* ブロック要素 (自前グリフ) */
+  /* 幅 0 の文字は捨てる (桁を進めない): 異体字セレクタ、ZWJ/ZWSP・方向制御、結合文字 (widthtab.h)。
+   * 前の文字との合成はしない。絵文字の肌色修飾 (U+1F3FB-1F3FF) は wcwidth では 2 だが、前の絵文字に
+   * 重なって 1 字に見えるのが普通なので捨てる。 */
+  if ((cp >= 0x1f3fb && cp <= 0x1f3ff) || in_ranges(zerotab, (int)ZEROTAB_N, (unsigned long)cp)) return K_DROP;
+  if (cp >= 0x2705) { int ei = emoji_index((unsigned long)cp);   /* 絵文字: 16x16・16色で全角 2 セル (表の最小は U+2705) */
+    if (ei >= 0) { *code = (unsigned short)ei; *fl = F_EMOJI; return K_W2; } }
+  if ((cp >= 0xff61 && cp <= 0xff9f) || cp == 0x00a5 || cp == 0x203e) { *code = (unsigned short)cp; return K_N1; }   /* CGROM の JIS X 0201 にある半角 */
   if (is_wide(cp)) {
-    unsigned short jis = jis_of((unsigned long)cp);
-    if (jis) { put_cell((unsigned short)cp, 0, 2); return; }   /* 全角: CGROM 16x16 漢字 */
-    if (fallback(cp, &a, &m)) { if (m) put_cell(m, F_SPECIAL, 1); else put_cell(a, 0, 1); put_cell(' ', 0, 1); return; }
-    put_cell('?', 0, 1); put_cell('?', 0, 1);   /* 変換不能な全角は '??' で桁を保つ */
-    return;
+    if (jis_of((unsigned long)cp)) { *code = (unsigned short)cp; return K_W2; }   /* 全角: CGROM 16x16 漢字 */
+    if (fallback(cp, &a, &m)) { if (m) { *code = m; *fl = F_SPECIAL; } else *code = a; return K_N2; }
+    return K_QQ;   /* 変換不能な全角は '??' で桁を保つ */
   }
-  if (fallback(cp, &a, &m)) { if (m) put_cell(m, F_SPECIAL, 1); else put_cell(a, 0, 1); return; }
-  put_cell('?', 0, 1);   /* 半角の未対応文字 */
+  if (fallback(cp, &a, &m)) { if (m) { *code = m; *fl = F_SPECIAL; } else *code = a; }
+  return K_N1;   /* 代用字、無ければ '?' (半角の未対応文字) */
 }
 
-/* 印字 ASCII (0x20-0x7e) の連なりを現在行へまとめて置く。p[0] は印字 ASCII、n は残りのバイト数。
- * 置いたバイト数 (1 以上) を返す。put_cell を 1 字ずつ呼ぶのと同じ結果になる:
- *   全角ペアの割れは連なりの両端だけ見ればよい (中のペアは左から順に上書きされて消える)。
- *   右端に届いたら止め、DECAWM なら遅延折り返し (cx は右端のまま)。次の字が来た時点で改行する。 */
+/* 確定コードポイントを画面に置く (1 字ずつの遅い道。分割された UTF-8 や右端で折り返す字など) */
+static void put_cp(long cp)
+{
+  unsigned short code;
+  unsigned char fl;
+  if (cp >= 0x20 && cp < 0x7f) { put_cell((unsigned short)cp, g_special[gl] ? F_SPECIAL : 0, 1); return; }   /* ASCII */
+  if (cp == 0x7f) return;
+  if (cp < 0xa0) { put_cell('?', 0, 1); return; }   /* C1 制御・不正な UTF-8 (U+FFFD 以外で 0xa0 未満になったもの) */
+  switch (cp_kind(cp, &code, &fl)) {
+    case K_DROP: return;
+    case K_N1: put_cell(code, fl, 1); return;
+    case K_W2: put_cell(code, fl, 2); return;
+    case K_N2: put_cell(code, fl, 1); put_cell(' ', 0, 1); return;
+    default: put_cell('?', 0, 1); put_cell('?', 0, 1); return;
+  }
+}
+
+/* cp_kind の結果の直接写像キャッシュ (BMP のみ。key 0 は空き) */
+#define CPK_N 256
+static unsigned short cpk_key[CPK_N], cpk_code[CPK_N];
+static unsigned char cpk_fl[CPK_N], cpk_kind[CPK_N];
+
+/* 字の連なりを現在位置からまとめて置く (put_cell を 1 字ずつ呼ぶのと同じ結果になる)。p から n バイト。
+ * 印字 ASCII と、バッファ内で完結した 2・3 バイトの UTF-8 (cp_kind が K_DROP/K_N1/K_W2/K_N2/K_QQ のもの) を
+ * 読む。右端に届いたら DECAWM に従って次の行へ続ける。置いたバイト数を返す (0 なら 1 字目から遅い道へ)。
+ *   全角ペアの割れは行ごとの書いた範囲の両端だけ見ればよい (中は全部上書きされる)。左端のセルが対の右半分なら
+ *   左隣を、右端のセルが対の左半分だったなら右隣を消す (break_pair と同じ規則)。
+ *   右端に 1 桁しか残らない全角 (と 2 セルの代用) は遅い道 (put_cell の「空けて次行へ」) に任せる。
+ *   右端の後は pend_wrap: cx は最後の字の左端 (半角なら COLS-1、全角なら COLS-2) のまま。 */
 static int put_run(const unsigned char *p, int n)
 {
-  cell_t *row, *c;
-  unsigned short at = cur_at;
-  int x0, k, room, lo, hi;
-  if (pend_wrap) {
-    cx = 0;
-    if (cy == bot) scroll(1); else if (cy < ROWS - 1) cy++;
-    pend_wrap = 0;
+  const unsigned char *s = p, *e = p + n;
+  cell_t *row = cur[cy], *c;
+  unsigned short at = cur_at, aat = cur_at | (g_special[gl] ? F_SPECIAL : 0);
+  unsigned short olast = 0;          /* 最後に上書きしたセルの元の属性語 */
+  int x = cx, lo = MAXCOLS, hi = -1, lastw;
+  if (pend_wrap) { lastw = COLS - cx; x = COLS; } else lastw = 1;
+  while (s < e) {
+    unsigned short code;
+    unsigned char fl, kind;
+    int len, need;
+    unsigned b = *s;
+    if (b - 0x20 < 0x5f) { code = (unsigned short)b; kind = K_N1; len = 1; fl = 0xff; }   /* fl=0xff: ASCII (aat を使う) */
+    else {
+      unsigned long u;
+      int h;
+      if (b >= 0xc2 && b <= 0xdf) {
+        if (s + 1 >= e || (s[1] & 0xc0) != 0x80) break;
+        u = ((b & 0x1f) << 6) | (s[1] & 0x3f); len = 2;
+      } else if (b >= 0xe0 && b <= 0xef) {
+        if (s + 2 >= e || (s[1] & 0xc0) != 0x80 || (s[2] & 0xc0) != 0x80) break;
+        u = ((unsigned long)(b & 0x0f) << 12) | ((s[1] & 0x3f) << 6) | (s[2] & 0x3f); len = 3;
+      } else break;
+      if (u < 0xa0) break;
+      h = (int)((u ^ (u >> 7)) & (CPK_N - 1));
+      if (cpk_key[h] != u) { cpk_kind[h] = (unsigned char)cp_kind((long)u, &cpk_code[h], &cpk_fl[h]); cpk_key[h] = (unsigned short)u; }
+      kind = cpk_kind[h]; code = cpk_code[h]; fl = cpk_fl[h];
+      if (kind == K_DROP) { s += len; continue; }   /* 幅 0: 何も置かず、折り返しも起こさない */
+      if (kind == K_SLOW) break;
+    }
+    need = kind == K_N1 ? 1 : 2;
+    if (x >= COLS) {   /* 右端の後: 折り返し (DECAWM が切れていれば右端に重ね書きなので遅い道へ) */
+      if (!decawm) break;
+      if (hi >= lo) {
+        if ((olast & F_WIDE) && hi + 1 < COLS && (row[hi + 1].at & F_WIDECONT)) { clear_cell(&row[hi + 1]); hi++; }
+        touch_span(cy, lo, hi);
+      }
+      wrap_line();
+      row = cur[cy]; x = 0; lo = MAXCOLS; hi = -1;
+    }
+    if (x + need > COLS) break;
+    if (lo > x) {   /* この行で最初に書くセル: 対の右半分なら左隣を消す */
+      lo = x;
+      if ((row[x].at & F_WIDECONT) && x > 0 && (row[x - 1].at & F_WIDE)) { clear_cell(&row[x - 1]); lo = x - 1; }
+    }
+    c = &row[x];
+    if (fl == 0xff) {   /* 印字 ASCII: 行末か ASCII 以外まで続けて置く (最頻なので専用の短いループ) */
+      const unsigned char *lim = s + (COLS - x), *s0 = s;
+      if (lim > e) lim = e;
+      do {
+        olast = c->at; c->cp = (unsigned short)b; c->at = aat; c++;
+        if (++s >= lim) break;
+        b = *s;
+      } while (b - 0x20 < 0x5f);
+      x += (int)(s - s0); hi = x - 1; lastw = 1;
+      PROF(6, s - s0);
+      continue;
+    }
+    if (kind == K_N1) {
+      olast = c->at; c->cp = code; c->at = at | fl; lastw = 1;
+    } else if (kind == K_W2) {
+      olast = c[1].at; c->cp = code; c->at = at | fl | F_WIDE; c[1].cp = 0x20; c[1].at = at | F_WIDECONT; lastw = 2;
+    } else {   /* K_N2 / K_QQ: 半角 2 セル */
+      olast = c[1].at;
+      if (kind == K_N2) { c->cp = code; c->at = at | fl; c[1].cp = ' '; }
+      else { c->cp = '?'; c->at = at; c[1].cp = '?'; }
+      c[1].at = at; lastw = 1;
+    }
+    x += need; hi = x - 1;
+    s += len;
+    PROF(6, 1);
   }
-  x0 = cx;
-  room = COLS - x0;
-  if (room > n) room = n;
-  for (k = 1; k < room && p[k] >= 0x20 && p[k] < 0x7f; k++) ;
-  row = cur[cy];
-  lo = x0; hi = x0 + k - 1;
-  if ((row[x0].at & F_WIDECONT) && x0 > 0) { clear_cell(&row[x0 - 1]); lo--; }
-  if ((row[hi].at & F_WIDE) && hi + 1 < COLS) { clear_cell(&row[hi + 1]); hi++; }
-  touch_span(cy, lo, hi);
-  c = &row[x0];
-  { int j; for (j = 0; j < k; j++, c++) { c->cp = p[j]; c->at = at; } }
-  PROF(6, k);
-  if (x0 + k >= COLS) { cx = COLS - 1; if (decawm) pend_wrap = 1; }
-  else cx = x0 + k;
+  if (hi >= lo) {   /* 最後に書いたセルが対の左半分だったなら右隣を消す */
+    if ((olast & F_WIDE) && hi + 1 < COLS && (row[hi + 1].at & F_WIDECONT)) { clear_cell(&row[hi + 1]); hi++; }
+    touch_span(cy, lo, hi);
+    if (x >= COLS) { cx = COLS - lastw; pend_wrap = decawm; }
+    else { cx = x; pend_wrap = 0; }
+  }   /* 幅 0 の字だけなら cx・pend_wrap はそのまま */
+  return (int)(s - p);
+}
+
+/* CSI の引数・中間・終端バイトを続けて読む (1 バイトごとに vt_write の switch を回らない。Claude Code の出力は
+ * 6 割強が CSI)。p[0] から n バイトのうち使った数 (1 以上) を返す。終端・ESC・取り消しで止まる。 */
+static int csi_feed(const unsigned char *p, int n)
+{
+  int k = 0, np = nparam;
+  while (k < n) {
+    unsigned char b = p[k++], d = (unsigned char)(b - '0');
+    if (d <= 9) {   /* 値は MAXPVAL で頭打ち、MAXPARAM 個を越えた分は捨てる */
+      if (np == 0) np = 1;
+      if (np <= MAXPARAM) { int *v = &param[np - 1], t = *v * 10 + d; *v = t > MAXPVAL ? MAXPVAL : t; }
+      continue;
+    }
+    if (b == ';' || b == ':') {   /* ':' (38:5:N などのサブパラメータ) も区切りとして読む */
+      if (np == 0) np = 1;        /* 先頭が空 (CSI ;5H) */
+      if (np < MAXPARAM) param[np] = 0;
+      if (np <= MAXPARAM) np++;
+      continue;
+    }
+    nparam = np;
+    if (b >= 0x40 && b <= 0x7e) { if (nparam > MAXPARAM) nparam = MAXPARAM; state = S_GROUND; do_csi(b); return k; }
+    if (b == '?' || b == '>' || b == '<' || b == '=') csi_priv = b;
+    else if (b >= 0x20 && b <= 0x2f) csi_inter = b;
+    else if (b == 0x1b) { state = S_ESC; return k; }
+    else if (b < 0x20) ground_ctrl(b);   /* CSI の途中の制御文字はその場で実行 (VT100 の動き) */
+    else { state = S_GROUND; return k; }
+  }
+  nparam = np;
   return k;
 }
 
@@ -1115,16 +1248,27 @@ void vt_write(const unsigned char *p, int n)
   /* 解析中の scroll() が VRAM をラスタ単位で動かすので、描いてあるソフトカーソルを先に消す
    * (消さないとカーソルの塊ごとスクロールし、flush の消去 XOR が旧位置に塊を残す。実機で確認)。 */
   if (csr_shown) { cursor_xor(csr_x, csr_y); csr_shown = 0; }
-  for (i = 0; i < n; i++) {
+  for (i = 0; i < n; ) {
     unsigned char b = p[i];
+    if (state == S_GROUND) {
+      /* 最頻: 字の連なり (印字 ASCII と、バッファ内で完結した UTF-8)。UTF-8 の途中 (u_need) は ASCII 以外を遅い道で */
+      if (b >= 0x20 && b != 0x7f && (b < 0x80 || !u_need)) {
+        int k = put_run(p + i, n - i);
+        if (k) { u_need = 0; i += k; continue; }
+      }
+      i++;
+      if (b == 0x1b) {
+        u_need = 0;
+        if (i < n && p[i] == '[') { csi_begin(); i++; i += csi_feed(p + i, n - i); }   /* ESC [ に続く引数をそのまま読む */
+        else state = S_ESC;
+      }
+      else if (b < 0x20) { ground_ctrl(b); u_need = 0; }
+      else { long cp = utf8_feed(b); if (cp >= 0) put_cp(cp); }
+      continue;
+    }
+    i++;
     switch (state) {
-      case S_GROUND:
-        if (b >= 0x20 && b < 0x7f && !g_special[gl]) { u_need = 0; i += put_run(p + i, n - i) - 1; }   /* 最頻: 印字 ASCII の連なり */
-        else if (b == 0x1b) { state = S_ESC; u_need = 0; }
-        else if (b < 0x20) { ground_ctrl(b); u_need = 0; }
-        else { long cp = utf8_feed(b); if (cp >= 0) put_cp(cp); }
-        break;
-      case S_ESC: do_esc(b); break;
+      case S_ESC: do_esc(b); if (state == S_CSI) i += csi_feed(p + i, n - i); break;   /* ESC [ に続く引数をそのまま読む */
       case S_ESC_INT: /* '#' の次 */
         if (b == '8') { int r, c; for (r = 0; r < ROWS; r++) for (c = 0; c < COLS; c++) { cur[r][c].cp = 'E'; cur[r][c].at = cur_at; } touch_rows(0, ROWS - 1); }
         state = S_GROUND; break;
@@ -1136,24 +1280,7 @@ void vt_write(const unsigned char *p, int n)
       case S_CHARSET:
         g_special[cs_which] = (b == '0');   /* '0'=DEC 特殊, 'B'/'A' などは ASCII */
         state = S_GROUND; break;
-      case S_CSI:
-        if (b >= '0' && b <= '9') {   /* 値は MAXPVAL で頭打ち、MAXPARAM 個を越えた分は捨てる */
-          if (nparam == 0) nparam = 1;
-          if (nparam <= MAXPARAM) { int *v = &param[nparam - 1]; *v = *v * 10 + (b - '0'); if (*v > MAXPVAL) *v = MAXPVAL; }
-          param_seen = 1;
-        }
-        else if (b == ';' || b == ':') {   /* ':' (38:5:N などのサブパラメータ) も区切りとして読む */
-          if (nparam == 0) nparam = 1;    /* 先頭が空 (CSI ;5H) */
-          if (nparam < MAXPARAM) param[nparam] = 0;
-          if (nparam <= MAXPARAM) nparam++;
-        }
-        else if (b == '?' || b == '>' || b == '<' || b == '=') { csi_priv = b; }
-        else if (b >= 0x20 && b <= 0x2f) { csi_inter = b; }
-        else if (b >= 0x40 && b <= 0x7e) { if (nparam > MAXPARAM) nparam = MAXPARAM; do_csi(b); state = S_GROUND; }
-        else if (b == 0x1b) { state = S_ESC; }
-        else if (b < 0x20) { ground_ctrl(b); }   /* CSI の途中の制御文字はその場で実行 (VT100 の動き) */
-        else { state = S_GROUND; }
-        break;
+      case S_CSI: i += csi_feed(p + i - 1, n - i + 1) - 1; break;
       case S_STR: str_byte(b); break;
       default: state = S_GROUND; break;
     }

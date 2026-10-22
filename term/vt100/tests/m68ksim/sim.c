@@ -1,5 +1,7 @@
 /* 68000 の命令サイクル数で vt_write の時間を見積もる (Musashi。テキスト VRAM のウェイトと TXRASCOPY の待ちを足す)。
- * usage: sim BIN NMFILE CGROM FIXTURE CHUNK COLS ROWS */
+ * usage: sim BIN NMFILE CGROM FIXTURE CHUNK COLS ROWS
+ * 環境変数 PROF=1 で関数ごとの割合 (200 クロックごとの PC 標本)、PROF=2 で 1 命令ずつ実行してクロック数を正確に
+ * 関数へ割り当てる (インライン展開した通常版でも使える)。PCOUT=ファイル で PROF=2 の命令アドレスごとのクロック数を書き出す。 */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -58,9 +60,15 @@ int main(int argc, char **argv)
     fclose(n2);
     { int i, j; for (i = 0; i < nf; i++) for (j = i + 1; j < nf; j++) if (fa[j] < fa[i]) { unsigned x = fa[i]; char b[64]; fa[i] = fa[j]; fa[j] = x; memcpy(b, fn[i], 64); memcpy(fn[i], fn[j], 64); memcpy(fn[j], b, 64); } }
   }
+  static unsigned long long pcc[0x80000];   /* PROF=2: 命令アドレス/2 ごとのクロック数 (1MB 未満のテキスト) */
+  int exact = prof && atoi(getenv("PROF")) == 2;
   for (;;) {
+    if (exact) {
+      unsigned pc = m68k_get_reg(NULL, M68K_REG_PC); int c = m68k_execute(1);
+      cyc += c; if (cyc0 && pc < 0x100000) pcc[pc >> 1] += c;
+    } else
     cyc += m68k_execute(prof ? 200 : 100000);
-    if (prof && cyc0) { unsigned pc = m68k_get_reg(NULL, M68K_REG_PC); int i, k = -1; for (i = 0; i < nf && fa[i] <= pc; i++) k = i; if (k >= 0) hits[k]++; }
+    if (prof && !exact && cyc0) { unsigned pc = m68k_get_reg(NULL, M68K_REG_PC); int i, k = -1; for (i = 0; i < nf && fa[i] <= pc; i++) k = i; if (k >= 0) hits[k]++; }
     if (get32(0x7fffe0) == 1 && !cyc0) { cyc0 = cyc; extra = 0; ntxras = 0; vwait = 0; }
     if (get32(0x7fffe0) == 2) break;
     if (cyc > 100000000000ULL) { fprintf(stderr, "runaway\n"); return 1; }
@@ -69,6 +77,15 @@ int main(int argc, char **argv)
     FILE *f = fopen(getenv("DUMP"), "wb"); int p;
     for (p = 0; p < 4; p++) fwrite(mem + vram_at + p * 0x20000, 1, 512 * 128, f);
     fwrite(mem + pal_at, 1, 32, f); fclose(f);
+  }
+  if (exact) {   /* 命令ごとのクロックを関数に集める (hits を流用) */
+    unsigned a; int k = -1; FILE *po = getenv("PCOUT") ? fopen(getenv("PCOUT"), "w") : NULL;
+    for (a = 0; a < 0x80000; a++) if (pcc[a]) {
+      while (k + 1 < nf && fa[k + 1] <= a * 2) k++;
+      if (k >= 0) hits[k] += pcc[a];
+      if (po) fprintf(po, "%x %llu\n", a * 2, pcc[a]);
+    }
+    if (po) fclose(po);
   }
   if (prof) { unsigned long long tot = 0; int i; for (i = 0; i < nf; i++) tot += hits[i];
     for (;;) { int b = -1; for (i = 0; i < nf; i++) if (hits[i] && (b < 0 || hits[i] > hits[b])) b = i; if (b < 0 || hits[b] * 100 < tot) break; printf("  %5.1f%%  %s\n", 100.0 * hits[b] / tot, fn[b]); hits[b] = 0; } }
