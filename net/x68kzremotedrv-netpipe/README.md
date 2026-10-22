@@ -34,6 +34,7 @@ USB キーボード (0012) を入れるときは `cmake -DHID_KEYBOARD=ON ..` (�
 | `src/virtual_disk.c` | ID 6 の読み書きを netpipe に回す |
 | `src/connect.c` | Wi-Fi の省電力を切る (応答が 50〜300ms 遅れて TCP が遅くなるため) |
 | `src/accel.c` / `accel_ops.c` / `accel_proto.h` / `monocypher/` | 0011: 暗号アクセラレータ (X25519 / Ed25519 を Z の代わりに計算する。[../accel](../accel)) |
+| `driver/mkbootwait.py` | 0022: 画面の左右の釣り合い (状態欄・◆ の行を中央に、下のバーを枠の線にそろえる、ロゴを見た目の中心に) |
 | `driver/mkbootwait.py` / `driver/bootwait.S` | 0021: 「Pico Z Loader」のロゴ (電源の輪と Z、Orbitron の PICO Z / LOADER) |
 | `driver/mkbootwait.py` / `driver/bootwait.S` | 0020: 青系の配色、三角形の 2 組が交互に光る |
 | `driver/bootwait.S` / `driver/mkbootwait.py` / `driver/bootwait_gen.S` | 0019: 待ち画面の作り直し (三角形の X の紋章をテキスト VRAM に、枠・色・そろえた欄、◆ が走る行、反転の案内) |
@@ -126,6 +127,8 @@ python3 -uc 'import socket,time;s=socket.socket(2,2);s.bind(("",6870));[print(ti
   - S か F1: 設定画面 (hdsboot の F1 と同じ settingui.bin を ID 6 の LBA 0x100 から読む)。0016 から、Pico が接続中でも使える
     (設定画面の命令は接続を待たず、接続タスクが Wi-Fi に繋ぎにいっている間は NOT READY で待たせる。変えた設定は次の繰り直しで使われる)。
     設定で HDS を変えたら Z の電源を入れ直す (画面にも出す。変えた HDS が開くと「HDS が変わりました」になる)
+- 0022: 状態欄 (見出し・値・付け足しの 46 桁の塊) と ◆ の行を画面の中央に、下のバーを枠の縦線から縦線まで (4-93 桁) に。
+  ロゴは外形の中央と塗った点の重心の中間を画面の中央に合わせる (輪が細く軽いので外形の中央より右に 5 ドットほど)
 - 0021: 名前を「Pico Z Loader」に。ロゴはオリジナル (電源の印の輪の中に Z、右に "PICO Z" と字間を空けた "LOADER")。
   輪は青 (パレット 12、◆ に合わせて明るくなる)、Z と軸と "Z" は水色 (4)、"PICO" は白 (プレーン 0+1。ロゴの行に IOCS の字は出さない)、
   "LOADER" は灰色がかった青 (8)。字は [Orbitron](https://github.com/theleagueof/orbitron) (SIL Open Font License 1.1、
