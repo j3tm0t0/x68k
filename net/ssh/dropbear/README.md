@@ -59,6 +59,12 @@ sshd (例 ~/sshtest の :2222) が要る。
 - `x68k_get_entropy`: `/dev/urandom` が無いので MFP タイマ等を撹拌した種。**弱い**。
 - `getuid/getpwuid/ioctl/pipe/fsync/execv/setsid/basename/dirname` のスタブ。
 
+- `__wrap_write` (リンクに `-Wl,--wrap=write`): **ソケットへの write は 1 回 4096 バイトまで**。xip はノンブロッキングの
+  ソケットに 4096 を超えて write すると、全部送ったのに -1 (libsocket が EAGAIN にする) を返す。dropbear は同じパケットを
+  送り直すので sshd は "Bad packet length" で切る。`net/ssh/sendtest.c` + `sendsink.py` で実機確認 (2026-10-22): 4096 は
+  300 KB まで正確 (受信を混ぜても)、4097 / 8192 / 32768 は毎回この重複。ブロッキングなら 8192 も正常。それまで Z は打鍵しか
+  送らなかったので表に出なかった (ssh.x -Z のヘルパ転送で発覚)。
+
 ### patches/ (DROPBEAR_X68K で切り替え)
 - `cli-main.c` : connect を `connect_remote` (非同期+select) から `x68k_connect`
   (同期ブロッキング) に差し替え。

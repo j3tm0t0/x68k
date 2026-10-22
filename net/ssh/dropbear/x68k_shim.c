@@ -189,6 +189,22 @@ int x68k_chan_read(int fd, void *p, unsigned int n)
   return (int)read(fd, p, n);
 }
 
+/* --- ソケットへの write は 1 回 4096 バイトまで (xip の不具合よけ) ---
+   xip は**ノンブロッキング**のソケットに 4096 バイトを超えて write すると、全部送ったのに -1 を返す
+   (libsocket はそれを EAGAIN にする)。dropbear は送れていないと思って同じパケットを送り直すので、sshd から見ると
+   バイトが重複して "Bad packet length" で切られる (ssh.x -Z のヘルパ転送で発覚。それまで Z は打鍵しか送らなかった)。
+   net/ssh/sendtest.c で実機確認: 4096 は 300 KB まで正確、4097 / 8192 / 32768 は毎回この重複。ブロッキングなら 8192 も正常。
+   ここで切り詰めれば dropbear は残りを次の write で送る (部分書き込みは正しく扱う)。
+   build.sh がリンクに -Wl,--wrap=write を付けるので、dropbear の write はすべてここを通る。 */
+#include <sys/types.h>
+#define X68K_SOCK_WMAX 4096
+ssize_t __real_write(int fd, const void *p, size_t n);
+ssize_t __wrap_write(int fd, const void *p, size_t n)
+{
+  if (fd >= X68K_SOCKFD_MIN && n > X68K_SOCK_WMAX) n = X68K_SOCK_WMAX;
+  return __real_write(fd, p, n);
+}
+
 /* --- select() を libsocket の poll() で実装 ---
    ソケット以外の fd (標準入出力など、X68K_SOCKFD_MIN 未満) は poll に渡せないので
    「書き込みは常に可」として扱う (stdout への出力は同期書き)。
