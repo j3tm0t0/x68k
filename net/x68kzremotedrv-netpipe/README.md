@@ -34,6 +34,7 @@ USB キーボード (0012) を入れるときは `cmake -DHID_KEYBOARD=ON ..` (�
 | `src/virtual_disk.c` | ID 6 の読み書きを netpipe に回す |
 | `src/connect.c` | Wi-Fi の省電力を切る (応答が 50〜300ms 遅れて TCP が遅くなるため) |
 | `src/accel.c` / `accel_ops.c` / `accel_proto.h` / `monocypher/` | 0011: 暗号アクセラレータ (X25519 / Ed25519 を Z の代わりに計算する。[../accel](../accel)) |
+| `src/bootwait.c` / `driver/bootwait1.S` / `driver/bootwait.S` / `test/bootwait/waiter_test.py` | 0015: BOOTWAIT_SCREEN (既定オン)。HDS の先頭 16KB をフラッシュに控え、開けるまで Z の画面に接続待ちを出す |
 | `src/msc_disk.c` / `virtual_disk.c` / `connect.c` / `test/bootwait/` | 0014: BOOTWAIT (既定オン)。HDS が開けるまで NOT READY で待たせ、接続は裏で繰り直し続ける |
 | `src/msclog.c` / `hidkbd.c` | 0013: 起動時の調査用の MSC ログ (`-DMSC_LOG=ON`、UDP 6870) と、6869 の `status` |
 | `src/hidkbd.c` / `hidkbd_cmd.c` / `usb_descriptors.c` / `test/hidkbd/` | 0012: USB キーボード (HID) を MSC の後ろに足す (`-DHID_KEYBOARD=ON`)。UDP 6869 で [picokbd](../../harness/picokbd) と同じコマンドを受ける |
@@ -99,8 +100,29 @@ python3 -uc 'import socket,time;s=socket.socket(2,2);s.bind(("",6870));[print(ti
 
 3 分を超えても開けないときは Z 側は読み込みエラーで止まるが、キャッシュは汚れないので、つながったあとに
 `x68key hold 600; x68key combo ctrl f11 del` (ソフトリセット) で起動できる (電源の入れ直しは要らない、はず)。
-画面に「接続待ち」を出す案 (IPL で待つ) は、最初の 16KB (分割表とデバイスドライバを含む) が待ち用の中身のままキャッシュに残るので、
-その 16KB を Pico のフラッシュに控えておく仕組みが要る。まだ作っていない。
+画面に「接続待ち」を出すのは 0015 (下)。
+
+## 接続待ちの画面 BOOTWAIT_SCREEN (0015)
+
+最初の 16KB (署名・IPL・分割表・SCSI ドライバ) は Z にキャッシュされるので、偽物は返せない。そこで本物を Pico のフラッシュに控えておく:
+
+- 起動ディスク (ID 0) の HDS を開けるたびに LBA 0-31 を控え (フラッシュ **0x1E0000-0x1E4FFF**: 見出し 4KB + 16KB。設定の 0x1F0000 とは別)
+  と比べ、違うときだけ書き直す。見出し (config の HDS のパス、ファイルの大きさ、中身の FNV-1a) は最後に書く (途中で止まっても使われない)。
+  書き込みは flash_safe_execute (このファームの FreeRTOS は 1 コアなので割り込みを止めるだけ。4KB ずつ消す)
+- HDS がまだ開けていない間、控えがあれば LBA 0-31 を控えのとおりに返し、IPL (LBA 2) だけ待ち IPL の前半 (`driver/bootwait1.S`、180 バイト) にする。
+  控えが無い (書き込んだ直後の最初の起動など) ・パスが違うときは 0014 と同じ NOT READY (画面は真っ黒のまま待つ)
+- 前半は ROM から来た d4 を控え、後半 (`driver/bootwait.S`) を ID 6 の LBA 0x80 から $2800 に読んで飛ぶ
+- 後半は「Pico: SMB 接続待ち… (Wi-Fi/SMB を確認してください)」と Wi-Fi / SMB の状態、Pico の IP、経過秒、くるくるを出し、
+  0.5 秒ごとに ID 6 の LBA 0x40000-0xfffff を読む (時刻から決めた番地、32KB 以上離す。応答は読んだ LBA と Pico の起動からの時間を返すので、
+  キャッシュの古い答えは捨てる。形は `src/bootwait_proto.h`)
+  - 開けて控えと同じ: 応答に本物の IPL (と和) が載る。$2000 に写し、d4 を戻して飛ぶ (キャッシュの分割表とドライバは本物と同じ)
+  - 控えと違う: 「HDS が変わりました。Z の電源を入れ直してください」で止まる (古い分割表で起動させない)。控えは書き直すので次の電源投入で直る
+  - F1: 設定メニュー (hdsboot と同じ)
+- `x68key status` の `snap=`: none (控えなし) / stored (控えあり、まだ開けていない) / ok (同じ) / updated (書き直した) / served (控えで起動を始め、同じだった) / changed
+- Z 自身が HDS の先頭を書き換えた (FORMAT や分割の変更) あとの、次の「SMB が遅い」起動は一度だけ「HDS が変わりました」で止まる
+- 試験: `make -C test/bootwait` (待ち IPL の前半と後半を Unicorn の 68000 で、ホスト向けに組んだ本物の bootwait.c と組み合わせて動かす。
+  Linux のページキャッシュを真似る)
+
 
 ## 注意
 
