@@ -32,6 +32,8 @@ cp "$HERE/x68k_shim.c"    "$SRC/x68k_shim.c"
 
 EXTRA_DEF="" ; EXTRA_OBJ=""
 [ "$DEBUG" = "1" ] && EXTRA_DEF="-DX68K_SSH_DEBUG"
+# VTKEEP=1: 終了時に VT100 画面をプレーン 0,1 に潰さない (VRAM ダンプで色を確かめる試験用)
+[ "${VTKEEP:-0}" = "1" ] && EXTRA_DEF="$EXTRA_DEF -DX68K_VT_KEEP"
 if [ "$FAST" = "1" ]; then
   [ -f "$CRYPTO68K/field_fast.h" ] || { echo "build: FAST=1 だが $CRYPTO68K が無い (branch vt100 の net/ssh/crypto68k)" >&2; exit 1; }
   cp "$CRYPTO68K"/*.h "$SRC/"   # field_fast.h / comb.h / basetable.h 等

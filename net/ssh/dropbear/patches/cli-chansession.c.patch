@@ -22,19 +22,27 @@
  
  	TRACE(("leave cli_tty_cleanup"))
  }
-@@ -284,7 +292,11 @@
+@@ -282,10 +290,19 @@
+ 	buf_putbyte(ses.writepayload, 0);
+ 
  	/* Get the terminal */
++#if DROPBEAR_X68K
++	/* Human68k の TERM (x68000) はローカルのコンソールの話なので使わない。term/vt100 は xterm サブセット
++	   (色・代替画面・DECCKM) なので xterm を名乗る。環境変数 SSHTERM があればそれを送る */
++	term = getenv("SSHTERM");
++	if (term == NULL) {
++		term = "xterm";
++	}
++#else
  	term = getenv("TERM");
  	if (term == NULL) {
-+#if DROPBEAR_X68K
-+		term = "xterm"; /* term/vt100 は xterm サブセット (色・代替画面・DECCKM)。環境変数 TERM で上書き可 */
-+#else
  		term = "vt100"; /* Seems a safe default */
-+#endif
  	}
++#endif
  	buf_putstring(ses.writepayload, term, strlen(term));
  
-@@ -297,15 +309,21 @@
+ 	/* Window size */
+@@ -297,15 +314,21 @@
  	encrypt_packet();
  
  	/* Set up a window-change handler */

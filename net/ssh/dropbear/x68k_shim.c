@@ -118,20 +118,51 @@ void x68k_tty_setup(void)
   vt_active = 1;
 }
 
-/* cli_tty_cleanup (チャネル close / 終了処理) から: コンソールを戻す。
-   画面は消さない (直前の表示を残す)。IOCS のカーソルを VT の最終カーソル行の次に置き、
-   続く "Connection ... closed." がその下に出るようにする。 */
+/* cli_tty_cleanup (チャネル close / 終了処理) から: コンソールを戻す。画面は消さず最後の表示を残す。
+   Human68k のコンソールはプレーン 0,1 しか使わず、スクロール (IOCS) もプレーン 0,1 しか動かさない
+   (実機で確認: 2,3 は置き去りになり、色付きの残骸が 1 行ずれて重なる)。そこで残った画面を
+   「点灯ピクセルは全部プレーン 0,1 (コンソールの白)、2,3 は空」に潰してから戻す。
+   IOCS のカーソルは VT のカーソル行の次 (行末なら次行) に置くが、コンソールの最終行 (CON_ROWS-1、
+   ファンクションキー行があるので 31 行) を越えるなら自分で全プレーンをスクロールして空ける。
+   IOCS に改行させると上記の片寄りスクロールになるので、ここでは改行を出さない。
+   VTKEEP=1 ./build.sh (-DX68K_VT_KEEP) の版は潰しもスクロールもしない (VRAM ダンプで色を確かめる試験用。
+   rcmd の環境ブロックは満杯で set が効かないので環境変数でなくビルド時に切り替える)。 */
+#define CON_ROWS 31
+#define TVRAM_BASE ((volatile unsigned char *)0xE00000UL)
+#define TVRAM_PLANE 0x20000UL
 void x68k_tty_cleanup(void)
 {
-  int x, y, cols, rows;
+  int x, y, cols, rows, row, s, line;
   if (!vt_active) return;
   vt_get_cursor(&x, &y);
   vt_get_size(&cols, &rows);
   vt_fini();
   vt_active = 0;
-  if (x > 0) y++;
-  if (y >= rows) { _iocs_b_locate(0, rows - 1); _iocs_b_print("\r\n"); }
-  else _iocs_b_locate(0, y);
+  row = (x > 0) ? y + 1 : y;
+#ifdef X68K_VT_KEEP
+  _iocs_b_locate(0, row < CON_ROWS ? row : CON_ROWS - 1); return;
+#endif
+  s = _dos_super(0);
+  for (line = 0; line < rows * 16; line++) {
+    volatile unsigned char *p0 = TVRAM_BASE + (unsigned long)line * 128;
+    volatile unsigned char *p1 = p0 + TVRAM_PLANE, *p2 = p0 + 2 * TVRAM_PLANE, *p3 = p0 + 3 * TVRAM_PLANE;
+    int c;
+    for (c = 0; c < cols; c++) {
+      unsigned char b = (unsigned char)(p0[c] | p1[c] | p2[c] | p3[c]);
+      p0[c] = b; p1[c] = b; p2[c] = 0; p3[c] = 0;
+    }
+  }
+  if (row > CON_ROWS - 1) {
+    int n = row - (CON_ROWS - 1);        /* 空けたい行数 */
+    int r, c;
+    if (n < rows) _iocs_txrascpy(((n * 4) << 8) | 0, (rows - n) * 4, 0x000f);   /* 上へ n 行 */
+    for (r = rows - n; r < rows; r++)
+      for (line = r * 16; line < r * 16 + 16; line++)
+        for (c = 0; c < cols; c++) { TVRAM_BASE[(unsigned long)line * 128 + c] = 0; TVRAM_BASE[TVRAM_PLANE + (unsigned long)line * 128 + c] = 0; }
+    row = CON_ROWS - 1;
+  }
+  if (s >= 0) _dos_super(s);
+  _iocs_b_locate(0, row);
 }
 
 /* チャネルの fd 書き込み (writechannel_fallback から)。VT 有効時の stdout/stderr は画面へ */

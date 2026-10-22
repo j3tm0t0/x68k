@@ -21,6 +21,8 @@ FAST=1 FAST_C=1 ./build.sh   # asm 無しの C 版だけ (22s)。mul68k.s 不要
 DEBUG=1 FAST=1 ./build.sh /path/dbg.x   # 位相ごとの印 (経過秒付き) をテキスト画面に出す版
 ```
 
+`VTKEEP=1` は終了時に VT100 の画面をプレーン 0,1 に潰さない試験用の版 (VRAM ダンプで色を見る)。
+
 `FAST=1` は `net/ssh/crypto68k/` (vt100 agent 作、`curve25519.patch` / `field_fast.h` /
 `mul68k.s`) を使う。別の場所なら `CRYPTO68K=/path ./build.sh`。これでハンドシェイクが
 素の sshd:22 (LoginGraceTime 120秒) にも収まる。素の遅いビルドは grace を上げた
@@ -38,9 +40,15 @@ sshd (例 ~/sshtest の :2222) が要る。
 
 ### x68k_shim.c が補うもの
 - `select()` を libsocket の `poll()` で実装 (ソケット fd は 128..159。`fd_set` が
-  収まるよう `x68k_compat.h` で `FD_SETSIZE` を 256 に拡張)。ソケット以外の fd
-  (stdin/stdout/stderr) は `poll` に渡さず「書き込みは常に可、読み込みは不可」扱い。
-  stdin をチャネルに流す仕組みはまだ無い (対話セッション未対応)。
+  収まるよう `x68k_compat.h` で `FD_SETSIZE` を 256 に拡張)。ソケット以外の fd は `poll` に渡さず
+  「書き込みは常に可」。stdin (fd 0) はキーボード: poll を 50ms 刻みで回し、間に `vt_key` (IOCS
+  _B_KEYSNS/_B_KEYINP) でキーを読んでバッファに溜め、溜まっていれば「読める」と返す。
+- `x68k_tty_setup` / `x68k_tty_cleanup`: `-t` のとき `cli_tty_setup` / `cli_tty_cleanup` から呼ばれ、
+  `vt_init` / `vt_fini` (term/vt100) で画面を占有・復帰する。復帰時は残った画面をプレーン 0,1 に潰し
+  (Human68k のコンソールはプレーン 0,1 しかスクロールしない)、IOCS のカーソルを VT のカーソル行の次に置く。
+- `x68k_chan_write` / `x68k_chan_read`: チャネルの stdout/stderr 書き込みと stdin 読み出し。VT 有効なら
+  `vt_write` / キーバッファ、無効なら素の write / read。空のときは -1/EINTR (0 や EAGAIN は EOF 扱いされる)。
+- `ioctl(TIOCGWINSZ)`: `vt_get_size` (96x32) を返す (pty 要求のウィンドウサイズ)。
 - `x68dbg()`: 位相ごとの印。`DEBUG=1` ビルドでのみ「[ 12.34] 印」(IOCS _ONTIME の経過秒) を
   IOCS _B_PRINT でテキスト画面に出す (rcmd の redirect を迂回し、contee.sys 経由で Pi の
   /tmp/x68con.log に残る)。dropbear の `-v` は Z でバスエラーになるので使わない。
@@ -60,8 +68,14 @@ sshd (例 ~/sshtest の :2222) が要る。
   `buf_readfile` (鍵ファイル) を `O_RDONLY | O_BINARY` で開く (newlib の既定はテキストモードで
   0x0d/0x1a を捨てるため、二進の秘密鍵が壊れて "Failed loading keyfile" になっていた)。
   `setnonblocking` はソケット以外の fd では何もしない (fcntl が無く "Couldn't set nonblocking" で落ちていた)。
+- `cli-chansession.c` : `cli_tty_setup` / `cli_tty_cleanup` から `x68k_tty_setup` / `x68k_tty_cleanup` を呼ぶ。
+  pty 要求の TERM は Human68k の TERM (x68000) でなく **xterm** (環境変数 `SSHTERM` で上書き)。
+  SIGWINCH の signal() 失敗は無視。
+- `common-channel.c` : チャネルの fd への write / read を `x68k_chan_write` / `x68k_chan_read` に。
+- `x68kinc/termios.h` : `tcgetattr` は cooked な既定値 (ECHO/ICANON/ISIG/ICRNL/OPOST/ONLCR、VERASE=0x7f …)
+  を返す。pty-req の termcodes はこれをそのまま sshd に送るので、全部 0 だとエコー無しの pty になる。
 - `common-kex.c` / `cli-kex.c` / `cli-auth.c` / `cli-authpubkey.c` / `cli-chansession.c` /
-  `cli-session.c` : 位相の印 `x68dbg("...")` を入れるだけ (既定ビルドでは no-op)。
+  `cli-session.c` : 位相の印 `x68dbg("...")` (既定ビルドでは no-op)。
 
 ## 現状と性能 (2026-10-22 実機)
 
@@ -81,5 +95,16 @@ npd4.x が受信 TOS をクリアするようになったので IPQoS none の s
 (素の `FAST` 無しビルドは 1 回 15〜20 分かかり、grace を上げた sshd が要る)。
 
 鍵は dropbear 形式 (`dropbearkey -t ed25519 -f id_x68k`、OpenSSH 形式は `dropbearconvert`)。
-`-y -y` でホスト鍵検証を飛ばしている (known_hosts の扱いは未検証)。
-対話セッション (stdin をチャネルに流す) は未対応。乱数源が弱いので実運用には不十分。
+`-y -y` でホスト鍵検証を飛ばしている (known_hosts の扱いは未検証)。乱数源が弱いので実運用には不十分。
+
+### 対話セッション (`-t`)
+
+```
+b:ssh.x -y -y -i b:\id_x68k -t moto@192.168.1.108
+```
+
+pty を要求すると term/vt100 の VT100 エミュレータ (xterm サブセット、96x32、テキスト VRAM 直描き) に
+出力が流れ、キーボードがチャネルに送られる。実機で bash のプロンプト、`ls --color` (色)、`cat` の
+スクロール、Ctrl-C、`vi` (代替画面)、`less`、`exit` で Human68k のプロンプトに戻るところまで確認
+(../PROGRESS.md「結論 2」)。キー変換は term/vt100/README.md の表 (BS は DEL 0x7f、矢印は CSI/SS3)。
+画面サイズ変更は無い。終了時は最後の画面を (色を落として) 残し、その下にメッセージとプロンプトが出る。

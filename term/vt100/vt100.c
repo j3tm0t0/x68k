@@ -178,10 +178,15 @@ static void palette_setup(void)
 }
 
 /* ================= グリフ描画 ================= */
+/* CGROM の 0x7e は JIS X 0201 のオーバーライン (‾) なので、ASCII のチルダは自前のグリフで描く
+ * (実機で "moto@host:~$" の ~ が点に見えた)。 */
+static const unsigned char tilde_glyph[16] = { 0,0,0,0,0,0, 0x32,0x4c, 0,0,0,0,0,0,0,0 };
 static const unsigned char *glyph_of(const cell_t *c)   /* 8x16 ANK / DEC 罫線 (16 バイト) */
 {
   if ((c->flags & F_SPECIAL) && c->cp >= 0x60 && c->cp <= 0x7f)
     return sg_glyph[c->cp - 0x60];
+  if (c->cp == 0x7e)
+    return tilde_glyph;
   if (c->cp >= 0x20 && c->cp <= 0x7e)
     return CGROM16 + (int)c->cp * 16;
   return CGROM16 + 0x20 * 16;   /* 空白 */
@@ -548,7 +553,7 @@ static void do_csi(unsigned char f)
       if (b >= ROWS) b = ROWS - 1;
       if (a < b) { top = a; bot = b; cx = 0; cy = top; pend_wrap = 0; }
       break;
-    case 'm': do_sgr(); break;
+    case 'm': if (csi_priv == 0) do_sgr(); break;   /* ESC[>4;2m (xterm modifyOtherKeys) 等を SGR と誤読しない */
     case 'h': set_mode(1); break;
     case 'l': set_mode(0); break;
     case 's': sv_cx = cx; sv_cy = cy; break;
@@ -699,6 +704,9 @@ void vt_write(const unsigned char *p, int n)
   /* 解析中に scroll()/blit() が VRAM・CGROM を直接触るので、vt_write 全体をスーパーバイザで動かす。
    * flush()/vt_init() 内の sup_enter はこの間は -1 を返す (入れ子は無害)。 */
   sup = sup_enter();
+  /* 解析中の scroll() が VRAM をラスタ単位で動かすので、描いてあるソフトカーソルを先に消す
+   * (消さないとカーソルの塊ごとスクロールし、flush の消去 XOR が旧位置に塊を残す。実機で確認)。 */
+  if (csr_shown) { cursor_xor(csr_x, csr_y); csr_shown = 0; }
   for (i = 0; i < n; i++) {
     unsigned char b = p[i];
     switch (state) {
