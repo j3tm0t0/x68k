@@ -204,9 +204,22 @@ static void rcmd_thread(void)
     n = rcmd_cmd(cmd, put, PUT_SIZE, 30000);
     check(n > 0 && strstr(tail, "--rcmd-end rc=0--"), "rcmd: @put 300000 acknowledged");
   }
-  /* 4. 終わらせる */
-  n = rcmd_cmd("exit", 0, 0, 10000);
-  check(n > 0 && strstr(resp, "bye"), "rcmd: exit -> bye");
+  /* 4. 終わらせる。返事はブロッキングの read で受ける (データが来るまで tis.x の中で待ち、EOF で 0) */
+  {
+    int s = conn(2323, 100), k = -1;
+    long t0 = _dos_time_pr(), waits0 = 0;
+    resplen = 0;
+    if (s >= 0 && send_all(s, "exit\r\n", 6) == 0) {
+      while (resplen < (int)sizeof resp - 1 && (k = read(s, resp + resplen, sizeof resp - 1 - resplen)) > 0)
+        resplen += k, waits0++;
+      resp[resplen] = 0;
+      lg("[exit] blocking reads: %ld calls, %d bytes, last %d, %ld ms\n", waits0, resplen, k, _dos_time_pr() - t0);
+      check(strstr(resp, "bye") && strstr(resp, "--rcmd-end rc=0--") && k == 0, "rcmd: exit -> bye (blocking read until EOF)");
+    } else
+      check(0, "rcmd: exit");
+    if (s >= 0)
+      close(s);
+  }
 }
 
 /* ---- 偽の SSH サーバ ---- */

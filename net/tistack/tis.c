@@ -513,8 +513,10 @@ static long do_write(long fd, const uint8_t *buf, uint32_t len, const uint8_t *t
 static long t_close(long fd)
 {
   int i = sk(fd);
+  /* 閉じ済みの番号を閉じ直すのは 0 にする。dropbear は sock_in と sock_out (同じ fd) を別々に閉じ、
+     2 回目が -1 だと libsocket が EIO にして "Error closing fd" で終わる (EBADF なら黙る) */
   if (i < 0)
-    return -1;
+    return fd >= SOCKBASE && fd < SOCKBASE + NSOCK ? 0 : -1;
   if (--usock[i].refcnt > 0)
     return 0;
   sock_free(i);

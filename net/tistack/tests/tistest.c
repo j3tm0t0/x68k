@@ -48,8 +48,12 @@ static int listener(int port, int backlog)
   struct sockaddr_in a = lo(port);
   int s = socket(AF_INET, SOCK_STREAM, 0);
   a.sin_addr.s_addr = 0;
-  if (s < 0 || bind(s, (struct sockaddr *)&a, sizeof a) < 0 || listen(s, backlog) < 0)
+  if (s < 0)
     return -1;
+  if (bind(s, (struct sockaddr *)&a, sizeof a) < 0 || listen(s, backlog) < 0) {
+    close(s);
+    return -1;
+  }
   return s;
 }
 

@@ -88,6 +88,11 @@ ESP/X libnetwork (rcmd.x) が追加で使うもの: `recvline` (arg[3] = fd, buf
 | 受信 TOS ≠ 0 | TCP データを捨てる | (ループバックには無関係) |
 | EOF の通知 | | 受信バッファが空で相手が送信を閉じたら socklen(fd,0) = **-1** (poll は POLLERR、続く read が 0)。そのため EOF 後の getsockopt(SO_SOCKLENRECV) は EBADF になる |
 
+本当のエラー (未接続・相手が消えた) で -1 を返すときは、続く **sockstate を 1 回だけ NULL** にする。libsocket は
+ブロッキングでも状態が 'S' 以外なら譲らずに再試行し続けるが、状態が NULL なら EIO で止まる。そのため、エラーの
+直後に別のプログラムが同じ fd の sockstate を読むと 1 回だけ NULL が見える。閉じ済みの fd (128〜159) の close は 0
+(dropbear が同じ fd を 2 回閉じるため)。
+
 ブロッキングの待ちは、libsocket に -1 を返して再試行させず、tis.x の中で `_CHANGE_PR` しながら待つ。
 Human68k のスレッド (xip の受信、npd、テストのスレッド) はこの間に動く。
 
@@ -186,13 +191,15 @@ AUTOEXEC.BAT が tis.x を常駐させて試験を動かす。2026-10-22 に全�
   accept が listen ソケット自身を返す、UDP の sendto / recvfrom (区切りを保つ)、ソケットが残らない
 - **rcmd.x** (無修正。x68kcli/build/fix.hds の /USR/BIN/rcmd.x、ESP/X libnetwork でビルドされた少し前の版。
   @put はある): `tisrun.x rcmd` がフォアグラウンドで rcmd.x を起動し、スレッドが 127.0.0.1:2323 のクライアントに
-  なる。echo (終わりの印まで)、**@put 300,000 バイト (115KB/s、中身を照合)**、exit → bye。
+  なる。echo (終わりの印まで)、**@put 300,000 バイト (115KB/s、中身を照合)**、exit → bye
+  (返事を **ブロッキングの read** で受け、rcmd.x が書くまで tis.x の中で待って、EOF で 0 が返る)。
   backlog 0・大文字の sockstate・ASCII モードの recvline・1 接続ごとの bind し直しがそのまま通る
 - **ssh.x** (無修正。x68k-ssh の dropbear 移植、09:26 版): `tisrun.x ssh` のスレッドが 127.0.0.1:22 の偽の
   SSH サーバになり、バナーを送る。ssh.x の connect (ブロッキング)・バナー `SSH-2.0-dropbear_2022.83`・
-  KEXINIT (304 バイト) まで届く。サーバが切ったあと ssh.x は "Error closing fd 129, I/O error" で終わる
-  (dropbear が同じ fd を 2 回 close し、libsocket が 2 回目の失敗を EBADF ではなく EIO にするため。tis.x は
-  2 回目に -1 を返すだけ)
+  KEXINIT (304 バイト) まで届く。初めは、サーバが切ったあと ssh.x が "Error closing fd 129, I/O error" で
+  終わった (dropbear が同じ fd を 2 回 close し、libsocket が 2 回目の失敗を EBADF ではなく EIO にする)。
+  実機の xip.x ではこのエラーが出ていないので、閉じ済みの fd の close は 0 を返すようにした。いまは偽のサーバが
+  切ったあとの次の write で "Error writing: I/O error" (相手が消えた = EIO) で終わる (期待どおり)
 - **常駐の解除**: `tis.x -r` のあと libsocket はスタックを見つけられず、tistest.x はきれいに失敗する
 
 スレッドの試験台 (tests/tisrun.c): `_OPEN_PR` でユーザーモードのスレッドを作り (眠った状態で作られるので
