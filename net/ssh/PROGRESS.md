@@ -1,3 +1,14 @@
+# 通信路の暗号の高速化 (2026-10-22 午後)
+
+Z 実機で chacha20-poly1305 (libtomcrypt) が約 1.5 KB/s で、SSH セッションの上限になっていた (平文 TCP 9〜11 KB/s、
+VT100 ~14 KB/s)。`chacha68k/` で ChaCha20 と Poly1305 を 68000 向けに書き直し、`CHACHA68K=1` (既定 = FAST) で
+dropbear の `chachapoly.c` から呼ぶ。結果は libtomcrypt とバイト単位で同じ。
+
+- 内訳 (Musashi、16 KB のパケット): libtomcrypt は Poly1305 が 83% (`__muldi3` / `__mulsi3`)。
+  2384 → 426 クロック/バイト (ChaCha20 394 → 233、Poly1305 1990 → 193)。
+- XEiJ SUPER (cpbench.x、16 KB x 8): **4000 → 22103 B/s**。52 バイトのパケット 22 → 9.3 ms。
+- **Z 実機は未計測** (計測しようとしたら Z の rcmd に届かなかった)。設計と試験は [chacha68k/README.md](chacha68k/README.md)。
+
 # SSH クライアント移植 進捗 (2026-10-22 09:30)
 
 ## 結論 2: 実機で `ssh.x -t moto@192.168.1.108` の対話シェルが使える
