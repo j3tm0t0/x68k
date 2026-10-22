@@ -68,17 +68,19 @@ typedef unsigned int u32;  /* 32bit 転送用 (ホストの long は 8 バイト
  * 全角 (East Asian Width = W/F) は 2 セルを占める: 左に F_WIDE、右に F_WIDECONT (継続・描かない)。 */
 typedef struct {
   unsigned short cp;
-  unsigned char fg;     /* 0..15 パレット番号 (bold / reverse 解決済み) */
-  unsigned char bg;     /* 0..15 */
-  unsigned char flags;  /* F_UNDERLINE | F_SPECIAL | F_WIDE | F_WIDECONT */
-  unsigned char pad;    /* 常に 0 (セルを 16bit x 3 で比べるため明示しておく) */
+  unsigned short at;    /* 属性語: fg<<12 | bg<<8 | flags。fg/bg は 0..15 のパレット番号 (bold / reverse 解決済み)、
+                         * flags は F_UNDERLINE | F_SPECIAL | F_WIDE | F_WIDECONT | F_EMOJI */
 } cell_t;
-/* セルが完全に同じか (cp / fg+bg / flags+pad を 16bit ずつ。flush の走査が最頻なので速く)。
- * may_alias で cell_t を 16bit 列として読む (厳密な別名規則での最適化に崩されないように) */
-typedef unsigned short __attribute__((may_alias)) cell_u16;
-#define CELLEQ(a, b) (((const cell_u16 *)(a))[0] == ((const cell_u16 *)(b))[0] && \
-                      ((const cell_u16 *)(a))[1] == ((const cell_u16 *)(b))[1] && \
-                      ((const cell_u16 *)(a))[2] == ((const cell_u16 *)(b))[2])
+#define AT(fg, bg, fl) ((unsigned short)(((fg) << 12) | ((bg) << 8) | (fl)))
+#define AT_FG(a) ((a) >> 12)
+#define AT_BG(a) (((a) >> 8) & 15)
+#define AT_FL(a) ((a) & 0xff)
+/* セル 1 つ = 4 バイトを 32bit 1 語として比べる・写す (flush の走査・消去・スクロールが最頻なので速く)。
+ * may_alias で cell_t を 32bit として読む (厳密な別名規則での最適化に崩されないように)。
+ * 32bit の値の中の並びはエンディアンで違うので、値を組み立てるときはセルに書いてから読む (clr_cell)。 */
+typedef u32 __attribute__((may_alias)) cell_u32;
+#define CELL32(p) (*(cell_u32 *)(p))
+#define CELLEQ(a, b) (CELL32(a) == CELL32(b))
 #define F_UNDERLINE 0x01
 #define F_SPECIAL   0x02   /* cp を DEC 罫線グリフ表で描く */
 #define F_WIDE      0x04   /* 全角の左セル (16 ドット幅で描く) */
@@ -95,10 +97,18 @@ static cell_t **cur = rows_main;   /* いま表示している面 */
 
 static int COLS = MAXCOLS, ROWS = MAXROWS;
 
-/* 行ごとの「論理画面を書き換えた」印。flush は印の付いた行だけ drawn と比べる (全 3072 セルの走査を避ける) */
-static unsigned char rdirty[MAXROWS];
-#define TOUCH(r) (rdirty[r] = 1)
-static void touch_rows(int r0, int r1) { int r; for (r = r0; r <= r1; r++) rdirty[r] = 1; }
+/* 行ごとの「論理画面を書き換えた」桁の範囲 [rlo, rhi]。flush はその範囲だけ drawn と比べる
+ * (全 3072 セルの走査を避ける。Claude Code の入力行のように 1 行の数桁だけ変わる場面が多い)。rlo > rhi は無傷 */
+static unsigned char rlo[MAXROWS], rhi[MAXROWS];
+#define TOUCH(r) (rlo[r] = 0, rhi[r] = MAXCOLS - 1)
+static void touch_span(int r, int c0, int c1)   /* c0..c1 (画面内に丸める) を書き換えた印 */
+{
+  if (c0 < 0) c0 = 0;
+  if (c1 >= COLS) c1 = COLS - 1;
+  if (c0 < rlo[r]) rlo[r] = (unsigned char)c0;
+  if (c1 > rhi[r]) rhi[r] = (unsigned char)c1;
+}
+static void touch_rows(int r0, int r1) { int r; for (r = r0; r <= r1; r++) TOUCH(r); }
 
 /* ---- カーソル・属性の状態 ---- */
 static int cx, cy;            /* カーソル位置 (0 起算) */
@@ -106,6 +116,9 @@ static int pend_wrap;         /* DECAWM の遅延折り返し待ち */
 static int top, bot;          /* スクロール領域 (0 起算・両端含む) */
 static int c_fg = 7, c_bg = 0;
 static int a_bold, a_uline, a_reverse;
+/* 上の属性から作った、字を置くときの属性語と消去セル (属性が変わるたびに attr_update で作り直す。字ごとには計算しない) */
+static unsigned short cur_at = AT(7, 0, 0);
+static u32 clr_cell;          /* 空白 + c_fg/c_bg そのまま (bold/reverse は効かない) のセル */
 static int decckm;            /* アプリケーションカーソルキーモード */
 static int decawm = 1;        /* 自動折り返し (既定 ON) */
 static int cur_vis = 1;       /* カーソル表示 */
@@ -248,7 +261,7 @@ static void palette_setup(void)
 static const unsigned char tilde_glyph[16] = { 0,0,0,0,0,0, 0x32,0x4c, 0,0,0,0,0,0,0,0 };
 static const unsigned char *glyph_of(const cell_t *c)   /* 8x16 ANK / DEC 罫線 (16 バイト) */
 {
-  if ((c->flags & F_SPECIAL) && c->cp >= 0x60 && c->cp <= 0x7f)
+  if ((c->at & F_SPECIAL) && c->cp >= 0x60 && c->cp <= 0x7f)
     return sg_glyph[c->cp - 0x60];
   if (c->cp == 0x7e)
     return tilde_glyph;
@@ -345,21 +358,21 @@ static void blit(int col, int row, const cell_t *c)
 #ifdef VT_PROF_NOBLIT
   (void)col; (void)row; (void)c; PROF(0, 1); return;   /* 計測: 描画を抜いた版 (解析・差分走査だけの時間) */
 #endif
-  int fg = c->fg, bg = c->bg, p, wide = 0;
+  int fg = AT_FG(c->at), bg = AT_BG(c->at), fl = AT_FL(c->at), p, wide = 0;
   const unsigned char *gp;
   unsigned char ul[32];
   volatile unsigned char *v;
-  if (c->flags & F_WIDECONT) return;   /* 右半分は左の F_WIDE セルが描く */
+  if (fl & F_WIDECONT) return;   /* 右半分は左の F_WIDE セルが描く */
   PROF(0, 1);
-  if (c->flags & F_EMOJI) { blit_emoji(col, row, c->cp); return; }   /* cp = 絵文字インデックス */
-  if (c->flags & F_WIDE) {
+  if (fl & F_EMOJI) { blit_emoji(col, row, c->cp); return; }   /* cp = 絵文字インデックス */
+  if (fl & F_WIDE) {
     unsigned short jis = jis_of(c->cp);
     if (jis) { gp = kanji_glyph(jis); wide = 1; }
     else gp = glyph_of(c);   /* 変換できない全角は空白相当 (put_cp 側で '?' に落とすので通常来ない) */
   } else {
     gp = glyph_of(c);
   }
-  if (c->flags & F_UNDERLINE) {   /* 下線: 最下ラスタを埋めた写しを使う */
+  if (fl & F_UNDERLINE) {   /* 下線: 最下ラスタを埋めた写しを使う */
     int i, n = wide ? 32 : 16;
     for (i = 0; i < n; i++) ul[i] = gp[i];
     ul[n - 1] = 0xff; if (wide) ul[n - 2] = 0xff;
@@ -426,23 +439,33 @@ static void vram_move_lines(int dst_line, int src_line, int nlines)
   }
 }
 
-static void clear_cell(cell_t *c) { c->cp = 0x20; c->fg = c_fg; c->bg = c_bg; c->flags = 0; }
+static void clear_cell(cell_t *c) { CELL32(c) = clr_cell; }
 
-/* 行ポインタ表 t[a..b] を k 行ぶん回す (正: 上へ、負: 下へ) */
-static void rotate_rows(cell_t **t, int a, int b, int k)
+/* 行ポインタ表 t[a..b] (と行ごとの書き換え範囲) を k 行ぶん回す (正: 上へ、負: 下へ)。
+ * % は 68000 では __modsi3 の呼び出しになるので、添字を 1 ずつ進めて折り返す */
+static void rotate_rows(cell_t **t, unsigned char *lo, unsigned char *hi, int a, int b, int k)
 {
   static cell_t *tmp[MAXROWS];
-  int i, n = b - a + 1;
+  static unsigned char tlo[MAXROWS], thi[MAXROWS];
+  int i, j, n = b - a + 1;
   if (k < 0) k += n;
-  for (i = 0; i < n; i++) tmp[i] = t[a + (i + k) % n];
-  for (i = 0; i < n; i++) t[a + i] = tmp[i];
+  if (k >= n) k -= n;
+  for (i = 0, j = a + k; i < n; i++) {
+    tmp[i] = t[j];
+    if (lo) { tlo[i] = lo[j]; thi[i] = hi[j]; }
+    if (++j > b) j = a;
+  }
+  for (i = 0; i < n; i++) {
+    t[a + i] = tmp[i];
+    if (lo) { lo[a + i] = tlo[i]; hi[a + i] = thi[i]; }
+  }
 }
 
 /* スクロール領域 [top,bot] を n 行上へ (正: 上スクロール / 負: 下スクロール) */
 static void scroll(int n)
 {
   int r, col, keep, m;
-  static cell_t save[MAXROWS][MAXCOLS];
+  static u32 save[MAXROWS][MAXCOLS];
   if (n == 0) return;
   PROF(1, 1);
   if (n > bot - top + 1) n = bot - top + 1;
@@ -454,28 +477,32 @@ static void scroll(int n)
    * (less の 1 行送りなど)。行ポインタを回すと drawn のその位置に別の行が来るので、絵を控えて戻す。 */
   for (r = 0; r < m; r++) {
     int rr = n > 0 ? bot - m + 1 + r : top + r;
-    for (col = 0; col < COLS; col++) save[r][col] = drawn[rr][col];
+    const cell_u32 *d = (const cell_u32 *)drawn[rr];
+    for (col = 0; col < COLS; col++) save[r][col] = d[col];
   }
-  rotate_rows(cur, top, bot, n);
-  rotate_rows(drawn, top, bot, n);
+  /* 残る行は cur・drawn・VRAM がそろって動くので、書き換え範囲も一緒に回せば描き直さずに済む */
+  rotate_rows(cur, rlo, rhi, top, bot, n);
+  rotate_rows(drawn, 0, 0, top, bot, n);
   if (keep > 0) {
     if (n > 0) vram_move_lines(top * CH, (top + n) * CH, keep * CH);   /* VRAM を上へ */
     else vram_move_lines((top + m) * CH, top * CH, keep * CH);         /* 下へ */
   }
   for (r = 0; r < m; r++) {
     int rr = n > 0 ? bot - m + 1 + r : top + r;
-    for (col = 0; col < COLS; col++) { clear_cell(&cur[rr][col]); drawn[rr][col] = save[r][col]; }
+    cell_u32 *l = (cell_u32 *)cur[rr], *d = (cell_u32 *)drawn[rr];
+    u32 z = clr_cell;
+    for (col = 0; col < COLS; col++) { l[col] = z; d[col] = save[r][col]; }
+    TOUCH(rr);
   }
-  touch_rows(top, bot);
 }
 
 /* ================= flush: logical と drawn の差分を描く ================= */
 /* 見た目が同じか: 同じ字・属性。空白 (下線なし) どうしなら前景色は見えないので背景だけ比べる */
-#define BLANKCELL(x) ((x)->cp == 0x20 && (x)->flags == 0)
+#define BLANKCELL(x) ((x)->cp == 0x20 && AT_FL((x)->at) == 0)
 static int same_look(const cell_t *a, const cell_t *b)
 {
-  if (a->cp != b->cp || a->bg != b->bg || a->flags != b->flags) return 0;
-  return a->fg == b->fg || BLANKCELL(a);
+  if (a->cp != b->cp || ((a->at ^ b->at) & 0x0fff)) return 0;
+  return a->at == b->at || BLANKCELL(a);
 }
 
 /* 1 行 (COLS 桁 x 16 ライン x 4 プレーン) を背景色で塗る。空白だけの行 (消去・スクロールで空いた行) 用 */
@@ -505,20 +532,23 @@ static void flush(void)
   s = sup_enter();
   if (csr_shown) { cursor_xor(csr_x, csr_y); csr_shown = 0; }   /* 先にカーソルを消す */
   for (r = 0; r < ROWS; r++) {
-    cell_t *lrow = cur[r], *drow = drawn[r];
-    int nd = 0;
-    if (!rdirty[r]) continue;
-    rdirty[r] = 0;
-    /* 1 回目: 描き直しの要るセルを拾う (同じなら飛ばす。空白で前景色だけ違うものは控えだけ直す) */
-    for (c = 0; c < COLS; c++) {
+    cell_t *lrow, *drow;
+    int nd = 0, lo = rlo[r], hi = rhi[r];
+    if (lo > hi) continue;
+    rlo[r] = MAXCOLS; rhi[r] = 0;
+    if (hi >= COLS) hi = COLS - 1;
+    lrow = cur[r]; drow = drawn[r];
+    /* 1 回目: 書き換え範囲で描き直しの要るセルを拾う (同じなら飛ばす。空白で前景色だけ違うものは控えだけ直す) */
+    for (c = lo; c <= hi; c++) {
       if (CELLEQ(&lrow[c], &drow[c])) continue;
       if (same_look(&lrow[c], &drow[c])) drow[c] = lrow[c];
       else diff[nd++] = (unsigned char)c;
     }
     if (nd == 0) continue;
     if (nd > 8) {   /* 空白だけの行 (消去・スクロールで空いた行) で描き直しが多い: 行ごと塗る */
-      int bg0 = lrow[0].bg, blank = 1;
-      for (c = 0; c < COLS; c++) if (!BLANKCELL(&lrow[c]) || lrow[c].bg != bg0) { blank = 0; break; }
+      int bg0 = AT_BG(lrow[0].at), blank = 1;
+      unsigned short bgat = AT(0, bg0, 0);
+      for (c = 0; c < COLS; c++) if (lrow[c].cp != 0x20 || (lrow[c].at & 0x0fff) != bgat) { blank = 0; break; }
       if (blank) {
         row_fill(r, bg0);
         PROF(7, 1);
@@ -533,22 +563,25 @@ static void flush(void)
 }
 
 /* ================= 文字の書き込み ================= */
-static void resolve_attr(cell_t *c)
+/* 属性 (c_fg/c_bg/bold/reverse/underline) が変わったら呼ぶ: 字を置く属性語 cur_at と消去セル clr_cell を作り直す */
+static void attr_update(void)
 {
   int fg = c_fg, bg = c_bg, t;
+  cell_t z;
   if (a_bold && fg < 8) fg += 8;
   if (a_reverse) { t = fg; fg = bg; bg = t; }
-  c->fg = fg; c->bg = bg;
-  c->flags = a_uline ? F_UNDERLINE : 0;
+  cur_at = AT(fg, bg, a_uline ? F_UNDERLINE : 0);
+  z.cp = 0x20; z.at = AT(c_fg, c_bg, 0);
+  clr_cell = CELL32(&z);
 }
 
 /* 書き込みで全角ペアを割る場合、相方のセルを空白に戻す (孤立した半分を残さない) */
 static void break_pair(int r, int c)
 {
   if (c < 0 || c >= COLS) return;
-  TOUCH(r);
-  if ((cur[r][c].flags & F_WIDE) && c + 1 < COLS) clear_cell(&cur[r][c + 1]);
-  else if ((cur[r][c].flags & F_WIDECONT) && c - 1 >= 0) clear_cell(&cur[r][c - 1]);
+  touch_span(r, c - 1, c + 1);
+  if ((cur[r][c].at & F_WIDE) && c + 1 < COLS) clear_cell(&cur[r][c + 1]);
+  else if ((cur[r][c].at & F_WIDECONT) && c - 1 >= 0) clear_cell(&cur[r][c - 1]);
 }
 
 /* コードポイント/インデックスを現在位置に置く。width=1 (半角) / 2 (全角)。
@@ -564,21 +597,20 @@ static void put_cell(unsigned short cp, int extra, int width)
   }
   if (width == 2 && COLS < 2) { cp = '?'; extra = 0; width = 1; }   /* 1 桁幅の画面に全角は置けない */
   if (width == 2 && cx == COLS - 1) {   /* 全角が右端に 1 桁しか入らない: 空けて次行へ */
-    break_pair(cy, cx); clear_cell(&cur[cy][cx]); TOUCH(cy);
+    break_pair(cy, cx); clear_cell(&cur[cy][cx]); touch_span(cy, cx, cx);
     cx = 0;
     if (cy == bot) scroll(1); else if (cy < ROWS - 1) cy++;
   }
   break_pair(cy, cx);
-  TOUCH(cy);
+  touch_span(cy, cx, cx + width - 1);
   c = &cur[cy][cx];
   c->cp = cp;
-  resolve_attr(c);
-  c->flags |= extra;
+  c->at = cur_at | extra;
   if (width == 2) {
-    c->flags |= F_WIDE;
+    c->at |= F_WIDE;
     break_pair(cy, cx + 1);
     c = &cur[cy][cx + 1];
-    c->cp = 0x20; resolve_attr(c); c->flags |= F_WIDECONT;
+    c->cp = 0x20; c->at = cur_at | F_WIDECONT;
     if (cx + 1 == COLS - 1) { if (decawm) pend_wrap = 1; }
     else cx += 2;
   } else {
@@ -592,9 +624,14 @@ static void clamp_cursor(void) { if (cx < 0) cx = 0; if (cx >= COLS) cx = COLS -
 
 static void erase_cells(int r, int c0, int c1)
 {
-  int c;
-  TOUCH(r);
-  for (c = c0; c <= c1 && c < COLS; c++) clear_cell(&cur[r][c]);
+  cell_u32 *l;
+  u32 z = clr_cell;
+  int k;
+  if (c1 >= COLS) c1 = COLS - 1;
+  if (c0 > c1) return;
+  touch_span(r, c0, c1);
+  l = (cell_u32 *)&cur[r][c0];
+  for (k = c1 - c0; k >= 0; k--) *l++ = z;
 }
 
 /* ================= パラメータ ================= */
@@ -642,7 +679,7 @@ static int map256(int n)
 static void do_sgr(void)
 {
   int i = 0;
-  if (nparam == 0) { a_bold = a_uline = a_reverse = 0; c_fg = 7; c_bg = 0; return; }
+  if (nparam == 0) { a_bold = a_uline = a_reverse = 0; c_fg = 7; c_bg = 0; attr_update(); return; }
   for (i = 0; i < nparam; i++) {
     int v = param[i];
     switch (v) {
@@ -673,6 +710,7 @@ static void do_sgr(void)
         break;
     }
   }
+  attr_update();
 }
 
 /* ================= モード設定 ================= */
@@ -681,7 +719,7 @@ static void switch_screen(int to_alt, int clear_on_enter)
   touch_rows(0, ROWS - 1);
   if (to_alt && !alt_active) {
     cur = rows_alt; alt_active = 1;
-    if (clear_on_enter) { int r, c; for (r = 0; r < ROWS; r++) for (c = 0; c < COLS; c++) clear_cell(&cur[r][c]); }
+    if (clear_on_enter) { int r; for (r = 0; r < ROWS; r++) erase_cells(r, 0, COLS - 1); }
   } else if (!to_alt && alt_active) {
     cur = rows_main; alt_active = 0;
   }
@@ -701,7 +739,7 @@ static void set_mode(int set)
         case 1048: if (set) { sv_cx = cx; sv_cy = cy; } else { cx = sv_cx; cy = sv_cy; } break;
         case 1049:
           if (set) { sv_cx = cx; sv_cy = cy; sv_fg = c_fg; sv_bg = c_bg; switch_screen(1, 1); }
-          else { switch_screen(0, 0); cx = sv_cx; cy = sv_cy; c_fg = sv_fg; c_bg = sv_bg; }
+          else { switch_screen(0, 0); cx = sv_cx; cy = sv_cy; c_fg = sv_fg; c_bg = sv_bg; attr_update(); }
           break;
         default: break;
       }
@@ -795,12 +833,12 @@ static void do_csi(unsigned char f)
     case 'M': insdel_lines(p_def(0, 1)); break;    /* DL */
     case '@': { int cnt = p_def(0, 1), c;    /* ICH */
       if (cnt > COLS - cx) cnt = COLS - cx;
-      TOUCH(cy);
+      touch_span(cy, cx, COLS - 1);
       for (c = COLS - 1; c >= cx + cnt; c--) cur[cy][c] = cur[cy][c - cnt];
       erase_cells(cy, cx, cx + cnt - 1); pend_wrap = 0; break; }
     case 'P': { int cnt = p_def(0, 1), c;    /* DCH */
       if (cnt > COLS - cx) cnt = COLS - cx;
-      TOUCH(cy);
+      touch_span(cy, cx, COLS - 1);
       for (c = cx; c + cnt < COLS; c++) cur[cy][c] = cur[cy][c + cnt];
       erase_cells(cy, COLS - cnt, COLS - 1); pend_wrap = 0; break; }
     case 'X': { int cnt = p_def(0, 1); if (cnt > COLS - cx) cnt = COLS - cx; erase_cells(cy, cx, cx + cnt - 1); break; }  /* ECH */
@@ -881,7 +919,7 @@ static void do_esc(unsigned char b)
     case '7': sv_cx = cx; sv_cy = cy; sv_fg = c_fg; sv_bg = c_bg; sv_bold = a_bold; sv_ul = a_uline;
               sv_rev = a_reverse; sv_sp0 = g_special[0]; sv_sp1 = g_special[1]; sv_gl = gl; break;    /* DECSC */
     case '8': cx = sv_cx; cy = sv_cy; c_fg = sv_fg; c_bg = sv_bg; a_bold = sv_bold; a_uline = sv_ul;
-              a_reverse = sv_rev; g_special[0] = sv_sp0; g_special[1] = sv_sp1; gl = sv_gl; clamp_cursor(); break; /* DECRC */
+              a_reverse = sv_rev; g_special[0] = sv_sp0; g_special[1] = sv_sp1; gl = sv_gl; clamp_cursor(); attr_update(); break; /* DECRC */
     case '=': break;   /* DECKPAM (キーパッドはキー変換側で扱わないので無視) */
     case '>': break;   /* DECKPNM */
     case 'D': if (cy == bot) scroll(1); else if (cy < ROWS - 1) cy++; pend_wrap = 0; break;   /* IND */
@@ -889,10 +927,11 @@ static void do_esc(unsigned char b)
     case 'E': cx = 0; if (cy == bot) scroll(1); else if (cy < ROWS - 1) cy++; pend_wrap = 0; break; /* NEL */
     case 'H': tabstop[cx] = 1; break;   /* HTS */
     case 'c': /* RIS: 全リセット */
-      { int r, c; cx = cy = 0; top = 0; bot = ROWS - 1; c_fg = 7; c_bg = 0;
+      { int r; cx = cy = 0; top = 0; bot = ROWS - 1; c_fg = 7; c_bg = 0;
         a_bold = a_uline = a_reverse = 0; decawm = 1; decckm = 0; cur_vis = 1; pend_wrap = 0;
         g_special[0] = g_special[1] = 0; gl = 0; switch_screen(0, 0);
-        for (r = 0; r < ROWS; r++) for (c = 0; c < COLS; c++) clear_cell(&cur[r][c]);
+        attr_update();
+        for (r = 0; r < ROWS; r++) erase_cells(r, 0, COLS - 1);
         touch_rows(0, ROWS - 1); }
       break;
     case '#': state = S_ESC_INT; return;   /* DECALN 等 (# の後の 1 文字) */
@@ -1035,6 +1074,37 @@ static void put_cp(long cp)
   put_cell('?', 0, 1);   /* 半角の未対応文字 */
 }
 
+/* 印字 ASCII (0x20-0x7e) の連なりを現在行へまとめて置く。p[0] は印字 ASCII、n は残りのバイト数。
+ * 置いたバイト数 (1 以上) を返す。put_cell を 1 字ずつ呼ぶのと同じ結果になる:
+ *   全角ペアの割れは連なりの両端だけ見ればよい (中のペアは左から順に上書きされて消える)。
+ *   右端に届いたら止め、DECAWM なら遅延折り返し (cx は右端のまま)。次の字が来た時点で改行する。 */
+static int put_run(const unsigned char *p, int n)
+{
+  cell_t *row, *c;
+  unsigned short at = cur_at;
+  int x0, k, room, lo, hi;
+  if (pend_wrap) {
+    cx = 0;
+    if (cy == bot) scroll(1); else if (cy < ROWS - 1) cy++;
+    pend_wrap = 0;
+  }
+  x0 = cx;
+  room = COLS - x0;
+  if (room > n) room = n;
+  for (k = 1; k < room && p[k] >= 0x20 && p[k] < 0x7f; k++) ;
+  row = cur[cy];
+  lo = x0; hi = x0 + k - 1;
+  if ((row[x0].at & F_WIDECONT) && x0 > 0) { clear_cell(&row[x0 - 1]); lo--; }
+  if ((row[hi].at & F_WIDE) && hi + 1 < COLS) { clear_cell(&row[hi + 1]); hi++; }
+  touch_span(cy, lo, hi);
+  c = &row[x0];
+  { int j; for (j = 0; j < k; j++, c++) { c->cp = p[j]; c->at = at; } }
+  PROF(6, k);
+  if (x0 + k >= COLS) { cx = COLS - 1; if (decawm) pend_wrap = 1; }
+  else cx = x0 + k;
+  return k;
+}
+
 void vt_write(const unsigned char *p, int n)
 {
   int i, sup;
@@ -1049,13 +1119,14 @@ void vt_write(const unsigned char *p, int n)
     unsigned char b = p[i];
     switch (state) {
       case S_GROUND:
-        if (b == 0x1b) { state = S_ESC; u_need = 0; }
+        if (b >= 0x20 && b < 0x7f && !g_special[gl]) { u_need = 0; i += put_run(p + i, n - i) - 1; }   /* 最頻: 印字 ASCII の連なり */
+        else if (b == 0x1b) { state = S_ESC; u_need = 0; }
         else if (b < 0x20) { ground_ctrl(b); u_need = 0; }
         else { long cp = utf8_feed(b); if (cp >= 0) put_cp(cp); }
         break;
       case S_ESC: do_esc(b); break;
       case S_ESC_INT: /* '#' の次 */
-        if (b == '8') { int r, c; for (r = 0; r < ROWS; r++) for (c = 0; c < COLS; c++) { cur[r][c].cp = 'E'; resolve_attr(&cur[r][c]); } touch_rows(0, ROWS - 1); }
+        if (b == '8') { int r, c; for (r = 0; r < ROWS; r++) for (c = 0; c < COLS; c++) { cur[r][c].cp = 'E'; cur[r][c].at = cur_at; } touch_rows(0, ROWS - 1); }
         state = S_GROUND; break;
       case S_ESC_SKIP:   /* 中間バイトは続けて読み、終端 (0x30-0x7e) で終わり */
         if (b == 0x1b) state = S_ESC;
@@ -1105,7 +1176,7 @@ void vt_init(int cols, int rows)
   COLS = cols; ROWS = rows;
   if (!sg_ready) sg_build();
   cx = cy = 0; top = 0; bot = ROWS - 1; pend_wrap = 0;
-  c_fg = 7; c_bg = 0; a_bold = a_uline = a_reverse = 0;
+  c_fg = 7; c_bg = 0; a_bold = a_uline = a_reverse = 0; attr_update();
   decckm = 0; decawm = 1; cur_vis = 1; alt_active = 0; cur = rows_main;
   for (r = 0; r < MAXROWS; r++) { rows_main[r] = store_main[r]; rows_alt[r] = store_alt[r]; drawn[r] = store_drawn[r]; }
   g_special[0] = g_special[1] = 0; gl = 0; outq_len = 0; state = S_GROUND; u_need = 0;
@@ -1116,7 +1187,7 @@ void vt_init(int cols, int rows)
   _iocs_b_curoff();           /* BIOS のカーソルは使わない (自前で描く) */
   for (r = 0; r < ROWS; r++)
     { for (c = 0; c < COLS; c++) { clear_cell(&cur[r][c]); drawn[r][c] = cur[r][c]; } row_fill(r, c_bg); }
-  for (r = 0; r < MAXROWS; r++) rdirty[r] = 0;
+  for (r = 0; r < MAXROWS; r++) { rlo[r] = MAXCOLS; rhi[r] = 0; }
   sup_leave(s);
   _dos_breakck(0);            /* Ctrl-C ブレークを止める (キーはこちらで拾う) */
 }
@@ -1206,9 +1277,9 @@ void vt_get_cell(int r, int c, unsigned short *cp, unsigned char *fg, unsigned c
 {
   if (r < 0 || r >= ROWS || c < 0 || c >= COLS) { if (cp) *cp = ' '; if (fg) *fg = 7; if (bg) *bg = 0; if (fl) *fl = 0; return; }
   if (cp) *cp = cur[r][c].cp;
-  if (fg) *fg = cur[r][c].fg;
-  if (bg) *bg = cur[r][c].bg;
-  if (fl) *fl = cur[r][c].flags;
+  if (fg) *fg = (unsigned char)AT_FG(cur[r][c].at);
+  if (bg) *bg = (unsigned char)AT_BG(cur[r][c].at);
+  if (fl) *fl = (unsigned char)AT_FL(cur[r][c].at);
 }
 void vt_get_cursor(int *x, int *y) { if (x) *x = cx; if (y) *y = cy; }
 /* 絵文字インデックス -> 実際の Unicode コードポイント (F_EMOJI セルの cp を渡す)。 */
