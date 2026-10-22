@@ -25,6 +25,9 @@ static void _iocs_b_curon(void) {}
 static void _iocs_b_curoff(void) {}
 static int _iocs_b_keysns(void) { return 0; }
 static int _iocs_b_keyinp(void) { return 0; }
+#ifdef VT_SIM_TXRAS
+void _iocs_txrascpy(int d1, int d2, int d3);   /* 68000 シミュレータでの計測用: シミュレータが TXRASCOPY を演じる */
+#endif
 unsigned char vt_host_vram[4 * 0x20000];
 unsigned short vt_host_pal[16];
 unsigned char vt_host_cgrom[0xC0000];   /* CGROM 0xF00000-0xFBFFFF の写し */
@@ -75,10 +78,13 @@ typedef struct {
 #define F_WIDECONT  0x08   /* 全角の右セル (描かない。左が両方を描く) */
 #define F_EMOJI     0x10   /* cp は絵文字表のインデックス。16x16・16色で描く (F_WIDE と併用) */
 
-static cell_t scr_main[MAXROWS][MAXCOLS];
-static cell_t scr_alt[MAXROWS][MAXCOLS];
-static cell_t drawn[MAXROWS][MAXCOLS];
-static cell_t (*cur)[MAXCOLS] = scr_main;   /* いま表示している面 */
+/* 行は行ポインタで引く (スクロールは行ポインタを回すだけで、セルを動かさない)。cur[r][c] / drawn[r][c] で読み書きする */
+static cell_t store_main[MAXROWS][MAXCOLS];
+static cell_t store_alt[MAXROWS][MAXCOLS];
+static cell_t store_drawn[MAXROWS][MAXCOLS];
+static cell_t *rows_main[MAXROWS], *rows_alt[MAXROWS];
+static cell_t *drawn[MAXROWS];
+static cell_t **cur = rows_main;   /* いま表示している面 */
 
 static int COLS = MAXCOLS, ROWS = MAXROWS;
 
@@ -251,6 +257,16 @@ static const unsigned char *glyph_of(const cell_t *c)   /* 8x16 ANK / DEC 罫線
   return CGROM16 + 0x20 * 16;   /* 空白 */
 }
 
+/* Unicode -> JIS の小さな直接写像キャッシュ (同じ字を何度も描くので、6879 件の二分探索を毎回しない) */
+static unsigned short jis_of(unsigned long u)
+{
+  static unsigned short ck[64], cj[64];
+  int h = (int)((u ^ (u >> 6)) & 63);
+  if (u > 0xffff) return 0;
+  if (ck[h] != u || !u) { ck[h] = (unsigned short)u; cj[h] = ucs_to_jis(u); }
+  return cj[h];
+}
+
 /* 16x16 漢字グリフ (32 バイト = 2 バイト/行) の先頭。JIS 区点から CGROM アドレスを計算する。 */
 static const unsigned char *kanji_glyph(unsigned short jis)
 {
@@ -330,7 +346,7 @@ static void blit(int col, int row, const cell_t *c)
   PROF(0, 1);
   if (c->flags & F_EMOJI) { blit_emoji(col, row, c->cp); return; }   /* cp = 絵文字インデックス */
   if (c->flags & F_WIDE) {
-    unsigned short jis = ucs_to_jis(c->cp);
+    unsigned short jis = jis_of(c->cp);
     if (jis) { gp = kanji_glyph(jis); wide = 1; }
     else gp = glyph_of(c);   /* 変換できない全角は空白相当 (put_cp 側で '?' に落とすので通常来ない) */
   } else {
@@ -363,64 +379,85 @@ static void cursor_xor(int col, int row)
 }
 
 /* ================= スクロール (VRAM をラスタ単位でずらす) ================= */
-/* 32bit 単位でコピーする (src<dst のときは後ろから)。VRAM は 4 プレーン別々に。
- * 実機では上方向 (dst<src) のとき IOCS TXRASCOPY を使う。1 ラスタ = 4 走査線なので
- * 走査線番号は 4 の倍数で渡る (行は 16 走査線 = 4 ラスタ)。d1=(src<<8)|dst, d2=ラスタ数,
- * d3=プレーンマスク(0xF)。実機で row5->row3 のコピーを確認済み。
- * 下方向 (dst>src) は降順フラグが未検証なので 32bit 転送のままにする。 */
+/* VRAM のライン [src_line, src_line+nlines) を dst_line へ動かす (4 プレーンとも)。
+ * 実機ではライン番号が 4 の倍数なら IOCS TXRASCOPY を使う。1 ラスタ = 4 走査線 (行は 16 走査線 = 4 ラスタ)。
+ * d1=(src<<8)|dst, d2=ラスタ数, d3=プレーンマスク(0xF)。実機で row5->row3 のコピーを確認済み。
+ * 下方向 (dst>src) は重なるので後ろのラスタから: d3 の bit15 を立てると 1 ラスタごとに src/dst を 1 ずつ減らす
+ * (IPLROM の _TXRASCPY = $FF781A を逆アセンブルして確認: tst.w d3 / bpl で増分 $0101 と $FEFF を切り替える)。
+ * このとき d1 は最後 (いちばん下) のラスタ番号を渡す。それ以外は 32bit 転送 (画面の COLS バイトだけ)。 */
 static void vram_move_lines(int dst_line, int src_line, int nlines)
 {
-  int p;
-  long bytes = (long)nlines * VBYTES;
+  int p, y, k, nl = (COLS + 3) / 4;   /* 1 ラインのうち画面の COLS バイトだけ (128 のうち 96) 動かす */
   PROF(3, nlines);
-#ifndef VT_HOSTTEST
-  if (dst_line < src_line && (dst_line & 3) == 0 && (src_line & 3) == 0 && (nlines & 3) == 0) {
-    _iocs_txrascpy(((src_line / 4) << 8) | (dst_line / 4), nlines / 4, 0x000f);
+#if !defined(VT_HOSTTEST) || defined(VT_SIM_TXRAS)
+  if ((dst_line & 3) == 0 && (src_line & 3) == 0 && (nlines & 3) == 0 && dst_line != src_line) {
+    if (dst_line < src_line)
+      _iocs_txrascpy(((src_line / 4) << 8) | (dst_line / 4), nlines / 4, 0x000f);
+    else
+      _iocs_txrascpy((((src_line + nlines) / 4 - 1) << 8) | ((dst_line + nlines) / 4 - 1), nlines / 4, (int)0x800f);
     PROF(2, 1);
     return;
   }
 #endif
   for (p = 0; p < 4; p++) {
     volatile unsigned char *base = TVRAM + (unsigned long)p * PLANE;
-    volatile u32 *d = (volatile u32 *)(base + (long)dst_line * VBYTES);
-    volatile u32 *s = (volatile u32 *)(base + (long)src_line * VBYTES);
-    long n = bytes / 4, i;
-    if ((unsigned long)d <= (unsigned long)s) {
-      for (i = 0; i < n; i++) d[i] = s[i];
-    } else {
-      for (i = n - 1; i >= 0; i--) d[i] = s[i];
+    if (dst_line <= src_line) {
+      for (y = 0; y < nlines; y++) {
+        volatile u32 *d = (volatile u32 *)(base + (long)(dst_line + y) * VBYTES);
+        volatile u32 *s = (volatile u32 *)(base + (long)(src_line + y) * VBYTES);
+        for (k = nl; k >= 4; k -= 4) { *d++ = *s++; *d++ = *s++; *d++ = *s++; *d++ = *s++; }
+        while (k-- > 0) *d++ = *s++;
+      }
+    } else {   /* 下へ: 後ろのラインから */
+      for (y = nlines - 1; y >= 0; y--) {
+        volatile u32 *d = (volatile u32 *)(base + (long)(dst_line + y) * VBYTES);
+        volatile u32 *s = (volatile u32 *)(base + (long)(src_line + y) * VBYTES);
+        for (k = nl; k >= 4; k -= 4) { *d++ = *s++; *d++ = *s++; *d++ = *s++; *d++ = *s++; }
+        while (k-- > 0) *d++ = *s++;
+      }
     }
   }
 }
 
 static void clear_cell(cell_t *c) { c->cp = 0x20; c->fg = c_fg; c->bg = c_bg; c->flags = 0; }
 
+/* 行ポインタ表 t[a..b] を k 行ぶん回す (正: 上へ、負: 下へ) */
+static void rotate_rows(cell_t **t, int a, int b, int k)
+{
+  static cell_t *tmp[MAXROWS];
+  int i, n = b - a + 1;
+  if (k < 0) k += n;
+  for (i = 0; i < n; i++) tmp[i] = t[a + (i + k) % n];
+  for (i = 0; i < n; i++) t[a + i] = tmp[i];
+}
+
 /* スクロール領域 [top,bot] を n 行上へ (正: 上スクロール / 負: 下スクロール) */
 static void scroll(int n)
 {
-  int r, col, keep;
+  int r, col, keep, m;
+  static cell_t save[MAXROWS][MAXCOLS];
   if (n == 0) return;
   PROF(1, 1);
   if (n > bot - top + 1) n = bot - top + 1;
   if (-n > bot - top + 1) n = -(bot - top + 1);
-  keep = (bot - top + 1) - (n > 0 ? n : -n);
-  if (n > 0) {
-    /* 論理バッファと drawn を上へ */
-    for (r = top; r <= bot - n; r++)
-      for (col = 0; col < COLS; col++) { cur[r][col] = cur[r + n][col]; drawn[r][col] = drawn[r + n][col]; }
-    /* VRAM を上へ */
-    if (keep > 0) vram_move_lines(top * CH, (top + n) * CH, keep * CH);
-    /* 空いた行は論理画面だけ消す。VRAM のその行はずらす前の絵が残っていて drawn もその絵のまま
-     * (上の移動で触っていない) なので、flush は前の行と違うセルだけ描けばよい (less の 1 行送りなど) */
-    for (r = bot - n + 1; r <= bot; r++)
-      for (col = 0; col < COLS; col++) clear_cell(&cur[r][col]);
-  } else {
-    n = -n;
-    for (r = bot; r >= top + n; r--)
-      for (col = 0; col < COLS; col++) { cur[r][col] = cur[r - n][col]; drawn[r][col] = drawn[r - n][col]; }
-    if (keep > 0) vram_move_lines((top + n) * CH, top * CH, keep * CH);
-    for (r = top; r < top + n; r++)
-      for (col = 0; col < COLS; col++) clear_cell(&cur[r][col]);
+  m = n > 0 ? n : -n;
+  keep = (bot - top + 1) - m;
+  /* 空く行 (上スクロールなら下端の m 行、下スクロールなら上端の m 行) の VRAM には、ずらす前のその行の絵が
+   * 残る (VRAM の移動はそこを触らない)。drawn もその絵にしておけば、flush は前の絵と違うセルだけ描けばよい
+   * (less の 1 行送りなど)。行ポインタを回すと drawn のその位置に別の行が来るので、絵を控えて戻す。 */
+  for (r = 0; r < m; r++) {
+    int rr = n > 0 ? bot - m + 1 + r : top + r;
+    for (col = 0; col < COLS; col++) save[r][col] = drawn[rr][col];
+  }
+  rotate_rows(cur, top, bot, n);
+  rotate_rows(drawn, top, bot, n);
+  if (keep > 0) {
+    if (n > 0) vram_move_lines(top * CH, (top + n) * CH, keep * CH);   /* VRAM を上へ */
+    else vram_move_lines((top + m) * CH, top * CH, keep * CH);         /* 下へ */
+  }
+  for (r = 0; r < m; r++) {
+    int rr = n > 0 ? bot - m + 1 + r : top + r;
+    for (col = 0; col < COLS; col++) { clear_cell(&cur[rr][col]); drawn[rr][col] = save[r][col]; }
   }
   touch_rows(top, bot);
 }
@@ -633,10 +670,10 @@ static void switch_screen(int to_alt, int clear_on_enter)
 {
   touch_rows(0, ROWS - 1);
   if (to_alt && !alt_active) {
-    cur = scr_alt; alt_active = 1;
+    cur = rows_alt; alt_active = 1;
     if (clear_on_enter) { int r, c; for (r = 0; r < ROWS; r++) for (c = 0; c < COLS; c++) clear_cell(&cur[r][c]); }
   } else if (!to_alt && alt_active) {
-    cur = scr_main; alt_active = 0;
+    cur = rows_main; alt_active = 0;
   }
 }
 static void set_mode(int set)
@@ -944,11 +981,17 @@ static void put_cp(long cp)
   unsigned char a, m;
   if (cp >= 0x20 && cp < 0x7f) { put_cell((unsigned short)cp, special ? F_SPECIAL : 0, 1); return; }   /* ASCII (最頻) */
   if (cp == 0x7f) return;
+  if ((cp >= 0x3040 && cp <= 0x9fff && cp != 0x3099 && cp != 0x309a) || (cp >= 0xff01 && cp <= 0xff60)) {
+    /* かな・漢字・全角英数 (最頻の全角) は表を引かずに全角と決める */
+    if (jis_of((unsigned long)cp)) put_cell((unsigned short)cp, 0, 2);
+    else { put_cell('?', 0, 1); put_cell('?', 0, 1); }
+    return;
+  }
   /* 幅 0 の文字は捨てる (桁を進めない): 異体字セレクタ、ZWJ/ZWSP・方向制御、結合文字 (widthtab.h)。
    * 前の文字との合成はしない。絵文字の肌色修飾 (U+1F3FB-1F3FF) は wcwidth では 2 だが、前の絵文字に
    * 重なって 1 字に見えるのが普通なので捨てる。 */
   if ((cp >= 0x1f3fb && cp <= 0x1f3ff) || in_ranges(zerotab, (int)ZEROTAB_N, (unsigned long)cp)) return;
-  { int ei = emoji_index((unsigned long)cp);   /* 絵文字: 16x16・16色で全角 2 セル */
+  if (cp >= 0x2705) { int ei = emoji_index((unsigned long)cp);   /* 絵文字: 16x16・16色で全角 2 セル (表の最小は U+2705) */
     if (ei >= 0) { put_cell((unsigned short)ei, F_EMOJI, 2); return; } }
   if ((cp >= 0xff61 && cp <= 0xff9f) || cp == 0x00a5 || cp == 0x203e) { put_cell((unsigned short)cp, 0, 1); return; }   /* CGROM の JIS X 0201 にある半角 */
   if (cp >= 0x2500 && cp <= 0x257f) {   /* Unicode 罫線 → DEC 特殊グリフに寄せる (半角) */
@@ -972,7 +1015,7 @@ static void put_cp(long cp)
   }
   if (cp >= 0x2580 && cp <= 0x259f) { put_cell((unsigned short)cp, 0, 1); return; }   /* ブロック要素 (自前グリフ) */
   if (is_wide(cp)) {
-    unsigned short jis = ucs_to_jis(cp);
+    unsigned short jis = jis_of((unsigned long)cp);
     if (jis) { put_cell((unsigned short)cp, 0, 2); return; }   /* 全角: CGROM 16x16 漢字 */
     if (fallback(cp, &a, &m)) { if (m) put_cell(m, F_SPECIAL, 1); else put_cell(a, 0, 1); put_cell(' ', 0, 1); return; }
     put_cell('?', 0, 1); put_cell('?', 0, 1);   /* 変換不能な全角は '??' で桁を保つ */
@@ -1053,7 +1096,8 @@ void vt_init(int cols, int rows)
   if (!sg_ready) sg_build();
   cx = cy = 0; top = 0; bot = ROWS - 1; pend_wrap = 0;
   c_fg = 7; c_bg = 0; a_bold = a_uline = a_reverse = 0;
-  decckm = 0; decawm = 1; cur_vis = 1; alt_active = 0; cur = scr_main;
+  decckm = 0; decawm = 1; cur_vis = 1; alt_active = 0; cur = rows_main;
+  for (r = 0; r < MAXROWS; r++) { rows_main[r] = store_main[r]; rows_alt[r] = store_alt[r]; drawn[r] = store_drawn[r]; }
   g_special[0] = g_special[1] = 0; gl = 0; outq_len = 0; state = S_GROUND; u_need = 0;
   csr_shown = 0;
   for (c = 0; c < MAXCOLS; c++) tabstop[c] = (c % 8 == 0) ? 1 : 0;
