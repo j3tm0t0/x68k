@@ -193,7 +193,7 @@ musl-gcc は要らない)。`rustup target add aarch64-unknown-linux-musl x86_64
   write が、全部送ったのに -1 を返し、dropbear が送り直していた (net/ssh/dropbear/README.md の `__wrap_write`)。1 回 4096 に
   切って解決。
 - 直した版: 転送 (sending → pushed → go → hello → top → 正常終了) と 2 回目のキャッシュ (cached → go → hello) が通った。
-  ACCEL なし 1 回・ACCEL あり 2 回の転送のうち、ACCEL ありの 1 回だけ転送の終わり近くで sshd が
+  ACCEL なし 1 回・ACCEL あり 3 回の転送のうち、ACCEL ありの最初の 1 回だけ転送の終わり近くで sshd が
   "message authentication code incorrect" を出して切った (再現せず。原因未確定)。
 - **時間**: 転送 257 KB に約 3 分 (ACCEL ありで接続から終了まで 3 分 20 秒)、キャッシュありは ACCEL で 19 秒、なしで 78 秒。
   律速は Z の chacha20-poly1305 で **約 1.5 KB/s** (net/ssh/crypttest。TCP の送信だけなら 4096 ずつで 9〜11 KB/s)。
