@@ -31,6 +31,7 @@ export CFLAGS="-include time.h -Wno-error=implicit-function-declaration -Wno-err
 | `src/netpipe.c` / `netpipe.h` | 新規。要求を LBA 0x100000 に書き、応答を 0x110000〜0x1ffff7 から読む。UDP モードとブリッジモード |
 | `src/virtual_disk.c` | ID 6 の読み書きを netpipe に回す |
 | `src/connect.c` | Wi-Fi の省電力を切る (応答が 50〜300ms 遅れて TCP が遅くなるため) |
+| `src/accel.c` / `accel_ops.c` / `accel_proto.h` / `monocypher/` | 0011: 暗号アクセラレータ (X25519 / Ed25519 を Z の代わりに計算する。[../accel](../accel)) |
 
 - **UDP モード** (`slipd.x -z`): SLIP を UDP 6868 で `config.txt` の SMB サーバ (Raspberry Pi) に送る。
   Pi 側は `x68kcli/templates/raspi/slipudp.py` + slattach (`MODE=pico`)。

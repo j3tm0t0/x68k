@@ -1,0 +1,120 @@
+--- dropbear-2022.83/common-kex.c
++++ x68k/common-kex.c
+@@ -37,6 +37,9 @@
+ #include "runopts.h"
+ #include "ecc.h"
+ #include "curve25519.h"
++#if X68K_ACCEL
++#include "x68k_accel.h"
++#endif
+ #include "crypto_desc.h"
+ 
+ static void kexinitialise(void);
+@@ -726,7 +729,12 @@
+ 	const unsigned char basepoint[32] = {9};
+ 
+ 	genrandom(param->priv, CURVE25519_LEN);
+-	dropbear_curve25519_scalarmult(param->pub, param->priv, basepoint);
++#if X68K_ACCEL
++	if (x68k_accel_x25519(param->pub, param->priv, basepoint) != 0)
++#endif
++	{
++		dropbear_curve25519_scalarmult(param->pub, param->priv, basepoint);
++	}
+ 
+ 	return param;
+ }
+@@ -748,7 +756,12 @@
+ 		dropbear_exit("Bad curve25519");
+ 	}
+ 
+-	dropbear_curve25519_scalarmult(out, param->priv, buf_pub_them->data);
++#if X68K_ACCEL
++	if (x68k_accel_x25519(out, param->priv, buf_pub_them->data) != 0)
++#endif
++	{
++		dropbear_curve25519_scalarmult(out, param->priv, buf_pub_them->data);
++	}
+ 
+ 	if (constant_time_memcmp(zeroes, out, CURVE25519_LEN) == 0) {
+ 		dropbear_exit("Bad curve25519");
+--- dropbear-2022.83/ed25519.c
++++ x68k/ed25519.c
+@@ -31,6 +31,9 @@
+ #include "ssh.h"
+ #include "curve25519.h"
+ #include "ed25519.h"
++#if X68K_ACCEL
++#include "x68k_accel.h"
++#endif
+ 
+ #if DROPBEAR_ED25519
+ 
+@@ -150,7 +153,12 @@
+ 	TRACE(("enter buf_put_ed25519_sign"))
+ 	dropbear_assert(key != NULL);
+ 
+-	dropbear_ed25519_sign(data_buf->data, data_buf->len, s, &slen, key->priv, key->pub);
++#if X68K_ACCEL
++	if (x68k_accel_ed25519_sign(data_buf->data, data_buf->len, s, &slen, key->priv, key->pub) != 0)
++#endif
++	{
++		dropbear_ed25519_sign(data_buf->data, data_buf->len, s, &slen, key->priv, key->pub);
++	}
+ 	buf_putstring(buf, SSH_SIGNKEY_ED25519, SSH_SIGNKEY_ED25519_LEN);
+ 	buf_putstring(buf, s, slen);
+ 
+@@ -176,6 +184,17 @@
+ 	}
+ 	s = buf_getptr(buf, slen);
+ 
++#if X68K_ACCEL
++	{
++		int ar = x68k_accel_ed25519_verify(data_buf->data, data_buf->len, s, slen, key->pub);
++		if (ar >= 0) {
++			if (ar == 0) {
++				ret = DROPBEAR_SUCCESS;
++			}
++			goto out;
++		}
++	}
++#endif
+ 	if (dropbear_ed25519_verify(data_buf->data, data_buf->len,
+ 				    s, slen, key->pub) == 0) {
+ 		/* signature is valid */
+--- dropbear-2022.83/cli-runopts.c
++++ x68k/cli-runopts.c
+@@ -30,6 +30,9 @@
+ #include "algo.h"
+ #include "tcpfwd.h"
+ #include "list.h"
++#if X68K_ACCEL
++#include "x68k_accel.h"
++#endif
+ 
+ cli_runopts cli_opts; /* GLOBAL */
+ 
+@@ -897,6 +900,9 @@
+ 			"\tUseSyslog\n"
+ #endif
+ 			"\tPort\n"
++#if X68K_ACCEL
++			"\tAccel - none|verify|kex|all[+log] (X25519/Ed25519 on the Pico W)\n"
++#endif
+ 		);
+ 		exit(EXIT_SUCCESS);
+ 	}
+@@ -920,6 +926,13 @@
+ 		return;
+ 	}
+ 
++#if X68K_ACCEL
++	if (match_extendedopt(&optstr, "Accel") == DROPBEAR_SUCCESS) {
++		x68k_accel_setmode(optstr);
++		return;
++	}
++#endif
++
+ 	if (match_extendedopt(&optstr, "DisableTrivialAuth") == DROPBEAR_SUCCESS) {
+ 		cli_opts.disable_trivial_auth = parse_flag_value(optstr);
+ 		return;
