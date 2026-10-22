@@ -176,7 +176,7 @@ static int pal_saved;
 
 /* ---- 計測 (-DVT_PROF で数える。vtcat -b が表示する) ---- */
 #ifdef VT_PROF
-long vt_prof[8];   /* 0=blit したセル 1=scroll 呼び出し 2=TXRASCOPY 3=32bit 転送の行 4=flush 5=vt_write 6=put_cell 7=行塗り */
+long vt_prof[8];   /* 0=blit したセル 1=scroll 呼び出し 2=TXRASCOPY 3=32bit 転送のライン 4=flush 5=vt_write 6=置いた字 7=行塗り */
 #define PROF(i, n) (vt_prof[i] += (n))
 #else
 #define PROF(i, n)
@@ -575,7 +575,6 @@ static void cursor_xor(int col, int row)
 static void vram_move_lines(int dst_line, int src_line, int nlines)
 {
   int p, y, k, nl = (COLS + 3) / 4;   /* 1 ラインのうち画面の COLS バイトだけ (128 のうち 96) 動かす */
-  PROF(3, nlines);
 #if !defined(VT_HOSTTEST) || defined(VT_SIM_TXRAS)
   if ((dst_line & 3) == 0 && (src_line & 3) == 0 && (nlines & 3) == 0 && dst_line != src_line) {
     if (dst_line < src_line)
@@ -586,6 +585,7 @@ static void vram_move_lines(int dst_line, int src_line, int nlines)
     return;
   }
 #endif
+  PROF(3, nlines);   /* 32bit 転送で動かしたライン数 (TXRASCOPY の分は数えない) */
   for (p = 0; p < 4; p++) {
     volatile unsigned char *base = TVRAM + (unsigned long)p * PLANE;
     if (dst_line <= src_line) {
