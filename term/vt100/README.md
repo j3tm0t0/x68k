@@ -66,11 +66,23 @@ ZWJ (U+200D) は幅 0 として無視。表に無い絵文字は `??` フォー�
   (CRTMOD 16) では `_iocs_sp_init()` が **-1** を返し使えない (`tests/pcgtest.c` で XEiJ 確認。4/6/8/12 のモードなら 0)。
   512x512 に落とせば使えるがテキストが 64 桁に半減する。テキスト VRAM 直描きなら高解像度のままスクロールにも乗る。
 
-### スループット (計測: XEiJ、vt_write を 30 回。10MHz 68000 は SLIP ≒ 3KB/s に追いつく水準)
-| モデル | top (スクロール少) | vim (スクロール多) |
+### スループット
+`tests/simbench.sh` (68000 の命令サイクル数による見積もり、10MHz、TXRASCOPY の H-sync 待ちと TVRAM ウェイト 2 クロック込み)。
+1 回の vt_write が 1400 バイト (≒ TCP 1 セグメント) / 64 バイトのとき、dd8e297 → 現行 (bytes/s):
+
+| フィクスチャ | -c 1400 | -c 64 |
 |---|---|---|
-| X68030 (XEiJ 既定) | 13916 B/s | 11658 B/s |
-| X68000 10MHz (`-model=SUPER`) | 4045 B/s | 3495 B/s |
+| Claude Code 応答の流し込み (app_claude_stream) | 4284 → 7314 | 942 → 4981 |
+| Claude Code 起動〜応答 (app_claude) | 3752 → 6915 | 925 → 5521 |
+| tmux 分割 (app_tmux) | 2738 → 5589 | 858 → 3394 |
+| vim 日本語 (app_vimjp) | 1450 → 3362 | 629 → 2739 |
+| less UTF-8 戻りページ (app_lessu8) | 233 → 2339 | |
+
+効いたもの: blit をプレーンごとの 4 通り (0/1/グリフ/反転) の展開ループに / flush は書き換えた行だけを
+16bit 比較で 1 回走査 / スクロールは行ポインタを回すだけで空いた行は描き直さない (VRAM に残る前の絵との差分だけ) /
+下方向スクロールも TXRASCOPY (d3 bit15 = 降順、IPLROM $FF781A の逆アセンブルで確認。**XEiJ・実機では未確認**) /
+かな漢字は幅表を引かず、Unicode→JIS に 64 件のキャッシュ。旧版は vt_write 1 回ごとに 3072 セルを全部比べていたので
+小さい刻みで極端に遅かった。XEiJ (-model=SUPER) では `tests/xeij_bench.sh` で測る (GUI のある端末から)。
 
 ### 実機 (X68000 Z) で分かって直したこと (branch ssh、2026-10-22)
 - 解析中の `scroll()` が VRAM を動かす前にソフトカーソルを消す (`vt_write` の頭)。消さないとカーソルの塊ごと
@@ -80,6 +92,12 @@ ZWJ (U+200D) は幅 0 として無視。表に無い絵文字は `??` フォー�
 - Human68k のコンソール (IOCS) はプレーン 0,1 しか使わず、スクロールもプレーン 0,1 しか動かさない。
   vt_fini 後に残した画面に色 (プレーン 2,3) があると以後のコンソールのスクロールでずれる。ssh.x 側は
   戻す前にプレーン 0,1 に潰している (net/ssh/dropbear/x68k_shim.c)。コンソールの最終行は 30 (31 行)。
+- 漢字が 7 区ずれていた: CGROM には 9〜15 区が無く、16 区 (第 1 水準) は 0xF05E00 から (dd8e297)。
+- 試験基盤で見つけて直したこと (2026-10-22): `\` が ¥ に見えた (CGROM 0x5c は ¥、バックスラッシュは 0x80) /
+  BMP の絵文字 (⏰ ✅ ⚡ …) を 1 桁で数えて行の後ろがずれた (wcwidth 由来の `widthtab.h` に) / CSI 引数の桁あふれと
+  大きな DCH・ICH・IL・DL で論理画面の外を書いた / `CSI ? u`・`CSI > 1 u` (kitty キーボード、Claude Code が送る) で
+  カーソルを戻していた / 終端の無い OSC が次の CSI の `[` を食った / `38:5:N` の ':' で CSI が切れた /
+  DA2・DSR 5n・DECRQM・`CSI 18 t`・OSC 10/11 の色問い合わせに答える (応答は vt_key から、丸ごと入るときだけ積む)。
 
 ## キー変換 (`vt_key`)
 スキャンコード (IOCS `_B_KEYINP` の bit8-15) で判定する。実機で確認済み:
@@ -99,6 +117,23 @@ ZWJ (U+200D) は幅 0 として無視。表に無い絵文字は `??` フォー�
 DSR (`ESC[6n`) / DA (`ESC[c`) への応答も `vt_key` から返る。
 
 ## 試験
+`tests/run.sh` が全部流して PASS/FAIL を数える (Mac。要 `tests/venv` に pyte と Pillow、`tests/fetch_cgrom.sh` で CGROM)。
+- **実フォントの描画**: vthost は実機と同じ blit でホスト上の 4 プレーン VRAM に描く (`-g` CGROM、`-v` で VRAM を書き出し、
+  `tests/vram2png.py` で 768x512 PNG)。CGROM は XEiJ 同梱の CGROM_XEiJ.DAT を `tests/cgrom/` に写す (git には入れない)。
+- **グリフ試験** (`tests/glyphtest.py`): 漢字・かな・1〜8 区の記号・ANK の VRAM を、独立に計算した CGROM の正しい位置
+  (16 区以降は 7 区詰める) と比べ、さらにヒラギノで描いた字との最近傍で自分自身か確かめる。7 区詰めを外した変異版で
+  落ちることも run.sh が確かめる。
+- **pyte 比較** (`tests/compare.py`): 文字は桁ごと、属性 (前景/背景/下線) も比べる。こちらの代用表示 (未対応の字を ASCII/`??` に)
+  は許し、pyte の誤読するシーケンス (CSI > 4;2 m を下線と読む、DCS の中身を表示する等) は渡す前に取り除く。pyte が xterm と
+  違う場面 (右端の全角、代替画面、DEC 罫線、SU/SD) は `fixtures/*.expect` に期待画面を書く。問い合わせの応答は `*.reply`。
+- **分割耐性**: -c 1 / -c 7 でも画面・VRAM が同じ。**VRAM 不変条件** (`vthost -V`): vt_write ごとに VRAM = 論理画面の描き直し。
+- **頑健性**: ASan/UBSan 版で全フィクスチャと乱数で壊したシーケンス (`tests/fuzz.py`) を流す。
+- フィクスチャ: `gen_fixtures.sh` / `gen_jp.sh` / `gen_emoji.sh` (80x24)、`gen_synth.py` (境界条件)、`gen_apps.sh`
+  (96x32 TERM=xterm の tmux / Claude Code / vim / top / less / git log / 絵文字。個人情報は `scrub.py` で同じ長さに置換)。
+- `tests/simbench.sh [-c N] [-p] [REV...]`: 68000 版を Musashi で走らせて bytes/s と関数別の割合、最終 VRAM がホスト版と同じか。
+
+### 以前の試験 (XEiJ)
+
 `tests/run.sh` が、記録した VT100 バイト列 (`tests/fixtures/*.rec`) を Mac 上の
 スタブ版 `vthost` と pyte (参照レンダラ) に食わせ、画面が一致するか比べる。XEiJ では
 `vtcat.x` をイメージに入れて動かし、出力を同じ形式で比較する。全 8 本:
