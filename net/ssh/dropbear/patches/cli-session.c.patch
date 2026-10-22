@@ -1,6 +1,18 @@
 --- dropbear-2022.83/cli-session.c
 +++ x68k/cli-session.c
-@@ -371,6 +371,7 @@
+@@ -313,6 +313,11 @@
+ 			return;
+ 
+ 		case SESSION_RUNNING:
++#if DROPBEAR_X68K
++			/* 仮想コンソール: 頼まれたセッションチャネルを開く (x68k_shim.c)。zterm が始まらずに -t で開き直す
++			   ときはチャネルが 0 本になっているので、下の終了の判定より前に */
++			{ extern void x68k_vc_loop(void); x68k_vc_loop(); }
++#endif
+ 			if (ses.chancount < 1 && !cli_opts.no_cmd) {
+ 				cli_finished();
+ 			}
+@@ -371,6 +376,7 @@
  }
  
  static void cli_finished() {

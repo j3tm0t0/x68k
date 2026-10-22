@@ -22,6 +22,7 @@ CHACHA68KDIR="${CHACHA68KDIR:-$HERE/../chacha68k}"
 DEBUG="${DEBUG:-0}"
 CRYPTO68K="${CRYPTO68K:-$HERE/../crypto68k}"
 # VTDEF="-DVT_NO_SA -DVT_NO_ASM" で term/vt100 の切り分け用スイッチ (同時アクセス・asm を使わない) を渡す。
+# 仮想コンソール (Ctrl+F1..F4 で同じ接続の別のシェル、x68k_shim.c) のため term/vt100 は常に -DVT_VCONS で組む。
 # VT100 端末エミュレータ (term/vt100)。-t の対話セッションで画面を描き、キーボードを読む。常に組み込む。
 VT100="${VT100:-$HERE/../../../term/vt100}"
 
@@ -34,6 +35,7 @@ fi
 
 cp "$HERE/localoptions.h" "$SRC/localoptions.h"
 cp "$HERE/x68k_shim.c"    "$SRC/x68k_shim.c"
+cp "$HERE/x68k_vcons.c"   "$SRC/x68k_vcons.c"   # x68k_shim.c が #include する
 
 EXTRA_DEF="" ; EXTRA_OBJ=""
 [ "$DEBUG" = "1" ] && EXTRA_DEF="-DX68K_SSH_DEBUG"
@@ -113,11 +115,11 @@ rm -f config.h.bak
 [ -f "$VT100/vt100.c" ] || { echo "build: $VT100/vt100.c が無い (term/vt100)" >&2; exit 1; }
 ${CROSS}gcc -m68000 -O2 -fomit-frame-pointer -I"$INC" -I"$VT100" -I"$ZTERMC" -include "$INC/x68k_compat.h" $EXTRA_DEF -c x68k_shim.c -o x68k_shim.o
 if [ "$ZTERM" = "1" ]; then
-  ${CROSS}gcc -m68000 -O2 -fomit-frame-pointer -Wno-array-bounds -I"$VT100" ${VTDEF:-} -c "$ZTERMC/ztdraw.c" -o vt100.o
+  ${CROSS}gcc -m68000 -O2 -fomit-frame-pointer -Wno-array-bounds -I"$VT100" -DVT_VCONS ${VTDEF:-} -c "$ZTERMC/ztdraw.c" -o vt100.o
   ${CROSS}gcc -m68000 -O2 -fomit-frame-pointer -I"$VT100" -c "$ZTERMC/ztclient.c" -o ztclient.o
   EXTRA_OBJ="$SRC/vt100.o $SRC/ztclient.o"
 else
-  ${CROSS}gcc -m68000 -O2 -fomit-frame-pointer -Wno-array-bounds -I"$VT100" ${VTDEF:-} -c "$VT100/vt100.c" -o vt100.o
+  ${CROSS}gcc -m68000 -O2 -fomit-frame-pointer -Wno-array-bounds -I"$VT100" -DVT_VCONS ${VTDEF:-} -c "$VT100/vt100.c" -o vt100.o
   EXTRA_OBJ="$SRC/vt100.o"
 fi
 if [ "$ACCEL" = "1" ]; then
