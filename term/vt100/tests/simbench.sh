@@ -9,11 +9,12 @@
 # 使い方: tests/simbench.sh [-c CHUNK] [-p] [REV...]
 #   REV を並べると git のその版 (term/vt100) も同じ条件で測って横に並べる (作業ツリーは "work")。
 #   -p は関数ごとの所要割合 (PC サンプリング、インライン展開なし) も出す。
+#   -n は blit を抜いた版 (VT_PROF_NOBLIT、解析と差分走査だけ) を測る (VRAM の照合は飛ばす)。
 # Musashi は VT_OUT/m68ksim/musashi に取ってくる (git clone、固定コミット)。
 set -euo pipefail
 cd "$(dirname "$0")/.."
-CHUNK=1400; PROF=0
-while [ $# -gt 0 ]; do case "$1" in -c) CHUNK=$2; shift 2;; -p) PROF=1; shift;; *) break;; esac; done
+CHUNK=1400; PROF=0; XCF=()
+while [ $# -gt 0 ]; do case "$1" in -c) CHUNK=$2; shift 2;; -p) PROF=1; shift;; -n) XCF=(-DVT_PROF_NOBLIT); shift;; *) break;; esac; done
 OUT=${VT_OUT:-${TMPDIR:-/tmp}/vttest}/m68ksim
 MUSASHI_REV=313ebf1bd9f4d0d93341eb5ce21fd8a119e9dbdd
 mkdir -p "$OUT"
@@ -32,7 +33,7 @@ build() {   # build SRCDIR NAME [CFLAGS...]
   local src=$1 name=$2; shift 2
   m68k-xelf-gcc -O2 -m68000 -fomit-frame-pointer -finput-charset=utf-8 -fexec-charset=cp932 -ffreestanding -nostdlib \
     -DVT_HOSTTEST -DVT_SIM_TXRAS "$@" -I"$src" -Wl,-Ttext=0x1000 -Wl,-e,_start -o "$OUT/$name.elf" \
-    tests/m68ksim/start.s tests/m68ksim/benchmain.c "$src/vt100.c" -lgcc
+    ${XCF[@]+"${XCF[@]}"} tests/m68ksim/start.s tests/m68ksim/benchmain.c "$src/vt100.c" -lgcc
   m68k-xelf-nm "$OUT/$name.elf" > "$OUT/$name.nm"
   m68k-xelf-objcopy -O binary -j .text -j .data "$OUT/$name.elf" "$OUT/$name.bin"
 }
@@ -66,7 +67,7 @@ for n in $LIST; do
     printf " %10s" "$(echo "$r" | awk '{print $(NF-1)}')"
   done
   ./vthost -g "$CG" -c $CHUNK -s ${sz/ /x} -v "$OUT/host.vram" tests/fixtures/$n.rec /dev/null
-  if cmp -s "$OUT/sim.vram" "$OUT/host.vram"; then echo; else echo "   VRAM differs from vthost!"; bad=1; fi
+  if [ ${#XCF[@]} -gt 0 ] || cmp -s "$OUT/sim.vram" "$OUT/host.vram"; then echo; else echo "   VRAM differs from vthost!"; bad=1; fi
 done
 if [ $PROF = 1 ]; then
   build . prof -fno-inline -fno-inline-small-functions -fno-ipa-sra
