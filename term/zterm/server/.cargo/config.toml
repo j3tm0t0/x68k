@@ -1,0 +1,8 @@
+# musl は rustup 同梱の self-contained crt/libc.a と rust-lld で静的リンクする (zig/gcc 不要)
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "linker-flavor=ld.lld", "-C", "link-self-contained=yes", "-C", "target-feature=+crt-static"]
+
+[target.x86_64-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "linker-flavor=ld.lld", "-C", "link-self-contained=yes", "-C", "target-feature=+crt-static"]
