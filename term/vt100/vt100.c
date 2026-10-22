@@ -153,7 +153,8 @@ static int csi_priv;                 /* '?' などの private 前置 */
 static int csi_inter;                /* 中間バイト (0x20-0x2f、'$' や ' ' など。最後の 1 つ) */
 #define MAXPARAM 32
 #define MAXPVAL  9999                /* パラメータ値の上限 (桁あふれで負になり配列の外を書かないように) */
-static int param[MAXPARAM], nparam;
+static short param[MAXPARAM];         /* 値は MAXPVAL まで (16bit で足りる) */
+static int nparam;
 static int str_kind;                 /* 文字列シーケンスの種類 (']' 'P' など) */
 static int str_esc;                  /* 文字列中で ESC を見たか (ST 待ち) */
 #define STRBUF 8
@@ -553,6 +554,22 @@ static void rotate_rows(cell_t **t, unsigned char *lo, unsigned char *hi, int a,
   int i, j, n = b - a + 1;
   if (k < 0) k += n;
   if (k >= n) k -= n;
+  if (k == 1) {   /* 最頻 (1 行送り): 1 つずつ詰める */
+    cell_t *t0 = t[a];
+    unsigned char l0 = lo ? lo[a] : 0, h0 = lo ? hi[a] : 0;
+    for (i = a; i < b; i++) t[i] = t[i + 1];
+    t[b] = t0;
+    if (lo) { for (i = a; i < b; i++) { lo[i] = lo[i + 1]; hi[i] = hi[i + 1]; } lo[b] = l0; hi[b] = h0; }
+    return;
+  }
+  if (k == n - 1) {   /* 1 行戻し (less の上スクロール・RI) */
+    cell_t *t0 = t[b];
+    unsigned char l0 = lo ? lo[b] : 0, h0 = lo ? hi[b] : 0;
+    for (i = b; i > a; i--) t[i] = t[i - 1];
+    t[a] = t0;
+    if (lo) { for (i = b; i > a; i--) { lo[i] = lo[i - 1]; hi[i] = hi[i - 1]; } lo[a] = l0; hi[a] = h0; }
+    return;
+  }
   for (i = 0, j = a + k; i < n; i++) {
     tmp[i] = t[j];
     if (lo) { tlo[i] = lo[j]; thi[i] = hi[j]; }
@@ -1326,14 +1343,25 @@ static NOINLINE int put_run(const unsigned char *p, int n)
 
 /* CSI の引数・中間・終端バイトを続けて読む (1 バイトごとに vt_write の switch を回らない。Claude Code の出力は
  * 6 割強が CSI)。p[0] から n バイトのうち使った数 (1 以上) を返す。終端・ESC・取り消しで止まる。 */
-static int csi_feed(const unsigned char *p, int n)
+static int csi_feed(const unsigned char *p, int n, int fresh)
 {
-  int k = 0, np = nparam;
+  int k = 0, np, priv, inter;   /* 前置・中間・引数の数は途中では局所変数で持つ (大域変数の読み書きは 68000 で重い) */
+  if (fresh) { np = 0; priv = 0; inter = 0; param[0] = 0; state = S_CSI; }   /* ESC [ の直後から */
+  else { np = nparam; priv = csi_priv; inter = csi_inter; }
   while (k < n) {
-    unsigned char b = p[k++], d = (unsigned char)(b - '0');
-    if (d <= 9) {   /* 値は MAXPVAL で頭打ち、MAXPARAM 個を越えた分は捨てる */
+    unsigned b = p[k++], d = b - '0';
+    if (d <= 9) {   /* 値は MAXPVAL で頭打ち、MAXPARAM 個を越えた分は捨てる。数字が続く間は局所変数で積む */
       if (np == 0) np = 1;
-      if (np <= MAXPARAM) { int *v = &param[np - 1], t = *v * 10 + d; *v = t > MAXPVAL ? MAXPVAL : t; }
+      if (np <= MAXPARAM) {
+        short *pv = &param[np - 1];
+        unsigned v = (unsigned short)*pv;
+        for (;;) {
+          v = v >= 1000 ? MAXPVAL : v * 10 + d;   /* 1000 以上なら 10 倍で必ず MAXPVAL を越える */
+          if (k >= n || (d = p[k] - '0') > 9) break;
+          k++;
+        }
+        *pv = (short)v;
+      }
       continue;
     }
     if (b == ';' || b == ':') {   /* ':' (38:5:N などのサブパラメータ) も区切りとして読む */
@@ -1342,15 +1370,17 @@ static int csi_feed(const unsigned char *p, int n)
       if (np <= MAXPARAM) np++;
       continue;
     }
-    nparam = np;
-    if (b >= 0x40 && b <= 0x7e) { if (nparam > MAXPARAM) nparam = MAXPARAM; state = S_GROUND; do_csi(b); return k; }
-    if (b == '?' || b == '>' || b == '<' || b == '=') csi_priv = b;
-    else if (b >= 0x20 && b <= 0x2f) csi_inter = b;
+    if (b >= 0x40 && b <= 0x7e) {
+      nparam = np > MAXPARAM ? MAXPARAM : np; csi_priv = priv; csi_inter = inter;
+      state = S_GROUND; do_csi((unsigned char)b); return k;
+    }
+    if (b == '?' || b == '>' || b == '<' || b == '=') priv = b;
+    else if (b >= 0x20 && b <= 0x2f) inter = b;
     else if (b == 0x1b) { state = S_ESC; return k; }
-    else if (b < 0x20) ground_ctrl(b);   /* CSI の途中の制御文字はその場で実行 (VT100 の動き) */
+    else if (b < 0x20) ground_ctrl((unsigned char)b);   /* CSI の途中の制御文字はその場で実行 (VT100 の動き) */
     else { state = S_GROUND; return k; }
   }
-  nparam = np;
+  nparam = np; csi_priv = priv; csi_inter = inter;   /* 続きは次の vt_write で */
   return k;
 }
 
@@ -1367,7 +1397,27 @@ void vt_write(const unsigned char *p, int n)
   for (i = 0; i < n; ) {
     unsigned char b = p[i];
     if (state == S_GROUND) {
-      /* 最頻: 字の連なり (印字 ASCII と、バッファ内で完結した UTF-8)。UTF-8 の途中 (u_need) は ASCII 以外を遅い道で */
+      /* 最頻: 行の中に収まる印字 ASCII の連なり (Claude Code は CSI の間に数字ずつ置くので、put_run を呼ぶ手間も惜しい)。
+       * put_run の ASCII と同じ処理: 行末で止め (次の字で put_run が折り返す)、両端だけ全角ペアの割れを見る。 */
+      if ((unsigned)(b - 0x20) < 0x5f && !pend_wrap && !g_special[gl]) {
+        cell_t *row = cur[cy], *c;
+        const unsigned char *q = p + i;
+        unsigned short at = cur_at, olast;
+        int x = cx, k = 0, lim = n - i, lo = x, hi;
+        if (lim > COLS - x) lim = COLS - x;
+        c = &row[x];
+        if ((c->at & F_WIDECONT) && x > 0 && (c[-1].at & F_WIDE)) { clear_cell(&c[-1]); lo--; }
+        do { olast = c->at; c->cp = b; c->at = at; c++; } while (++k < lim && (unsigned)((b = q[k]) - 0x20) < 0x5f);
+        hi = x + k - 1;
+        if ((olast & F_WIDE) && hi + 1 < COLS && (c->at & F_WIDECONT)) { clear_cell(c); hi++; }
+        touch_span(cy, lo, hi);
+        PROF(6, k);
+        x += k;
+        if (x >= COLS) { cx = COLS - 1; pend_wrap = decawm; } else cx = x;
+        u_need = 0; i += k;
+        continue;
+      }
+      /* 字の連なり (折り返し・UTF-8 を含む)。UTF-8 の途中 (u_need) は ASCII 以外を遅い道で */
       if (b >= 0x20 && b != 0x7f && (b < 0x80 || !u_need)) {
         int k = put_run(p + i, n - i);
         if (k) { u_need = 0; i += k; continue; }
@@ -1375,7 +1425,7 @@ void vt_write(const unsigned char *p, int n)
       i++;
       if (b == 0x1b) {
         u_need = 0;
-        if (i < n && p[i] == '[') { csi_begin(); i++; i += csi_feed(p + i, n - i); }   /* ESC [ に続く引数をそのまま読む */
+        if (i < n && p[i] == '[') { i++; i += csi_feed(p + i, n - i, 1); }   /* ESC [ に続く引数をそのまま読む */
         else state = S_ESC;
       }
       else if (b < 0x20) { ground_ctrl(b); u_need = 0; }
@@ -1384,7 +1434,7 @@ void vt_write(const unsigned char *p, int n)
     }
     i++;
     switch (state) {
-      case S_ESC: do_esc(b); if (state == S_CSI) i += csi_feed(p + i, n - i); break;   /* ESC [ に続く引数をそのまま読む */
+      case S_ESC: do_esc(b); if (state == S_CSI) i += csi_feed(p + i, n - i, 0); break;   /* ESC [ に続く引数をそのまま読む */
       case S_ESC_INT: /* '#' の次 */
         if (b == '8') { int r, c; for (r = 0; r < ROWS; r++) for (c = 0; c < COLS; c++) { cur[r][c].cp = 'E'; cur[r][c].at = cur_at; } touch_rows(0, ROWS - 1); }
         state = S_GROUND; break;
@@ -1396,7 +1446,7 @@ void vt_write(const unsigned char *p, int n)
       case S_CHARSET:
         g_special[cs_which] = (b == '0');   /* '0'=DEC 特殊, 'B'/'A' などは ASCII */
         state = S_GROUND; break;
-      case S_CSI: i += csi_feed(p + i - 1, n - i + 1) - 1; break;
+      case S_CSI: i += csi_feed(p + i - 1, n - i + 1, 0) - 1; break;
       case S_STR: str_byte(b); break;
       default: state = S_GROUND; break;
     }

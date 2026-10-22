@@ -71,12 +71,12 @@ int main(int argc, char **argv)
   }
   static unsigned long long pcc[0x80000];   /* PROF=2: 命令アドレス/2 ごとのクロック数 (1MB 未満のテキスト) */
   int exact = prof && atoi(getenv("PROF")) == 2;
-  for (;;) {
+  for (;;) {   /* 1000 クロックずつ回して DONE を見る (計測の端数は 1000 クロック以内) */
     if (exact) {
       unsigned pc = m68k_get_reg(NULL, M68K_REG_PC); int c = m68k_execute(1);
       cyc += c; if (cyc0 && pc < 0x100000) pcc[pc >> 1] += c;
     } else
-    cyc += m68k_execute(prof ? 200 : 100000);
+    cyc += m68k_execute(prof ? 200 : 1000);
     if (prof && !exact && cyc0) { unsigned pc = m68k_get_reg(NULL, M68K_REG_PC); int i, k = -1; for (i = 0; i < nf && fa[i] <= pc; i++) k = i; if (k >= 0) hits[k]++; }
     if (get32(0x7fffe0) == 1 && !cyc0) { cyc0 = cyc; extra = 0; ntxras = 0; vwait = 0; }
     if (get32(0x7fffe0) == 2) break;
