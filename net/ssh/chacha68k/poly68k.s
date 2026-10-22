@@ -502,24 +502,22 @@ poly68k_blocks_asm:
 	
 	.globl	poly68k_table_asm
 poly68k_table_asm:
-	movem.l	%d2-%d7/%a2-%a5,-(%sp)
-	move.l	44(%sp),%a0
-	move.l	48(%sp),%a1
+	movem.l	%d2-%d7/%a2-%a4,-(%sp)
+	move.l	40(%sp),%a0
+	move.l	44(%sp),%a1
 	movem.l	(%a1),%d4-%d7
 	move.l	16(%a1),%a3
-	move.l	%a0,%a1
-	lea	32767(%a0),%a5
-	addq.l	#1,%a5
+	move.l	%a0,%a4
+	lea	32767(%a0),%a1
+	addq.l	#1,%a1
 	moveq	#0,%d0
 	moveq	#0,%d1
 	moveq	#0,%d2
 	moveq	#0,%d3
 	suba.l	%a2,%a2
-	suba.l	%a4,%a4
-.Lt_loop:
+.Lt_lo:
 	move.l	%a2,4(%a0)
 	movem.l	%d0-%d3,8(%a0)
-	move.l	%a4,24(%a0)
 	add.l	%d4,%d3
 	addx.l	%d5,%d2
 	addx.l	%d6,%d1
@@ -529,13 +527,24 @@ poly68k_table_asm:
 1:
 	adda.l	%a3,%a2
 	lea	256(%a0),%a0
-	cmpa.l	%a5,%a0
-	bne.s	2f
-	suba.l	#65536,%a0
-2:
 	cmpa.l	%a1,%a0
-	bne.s	.Lt_loop
-	movem.l	(%sp)+,%d2-%d7/%a2-%a5
+	bne.s	.Lt_lo
+	suba.l	#65536,%a0
+.Lt_hi:
+	move.l	%a2,4(%a0)
+	movem.l	%d0-%d3,8(%a0)
+	add.l	%d4,%d3
+	addx.l	%d5,%d2
+	addx.l	%d6,%d1
+	addx.l	%d7,%d0
+	bcc.s	1f
+	addq.l	#1,%a2
+1:
+	adda.l	%a3,%a2
+	lea	256(%a0),%a0
+	cmpa.l	%a4,%a0
+	bne.s	.Lt_hi
+	movem.l	(%sp)+,%d2-%d7/%a2-%a4
 	rts
 	
 	.globl	poly68k_blocks_tab

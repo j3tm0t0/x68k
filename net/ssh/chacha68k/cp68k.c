@@ -127,11 +127,12 @@ void poly68k_finish(poly68k_state *st, unsigned char tag[16])
 
 #ifdef CP68K_POLY_ASM
 /* 表引き版 (gen_poly.py の poly68k_blocks_tab)。表は 64KB の領域 1 つ (b ごとに 256 バイトの枠、TA と TB)。
-   表を作るのに ~8.6 万クロックかかるので、26 ブロック (416 バイト) 未満は MULU 版 (1 ブロック ~6600 クロック、表引きは ~3000) */
-#define POLY68K_TAB_MIN 26
+   表を作るのに ~7 万クロックかかるので、22 ブロック (352 バイト) 未満は MULU 版 (1 ブロック ~6600 クロック、表引きは ~3000) */
+#define POLY68K_TAB_MIN 22
 extern void poly68k_table_asm(char *slot0, const uint32_t R[5]);
 extern void poly68k_blocks_tab(poly68k_state *st, const unsigned char *m, unsigned long n, unsigned long hibit, const char *base);
 static uint32_t poly68k_tab[65536 / 4];
+static int poly68k_tab_ready;
 #define POLY68K_BASE ((char *)poly68k_tab + 32768)
 static void poly68k_tables(const poly68k_state *st)
 {
@@ -141,6 +142,13 @@ static void poly68k_tables(const poly68k_state *st)
   R[4] = 0;
   R8[0] = R[0] << 8;
   for (i = 1; i < 5; i++) R8[i] = (R[i] << 8) | (R[i - 1] >> 24);
+  if (!poly68k_tab_ready) {   /* 枠の +24 / +56 の 0 語 (asm は書かない。BSS だが念のため最初に 1 回) */
+    for (i = 0; i < 256; i++) {
+      poly68k_tab[i * 64 + 6] = 0;
+      poly68k_tab[i * 64 + 14] = 0;
+    }
+    poly68k_tab_ready = 1;
+  }
   poly68k_table_asm(POLY68K_BASE, R);
   poly68k_table_asm(POLY68K_BASE + 32, R8);
 }
@@ -180,11 +188,19 @@ void poly68k_mac(unsigned char tag[16], const unsigned char *m, unsigned long le
 extern void chacha68k_xor_asm(uint32_t x[16], const unsigned char *in, unsigned char *out, unsigned long nblocks);
 #endif
 
+#ifdef CP68K_CHACHA_ASM
+/* 鍵ストリーム 1 ブロック (asm に 0 を XOR させる) */
+static void chacha_block(uint32_t x[16], unsigned char ks[64])
+{
+  static const uint32_t zero[16];
+  chacha68k_xor_asm(x, (const unsigned char *)zero, ks, 1);
+}
+#else
 #define ROTL(v, n) (((v) << (n)) | ((v) >> (32 - (n))))
 #define QR(a, b, c, d) \
   a += b; d = ROTL(d ^ a, 16); c += d; b = ROTL(b ^ c, 12); \
   a += b; d = ROTL(d ^ a, 8);  c += d; b = ROTL(b ^ c, 7);
-static void chacha_block(const uint32_t in[16], unsigned char ks[64])
+static void chacha_block(uint32_t in[16], unsigned char ks[64])
 {
   uint32_t x[16];
   int i;
@@ -194,14 +210,16 @@ static void chacha_block(const uint32_t in[16], unsigned char ks[64])
     QR(x[0], x[5], x[10], x[15]) QR(x[1], x[6], x[11], x[12]) QR(x[2], x[7], x[8], x[13]) QR(x[3], x[4], x[9], x[14])
   }
   for (i = 0; i < 16; i++) st32(ks + 4 * i, x[i] + in[i]);
+  if (++in[12] == 0) ++in[13];
 }
+#endif
 
 void chacha68k_xor(uint32_t x[16], const unsigned char *in, unsigned char *out, unsigned long len)
 {
-  unsigned char ks[64];
+  unsigned char ks[64] __attribute__((aligned(2)));
   unsigned long i, n;
 #ifdef CP68K_CHACHA_ASM
-  /* 64 バイト単位は asm (偶数番地のときだけ。奇数は下の C で) */
+  /* 64 バイト単位は asm で直接 (偶数番地のときだけ)。端数と奇数番地は鍵ストリームを作って下で XOR */
   if (len >= 64 && (((uintptr_t)in | (uintptr_t)out) & 1) == 0) {
     n = len >> 6;
     chacha68k_xor_asm(x, in, out, n);
@@ -209,8 +227,7 @@ void chacha68k_xor(uint32_t x[16], const unsigned char *in, unsigned char *out, 
   }
 #endif
   while (len) {
-    chacha_block(x, ks);
-    if (++x[12] == 0) ++x[13];
+    chacha_block(x, ks);   /* x[12..13] も進める */
     n = len < 64 ? len : 64;
     for (i = 0; i < n; i++) out[i] = in[i] ^ ks[i];
     in += n; out += n; len -= n;
