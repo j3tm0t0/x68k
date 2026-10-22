@@ -10,7 +10,7 @@ s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 s.settimeout(float(os.environ.get("PICOKBD_TIMEOUT", "10")))
 s.sendto(" ".join(sys.argv[1:]).encode(), (host, 6869))
 try:
-    r, a = s.recvfrom(100)
+    r, a = s.recvfrom(1500)     # status の返事は 100 バイトを超える
     print(r.decode())
     sys.exit(0 if r.startswith(b"ok") else 1)
 except socket.timeout:
