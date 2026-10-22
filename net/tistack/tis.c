@@ -51,7 +51,8 @@ static uint16_t next_port = 1024;
 struct tis_info info = { "TISINFO", usock, ts, NSOCK, 8192, 0, "loopback" };
 const struct backend *be = &be_loop;
 
-/* -ffreestanding でも gcc は構造体のコピーなどで memcpy / memset を呼ぶ */
+/* -ffreestanding でも gcc は構造体のコピーなどで memcpy / memset を呼ぶ (ホストの試験では libc のものを使う) */
+#ifdef __m68k__
 void *memcpy(void *d, const void *s, unsigned long n)
 {
   uint8_t *p = d;
@@ -68,6 +69,9 @@ void *memset(void *d, int c, unsigned long n)
     *p++ = c;
   return d;
 }
+#else
+#include <string.h>
+#endif
 
 static int streqi(const char *a, const char *b)
 {
@@ -85,10 +89,12 @@ static int streqi(const char *a, const char *b)
 
 static int enter(void)
 {
+#ifdef __m68k__
   unsigned short sr;
   __asm__ volatile ("move.w %%sr,%0" : "=d"(sr));
   if (sr & 0x2000)
     return 0;
+#endif
   return _dos_super(0);
 }
 

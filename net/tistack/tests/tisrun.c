@@ -8,6 +8,10 @@
  *
  *   tisrun.x rcmd RCMD.X [引数...]   rcmd.x をフォアグラウンドで動かし、スレッドがクライアントになる:
  *                                    echo / type BIG.TXT (約 300KB を受信) / @put (300KB を送信) / exit
+ *   tisrun.x echo                    スレッドがブロッキングの echo サーバ (127.0.0.1:7)、このプログラムが
+ *                                    ブロッキングのクライアントになり、100,000 バイトを往復させる (poll 無し)
+ *   tisrun.x echo                    スレッドがブロッキングの echo サーバ (127.0.0.1:7)、このプログラムが
+ *                                    ブロッキングのクライアントになり、100,000 バイトを往復させる (poll 無し)
  *   tisrun.x ssh SSH.X [引数...]     ssh.x をフォアグラウンドで動かし、スレッドが 127.0.0.1:22 の偽の
  *                                    SSH サーバになる (バナーを送り、相手のバナーと KEXINIT を受け取って切る)
  *
@@ -34,7 +38,8 @@
 static char logbuf[16384];
 static int loglen;
 static volatile int thread_done, child_done, npass, nfail;
-static int ssh_stop;                    /* 2 = 偽の SSH サーバが KEXINIT まで受け取った */
+static int ssh_stop;
+static volatile int thread_ready;                    /* 2 = 偽の SSH サーバが KEXINIT まで受け取った */
 
 static void lg(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 static void lg(const char *fmt, ...)
@@ -282,6 +287,78 @@ static void ssh_thread(void)
   }
 }
 
+/* ---- echo: スレッドがブロッキングのサーバ、フォアグラウンド (このプログラム) がブロッキングのクライアント ----
+ * どちらも poll を使わない。accept / read / connect / write がスタックの中で _CHANGE_PR して相手を待つ */
+
+#define ECHO_TOTAL 100000
+
+static long echo_srv_bytes, echo_srv_reads;
+
+static void echo_thread(void)
+{
+  struct sockaddr_in a;
+  static char buf[3000];
+  int ls = socket(AF_INET, SOCK_STREAM, 0), s, n;
+  memset(&a, 0, sizeof a);
+  a.sin_family = AF_INET;
+  a.sin_port = htons(7);
+  if (ls < 0 || bind(ls, (struct sockaddr *)&a, sizeof a) < 0 || listen(ls, 1) < 0) {
+    check(0, "echo: listen 7");
+    return;
+  }
+  thread_ready = 1;
+  s = accept(ls, 0, 0);                 /* ブロッキング: クライアントが来るまで中で待つ */
+  check(s >= 128, "echo: blocking accept in thread");
+  close(ls);
+  while ((n = read(s, buf, sizeof buf)) > 0) {   /* ブロッキング read。EOF で 0 */
+    echo_srv_reads++;
+    if (write(s, buf, n) != n)          /* ブロッキング write: 全部受け取られるまで待つ */
+      break;
+    echo_srv_bytes += n;
+  }
+  check(n == 0, "echo: server read -> 0 at client EOF");
+  close(s);
+}
+
+static void echo_client(void)
+{
+  static char wbuf[5000], rbuf[5000];
+  long sent = 0, got = 0, t0, reads = 0;
+  int s, bad = 0, k, n;
+  char m[160];
+  t0 = _dos_time_pr();
+  while (!thread_ready && _dos_time_pr() - t0 < 5000)
+    _dos_change_pr();
+  s = conn(7, 10);
+  check(s >= 128, "echo: blocking connect from foreground");
+  if (s < 0)
+    return;
+  t0 = _dos_time_pr();
+  /* 1 回に 1〜4999 バイト書き、同じだけ読み返す (返事が来るまでブロッキング read が待つ) */
+  while (sent < ECHO_TOTAL) {
+    int len = 1 + (sent * 7 + 13) % 4999, r;
+    if (len > ECHO_TOTAL - sent) len = ECHO_TOTAL - sent;
+    for (k = 0; k < len; k++) wbuf[k] = (char)(sent + k);
+    if (write(s, wbuf, len) != len) { bad = 1; break; }
+    for (r = 0; r < len; r += n) {
+      n = read(s, rbuf + r, len - r);
+      if (n <= 0) { bad = 2; break; }
+      reads++;
+    }
+    if (bad) break;
+    for (k = 0; k < len; k++)
+      if (rbuf[k] != (char)(sent + k)) bad = 3;
+    sent += len;
+    got += len;
+  }
+  shutdown(s, SHUT_WR);
+  n = read(s, rbuf, sizeof rbuf);
+  sprintf(m, "echo: %ld bytes round trip in %ld ms, client reads %ld, server reads %ld, bad %d, final read %d",
+          got, _dos_time_pr() - t0, reads, echo_srv_reads, bad, n);
+  check(!bad && got == ECHO_TOTAL && n == 0, m);
+  close(s);
+}
+
 /* ---- スレッド ---- */
 
 static char mode[8];
@@ -294,6 +371,8 @@ static void thread_main(void)
 {
   if (!strcmp(mode, "rcmd"))
     rcmd_thread();
+  else if (!strcmp(mode, "echo"))
+    echo_thread();
   else
     ssh_thread();
   thread_done = 1;
@@ -353,7 +432,7 @@ int main(int argc, char **argv)
     argv += 2;
     argc -= 2;
   }
-  if (argc < 3 || (strcmp(argv[1], "rcmd") && strcmp(argv[1], "ssh"))) {
+  if (argc < 2 || (strcmp(argv[1], "echo") && (argc < 3 || (strcmp(argv[1], "rcmd") && strcmp(argv[1], "ssh"))))) {
     fprintf(stderr, "usage: tisrun.x [-o file] [-e file] rcmd|ssh program [args...]\n");
     return 1;
   }
@@ -389,14 +468,18 @@ int main(int argc, char **argv)
     while ((r = _dos_send_pr(myid, tid, 0, msg, sizeof msg)) == -28)
       _dos_change_pr();
   }
-  printf("tisrun: thread %d (%s), exec %s%s\n", tid, mode, argv[2], cl.buffer);
+  printf("tisrun: thread %d (%s), exec %s%s\n", tid, mode, argc > 2 ? argv[2] : "-", cl.buffer);
   {
     int ef = -1, save = -1;
     if (errf && (ef = _dos_create(errf, 0x20)) >= 0) {
       save = _dos_dup(2);
       _dos_dup2(ef, 2);
     }
-    rc = _dos_loadexec(argv[2], &cl, 0);
+    if (!strcmp(mode, "echo")) {
+      echo_client();
+      rc = 0;
+    } else
+      rc = _dos_loadexec(argv[2], &cl, 0);
     if (ef >= 0) {
       _dos_dup2(save, 2);
       _dos_close(save);
@@ -404,7 +487,7 @@ int main(int argc, char **argv)
     }
   }
   child_done = 1;
-  lg("tisrun: %s exited, rc=%d\n", argv[2], rc);
+  lg("tisrun: %s exited, rc=%d\n", argc > 2 ? argv[2] : "client", rc);
   t0 = _dos_time_pr();
   while (!thread_done && _dos_time_pr() - t0 < 20000)
     _dos_change_pr();

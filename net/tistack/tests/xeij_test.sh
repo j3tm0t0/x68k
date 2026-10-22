@@ -4,7 +4,7 @@
 #   2. AUTOEXEC.BAT が tis.x を常駐させ、試験を順に動かして結果を *.TXT に書き、最後に DONE.TXT を作る
 #   3. XEiJ を -boot=<そのディレクトリ> -config=default -saveonexit=off で起動し (ユーザ設定に触れない)、
 #      DONE.TXT ができたら終了させて結果を表示する
-# 使い方: tests/xeij_test.sh [試験名 ...]   (既定: tistest rcmd ssh)
+# 使い方: tests/xeij_test.sh [試験名 ...]   (既定: tistest echo rcmd ssh)
 # 環境変数: XEIJ=XEiJ のディレクトリ、TIS_OUT=出力先、RCMD_X=rcmd.x、SSH_X=ssh.x (無ければその試験を飛ばす)
 # java が HeadlessException で起動できないシェルでは、このスクリプトを .command にして open -a iTerm で動かす
 set -euo pipefail
@@ -15,7 +15,7 @@ RCMD_X=${RCMD_X:-$OUT/rcmd.x}
 SSH_X=${SSH_X:-$HOME/Dropbox/src/github.com/j3tm0t0/x68k-ssh/net/ssh/dropbear/ssh.x}
 B="$OUT/boot"
 JAVA=java; [ -x /opt/homebrew/opt/openjdk/bin/java ] && JAVA=/opt/homebrew/opt/openjdk/bin/java
-TESTS=${*-tistest rcmd ssh}
+TESTS=${*-tistest echo rcmd ssh}
 [ -f "$XEIJ/XEiJ.jar" ] || { echo "XEiJ が見つからない: $XEIJ (XEIJ=... で指定)"; exit 1; }
 make -s
 make -s -C tests
@@ -38,6 +38,7 @@ printf 'FILES = 30\r\nBUFFERS = 20 1024\r\nLASTDRIVE = Z:\r\nPROCESS = 16 10 20\
   for t in $TESTS; do
     case $t in
       tistest) printf 'TISTEST.X > TISTEST.TXT\r\n';;
+      echo) printf 'TISRUN.X -o ECHO.TXT echo\r\n';;
       rcmd)
         if [ -f "$RCMD_X" ]; then
           cp "$RCMD_X" "$B/RCMD.X"
@@ -71,7 +72,7 @@ for t in $(seq 1 ${TIS_TIMEOUT:-600}); do
 done
 [ -f "$B/DONE.TXT" ] || { echo "時間切れ"; ls "$B"; exit 1; }
 kill $PID 2>/dev/null || true
-for f in TIS TISTEST RCMD RCMDRES SSH SSHERR SSHRES X1 X2 X3 STAT REMOVE; do
+for f in TIS TISTEST ECHO RCMD RCMDRES SSH SSHERR SSHRES X1 X2 X3 STAT REMOVE; do
   [ -f "$B/$f.TXT" ] || continue
   echo "== $f.TXT"
   iconv -f CP932 -t UTF-8 "$B/$f.TXT" 2>/dev/null | tr -d '\r' || tr -d '\r' < "$B/$f.TXT"

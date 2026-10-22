@@ -100,6 +100,11 @@ Human68k のスレッド (xip の受信、npd、テストのスレッド) はこ
 
 ## 設計
 
+**Z の上に TCP は作らない。** tis.x は `_TI_*` の薄い窓口 (ソケット表・受信バッファ・状態の文字列・ブロッキングの待ち)
+だけで、再送・ウィンドウ・タイマーは持たない。TCP は後の段階で Pico W の lwIP (pico-sdk / cyw43) が話し、
+tis.x は「ソケット操作を npd の郵便受け越しに Pico に頼む」だけになる。ループバックの backend は同じ X68000 の
+ソケットのバッファ同士でバイトを動かすだけ (TCP ではない)。backend の口はこの「頼む」形に合わせてある。
+
 ```
   プログラム (libsocket / libnetwork)
         │ jsr text+8 (d0=命令, a0=引数)
@@ -170,10 +175,24 @@ Pico 版の考え (次の段階):
 - `be.h`: API 層と backend の間の口
 - `tests/`: libsocket の試験プログラムと XEiJ の試験台 (xeij_test.sh)
 
-## 試験 (XEiJ、ネットワーク無し)
+## 試験
+
+3 段で試す。Human68k はシングルタスクなので、並行して動く相手が要る試験だけを XEiJ のスレッドに回す。
+
+1. **ホスト (Mac)**: `make -C tests host && tests/hostsim [回数]`。tis.c と lo.c をそのまま Mac でビルドし、
+   _TI_ の入口を libsocket と同じ引数で呼ぶ (tests/hostsim.c、hostinc/ が x68k/dos.h の代わり)。`_CHANGE_PR` は
+   差し込み口になっていて、「待っている間に相手が書く / 閉じる / 接続して来る / 自分が閉じられる」を作れる。
+   戻り値・状態の文字列・errflag の約束を 50 項目ほどと、リングの折り返し (受信バッファ 1〜300 バイト) の
+   乱数試験、乱数の命令列のあとの表の整合を見る。2026-10-22: 5000 回で 10049 項目すべて通過
+2. **XEiJ、1 本のプログラム** (tistest.x): 両端をノンブロッキングで交互に動かす (下記)
+3. **XEiJ、スレッド** (tisrun.x): `tisrun.x echo` はスレッドがブロッキングの echo サーバ (accept / read / write)、
+   フォアグラウンドがブロッキングのクライアント (connect / write / read) で、poll を使わずに 100,000 バイトを
+   往復させる (ブロッキングの待ちが _CHANGE_PR で相手に譲ることの確認。3.2 秒)。最後に無修正の rcmd.x と ssh.x
+
+### XEiJ (ネットワーク無し)
 
 ```
-tests/xeij_test.sh            # tistest rcmd ssh を全部。結果は $TIS_OUT/boot/*.TXT (既定 $TMPDIR/tistest)
+tests/xeij_test.sh            # tistest echo rcmd ssh を全部。結果は $TIS_OUT/boot/*.TXT (既定 $TMPDIR/tistest)
 tests/xeij_test.sh tistest    # 1 つだけ
 ```
 
