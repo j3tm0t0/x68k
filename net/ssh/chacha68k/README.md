@@ -29,8 +29,19 @@ XEiJ (`-model=SUPER`、10MHz、`_iocs_ontime`) の `tests/cpbench.x`、16 KB x 8
 libtomcrypt の Poly1305 は 26 ビットのリムの積を `ulong64` で取るので、68000 では `__muldi3` /
 `__mulsi3` がパケットの時間の 69% を占めていた (`tests/csim` の関数別)。
 
-**Z 実機は未計測** (計測しようとした時点で Z の rcmd に届かなかった)。libtomcrypt で Z は XEiJ の
-約 2.7 倍遅い (1.5 KB/s 対 4.0 KB/s) ので、その比のままなら Z では ~8 KB/s。
+**Z 実機 (2026-10-22 16 時)**: cpbench.x -n 4 (16 KB x 4) で libtomcrypt **1722 B/s → 9089 B/s** (5.3 倍)、
+MULU の Poly1305 だけだと 6253 B/s (表引きは Z でも速い)。52 バイト x 100 は 5.24 → 2.26 s。
+全長で libtomcrypt と同一 (FNV も XEiJ と同じ)。Z は XEiJ の約 2.4 倍遅い。
+
+実際の ssh.x (FAST=1、b:dbcc.x、sshd:22 の Linux へ) で `seq 1 60000 > nul` (338,895 バイトの受信):
+
+| | 全体 | ハンドシェイク (`echo hello`) | 転送 | 速さ |
+|---|---|---|---|---|
+| 旧 (b:dbcv.x、libtomcrypt) | 309.4 s | 70.8 s | 238.6 s | 1.42 KB/s |
+| **新 (CHACHA68K)** | 145.5 s | 70.9 s | 74.6 s | **4.54 KB/s** (3.2 倍) |
+
+4.54 KB/s は 1/(1/9.1 + 1/9.1) にほぼ等しく、暗号 (9.1 KB/s) と受信・配管 (平文 TCP 9〜11 KB/s) が
+重ならずに直列で掛かっている見込み。これ以上は暗号と受信を重ねるか、TCP 側を速くする必要がある。
 
 ## Poly1305
 

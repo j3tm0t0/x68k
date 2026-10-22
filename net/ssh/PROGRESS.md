@@ -7,7 +7,9 @@ dropbear の `chachapoly.c` から呼ぶ。結果は libtomcrypt とバイト単
 - 内訳 (Musashi、16 KB のパケット): libtomcrypt は Poly1305 が 83% (`__muldi3` / `__mulsi3`)。
   2384 → 426 クロック/バイト (ChaCha20 394 → 233、Poly1305 1990 → 193)。
 - XEiJ SUPER (cpbench.x、16 KB x 8): **4000 → 22103 B/s**。52 バイトのパケット 22 → 9.3 ms。
-- **Z 実機は未計測** (計測しようとしたら Z の rcmd に届かなかった)。設計と試験は [chacha68k/README.md](chacha68k/README.md)。
+- **Z 実機**: cpbench 1722 → 9089 B/s (5.3 倍)。実際の ssh.x で 338,895 バイトの受信が 238.6 → 74.6 s
+  (**1.42 → 4.54 KB/s**、ハンドシェイク 71 s は不変)。暗号と受信が直列なので残りは TCP 側と同程度。
+  設計と試験は [chacha68k/README.md](chacha68k/README.md)。
 
 # SSH クライアント移植 進捗 (2026-10-22 09:30)
 
