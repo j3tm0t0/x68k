@@ -17,6 +17,8 @@ dropbear の `dbclient` を X68000 (Human68k) 用にクロスビルドして `ss
 ./build.sh              # ssh.x を作る (素の curve25519。遅い。既定の出力は ./ssh.x)
 FAST=1 ./build.sh       # 68000 高速体演算を組み込む (XEiJ 計測で scalarmult 118s->10s。Z 実機の内訳は ../PROGRESS.md)
 FAST=1 FAST_C=1 ./build.sh   # asm 無しの C 版だけ (22s)。mul68k.s 不要
+FAST=1 CHACHA68K=0 ./build.sh  # 通信路の暗号を libtomcrypt のままにする (CHACHA68K の既定は FAST と同じ)
+FAST=1 CHACHA68K_C=1 ./build.sh  # chacha68k の C 版だけ (asm 無し)
 ./build.sh /path/ssh.x  # 出力先を指定
 DEBUG=1 FAST=1 ./build.sh /path/dbg.x   # 位相ごとの印 (経過秒付き) をテキスト画面に出す版
 ZTERM=1 FAST=1 ./build.sh    # -Z (zterm: リモートのヘルパが画面を持ち、変わったセルだけ受け取る) が使える版
@@ -27,6 +29,9 @@ ZTERM=1 FAST=1 ACCEL=1 ACCELDIR=../../../../x68k-accel/net/accel ./build.sh   # 
 `ssh.x -Z host [cmd]` で pty を要求せず 1 本の exec チャネルでヘルパを確かめ・押し込み・起動する。ヘルパは
 `B:/zterm/` (環境変数 `ZTERMDIR`) の `<uname -s>-<uname -m>.gz` と `VERSION` (term/zterm/server/dist.sh が作る)。
 始まらなければ同じ接続で `-t` のセッションに切り替わる。詳細は [term/zterm/README.md](../../../term/zterm/README.md)。
+
+`CHACHA68K=1` は `net/ssh/chacha68k/` (68000 向けの ChaCha20 / Poly1305、`chachapoly.patch`) を組み込む。
+XEiJ SUPER で chacha20-poly1305 が 4.0 KB/s → 22 KB/s (16 KB のパケット)。結果は libtomcrypt と同じ。
 
 `VTKEEP=1` は終了時に VT100 の画面をプレーン 0,1 に潰さない試験用の版 (VRAM ダンプで色を見る)。
 

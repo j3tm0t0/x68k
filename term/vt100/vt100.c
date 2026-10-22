@@ -153,7 +153,8 @@ static int csi_priv;                 /* '?' などの private 前置 */
 static int csi_inter;                /* 中間バイト (0x20-0x2f、'$' や ' ' など。最後の 1 つ) */
 #define MAXPARAM 32
 #define MAXPVAL  9999                /* パラメータ値の上限 (桁あふれで負になり配列の外を書かないように) */
-static int param[MAXPARAM], nparam;
+static short param[MAXPARAM];         /* 値は MAXPVAL まで (16bit で足りる) */
+static int nparam;
 static int str_kind;                 /* 文字列シーケンスの種類 (']' 'P' など) */
 static int str_esc;                  /* 文字列中で ESC を見たか (ST 待ち) */
 #define STRBUF 8
@@ -175,7 +176,7 @@ static int pal_saved;
 
 /* ---- 計測 (-DVT_PROF で数える。vtcat -b が表示する) ---- */
 #ifdef VT_PROF
-long vt_prof[8];   /* 0=blit したセル 1=scroll 呼び出し 2=TXRASCOPY 3=32bit 転送の行 4=flush 5=vt_write 6=put_cell 7=行塗り */
+long vt_prof[8];   /* 0=blit したセル 1=scroll 呼び出し 2=TXRASCOPY 3=32bit 転送のライン 4=flush 5=vt_write 6=置いた字 7=行塗り */
 #define PROF(i, n) (vt_prof[i] += (n))
 #else
 #define PROF(i, n)
@@ -372,7 +373,7 @@ static void pl_inv2(volatile unsigned char *v, const unsigned char *g)
  * R21 を触るのは flush の中だけ: 読み書き両方のある cursor_xor・TXRASCOPY (IOCS が R21 の下位を書く) の前に 0 に戻す
  * (R21 は読まない。実機で読めるか確かめていないので。起動時は 0 で、IOCS の TXRASCOPY は呼ぶたびに自分で設定する)。 */
 static int sa_ok;              /* 同時アクセスが使える (vt_init で確かめた) */
-static int sa_cur;             /* いま R21 に設定しているプレーン (0 = 同時アクセスを切ってある) */
+static unsigned short sa_cur; /* いま R21 に設定しているプレーン (0 = 同時アクセスを切ってある) */
 static void sa_mask(int m)
 {
   if (sa_cur == m) return;
@@ -455,7 +456,9 @@ static void blit(int col, int row, const cell_t *c, const cell_t *old)
 
 /* 属性語の上位バイト (fg<<4|bg) -> プレーンの書き方。bit0-3 グリフ / bit4-7 0 塗り / bit8-11 0xff 塗り / bit12-15 反転グリフ。
  * pm_old は「前の絵がそのプレーンで塗りつぶし」の印 (bit4-7 = 0 で塗ってある / bit8-11 = 0xff で塗ってある)。 */
-static unsigned short pm_new[256], pm_old[256];
+static unsigned short pm_tab[512];   /* [0..255] = pm_new、[256..511] = pm_old (vt_blitrow は 1 本の表として引く) */
+#define pm_new pm_tab
+#define pm_old (pm_tab + 256)
 static void pm_build(void)
 {
   int a;
@@ -491,6 +494,67 @@ static void blit_plain(volatile unsigned char *v0, const cell_t *c, const cell_t
   if (m & 0xf000) { volatile unsigned char *v = v0; sa_mask(m >> 12); pl_inv1(v, gp); }
 }
 
+#if defined(__mc68000__) && !defined(VT_PROF_NOBLIT) && !defined(VT_NO_ASM)   /* -DVT_NO_ASM で C だけに */
+/* blit_plain の 68000 手書き版 (同時アクセスが使えるときだけ)。C だとセルごとの判定・表引き・レジスタの出し入れに
+ * グリフの 16 バイト転送の倍以上かかっていた。行の差分セル diff[0..nd-1] を前から描き、drawn も写す。
+ * ASCII 以外・下線・全角・罫線・\・~ のセルに来たらそこで止め、処理した数を返す (そのセルは C の blit が描く)。
+ *   引数 (スタック): rv=行のプレーン 0 の先頭, lrow, drow, diff, nd, pm=pm_tab, cg=CGROM16, r21=&CRTC_R21, cur=&sa_cur
+ *   d0=処理数 d1=桁 d2=桁*4 d3=グリフの位置 d5=書き方 d6=いまの R21 プレーン d7=nd
+ *   a0=rv a1=lrow a2=drow a3=diff a4=pm a5=グリフ/R21 a6=セルの VRAM */
+int vt_blitrow(volatile unsigned char *rv, cell_t *lrow, cell_t *drow, const unsigned char *diff, int nd,
+               const unsigned short *pm, const unsigned char *cg, volatile unsigned short *r21, unsigned short *cur);
+#define BR_R21 /* d4 = プレーン (0 以外)。違えば R21 = 0x100 | d4<<4 */ \
+  "	cmp.w	%d4,%d6\n	beq.s	1f\n	move.w	%d4,%d6\n	lsl.w	#4,%d4\n	ori.w	#0x100,%d4\n" \
+  "	movea.l	76(%sp),%a5\n	move.w	%d4,(%a5)\n1:\n"
+#define BR_G16(X) X(0) X(1) X(2) X(3) X(4) X(5) X(6) X(7) X(8) X(9) X(10) X(11) X(12) X(13) X(14) X(15)
+#define BR_CP(i) "	move.b	(%a5)+," #i "*128(%a6)\n"
+#define BR_INV(i) "	move.b	(%a5)+,%d4\n	not.b	%d4\n	move.b	%d4," #i "*128(%a6)\n"
+#define BR_FILL(i) "	move.b	%d4," #i "*128(%a6)\n"
+__asm__(
+"	.text\n	.even\n	.globl	vt_blitrow\n"
+"vt_blitrow:\n"
+"	movem.l	%d2-%d7/%a2-%a6,-(%sp)\n"
+"	movea.l	48(%sp),%a0\n	movea.l	52(%sp),%a1\n	movea.l	56(%sp),%a2\n	movea.l	60(%sp),%a3\n"
+"	move.l	64(%sp),%d7\n	movea.l	68(%sp),%a4\n	movea.l	80(%sp),%a5\n	move.w	(%a5),%d6\n"
+"	moveq	#0,%d0\n	tst.w	%d7\n	beq	.Lbr_done\n"
+".Lbr_loop:\n"
+"	moveq	#0,%d1\n	move.b	(%a3,%d0.w),%d1\n	move.w	%d1,%d2\n	add.w	%d2,%d2\n	add.w	%d2,%d2\n"
+"	move.b	3(%a1,%d2.w),%d3\n	andi.b	#0x1f,%d3\n	bne	.Lbr_done\n"          /* 下線・罫線・全角・絵文字 */
+"	move.w	(%a1,%d2.w),%d3\n	moveq	#0,%d4\n	move.b	2(%a1,%d2.w),%d4\n"   /* d3=cp d4=fg<<4|bg */
+"	cmpi.w	#0x20,%d3\n	bne.s	.Lbr_nb\n"
+"	andi.w	#15,%d4\n	move.w	%d4,%d5\n	lsl.w	#4,%d5\n	or.w	%d5,%d4\n	bra.s	.Lbr_at\n"   /* 空白: fg = bg */
+".Lbr_nb:\n"
+"	cmpi.w	#0x21,%d3\n	bcs	.Lbr_done\n	cmpi.w	#0x7e,%d3\n	bcc	.Lbr_done\n	cmpi.w	#0x5c,%d3\n	beq	.Lbr_done\n"
+".Lbr_at:\n"
+"	lsl.w	#4,%d3\n	add.w	%d4,%d4\n	move.w	(%a4,%d4.w),%d5\n"           /* d3=グリフの位置 d5=pm_new[a] */
+"	move.b	3(%a2,%d2.w),%d4\n	andi.b	#0x18,%d4\n	bne.s	.Lbr_pass\n"     /* 前が絵文字・全角の右半分: 分からない */
+"	moveq	#0,%d4\n	move.b	2(%a2,%d2.w),%d4\n"
+"	cmpi.w	#0x20,(%a2,%d2.w)\n	bne.s	.Lbr_on\n	tst.b	3(%a2,%d2.w)\n	bne.s	.Lbr_on\n"
+"	andi.w	#15,%d4\n	move.w	%d4,%d1\n	lsl.w	#4,%d1\n	or.w	%d1,%d4\n	move.b	(%a3,%d0.w),%d1\n"   /* 前が空白: fg = bg */
+".Lbr_on:\n"
+"	add.w	%d4,%d4\n	addi.w	#512,%d4\n	move.w	(%a4,%d4.w),%d4\n	not.w	%d4\n	and.w	%d4,%d5\n"   /* d5 &= ~pm_old[oa] */
+".Lbr_pass:\n"
+"	lea	(%a0,%d1.w),%a6\n"
+"	move.w	%d5,%d4\n	andi.w	#15,%d4\n	beq	.Lbr_p0\n" BR_R21
+"	movea.l	72(%sp),%a5\n	adda.w	%d3,%a5\n" BR_G16(BR_CP)
+".Lbr_p0:\n"
+"	move.w	%d5,%d4\n	lsr.w	#4,%d4\n	andi.w	#15,%d4\n	beq	.Lbr_p1\n" BR_R21
+"	moveq	#0,%d4\n" BR_G16(BR_FILL)
+".Lbr_p1:\n"
+"	move.w	%d5,%d4\n	lsr.w	#8,%d4\n	andi.w	#15,%d4\n	beq	.Lbr_pi\n" BR_R21
+"	moveq	#-1,%d4\n" BR_G16(BR_FILL)
+".Lbr_pi:\n"
+"	move.w	%d5,%d4\n	lsr.w	#8,%d4\n	lsr.w	#4,%d4\n	beq	.Lbr_next\n" BR_R21
+"	movea.l	72(%sp),%a5\n	adda.w	%d3,%a5\n" BR_G16(BR_INV)
+".Lbr_next:\n"
+"	move.l	(%a1,%d2.w),(%a2,%d2.w)\n"                                          /* drawn = 論理画面 */
+"	addq.w	#1,%d0\n	cmp.w	%d7,%d0\n	bcs	.Lbr_loop\n"
+".Lbr_done:\n"
+"	movea.l	80(%sp),%a5\n	move.w	%d6,(%a5)\n"
+"	movem.l	(%sp)+,%d2-%d7/%a2-%a6\n	rts\n");
+#define BLIT_ASM 1
+#endif
+
 /* カーソルセルを反転する (XOR なので同じ呼び出しで消える) */
 static void cursor_xor(int col, int row)
 {
@@ -511,7 +575,6 @@ static void cursor_xor(int col, int row)
 static void vram_move_lines(int dst_line, int src_line, int nlines)
 {
   int p, y, k, nl = (COLS + 3) / 4;   /* 1 ラインのうち画面の COLS バイトだけ (128 のうち 96) 動かす */
-  PROF(3, nlines);
 #if !defined(VT_HOSTTEST) || defined(VT_SIM_TXRAS)
   if ((dst_line & 3) == 0 && (src_line & 3) == 0 && (nlines & 3) == 0 && dst_line != src_line) {
     if (dst_line < src_line)
@@ -522,6 +585,7 @@ static void vram_move_lines(int dst_line, int src_line, int nlines)
     return;
   }
 #endif
+  PROF(3, nlines);   /* 32bit 転送で動かしたライン数 (TXRASCOPY の分は数えない) */
   for (p = 0; p < 4; p++) {
     volatile unsigned char *base = TVRAM + (unsigned long)p * PLANE;
     if (dst_line <= src_line) {
@@ -553,6 +617,22 @@ static void rotate_rows(cell_t **t, unsigned char *lo, unsigned char *hi, int a,
   int i, j, n = b - a + 1;
   if (k < 0) k += n;
   if (k >= n) k -= n;
+  if (k == 1) {   /* 最頻 (1 行送り): 1 つずつ詰める */
+    cell_t *t0 = t[a];
+    unsigned char l0 = lo ? lo[a] : 0, h0 = lo ? hi[a] : 0;
+    for (i = a; i < b; i++) t[i] = t[i + 1];
+    t[b] = t0;
+    if (lo) { for (i = a; i < b; i++) { lo[i] = lo[i + 1]; hi[i] = hi[i + 1]; } lo[b] = l0; hi[b] = h0; }
+    return;
+  }
+  if (k == n - 1) {   /* 1 行戻し (less の上スクロール・RI) */
+    cell_t *t0 = t[b];
+    unsigned char l0 = lo ? lo[b] : 0, h0 = lo ? hi[b] : 0;
+    for (i = b; i > a; i--) t[i] = t[i - 1];
+    t[a] = t0;
+    if (lo) { for (i = b; i > a; i--) { lo[i] = lo[i - 1]; hi[i] = hi[i - 1]; } lo[a] = l0; hi[a] = h0; }
+    return;
+  }
   for (i = 0, j = a + k; i < n; i++) {
     tmp[i] = t[j];
     if (lo) { tlo[i] = lo[j]; thi[i] = hi[j]; }
@@ -646,11 +726,29 @@ static NOINLINE void flush(void)
     if (hi >= COLS) hi = COLS - 1;
     lrow = cur[r]; drow = drawn[r];
     /* 1 回目: 書き換え範囲で描き直しの要るセルを拾う (同じなら飛ばす。空白で前景色だけ違うものは控えだけ直す) */
+#if defined(__mc68000__) && !defined(VT_NO_ASM)
+    {   /* 同じセルを飛ばすのは cmpm.l / dbne の 2 命令のループで (C の比較ループの半分以下のクロック) */
+      const cell_u32 *l = (const cell_u32 *)&lrow[lo], *d = (const cell_u32 *)&drow[lo];
+      short cnt = (short)(hi - lo);   /* dbne の回数 (残りのセル数 - 1) */
+      for (;;) {
+        unsigned char ne;
+        __asm__ volatile ("1:\tcmpm.l\t(%0)+,(%1)+\n\tdbne\t%2,1b\n\tsne\t%3"
+                          : "+a"(l), "+a"(d), "+d"(cnt), "=d"(ne) : : "cc", "memory");
+        if (!ne) break;   /* 最後まで同じ */
+        c = (int)((const cell_t *)l - lrow) - 1;   /* 食い違ったセル (両方とも 1 つ先まで進んでいる) */
+        if (same_look(&lrow[c], &drow[c])) drow[c] = lrow[c];
+        else diff[nd++] = (unsigned char)c;
+        if (cnt == 0) break;   /* 食い違いで抜けたとき cnt はその先の残り数 */
+        cnt--;
+      }
+    }
+#else
     for (c = lo; c <= hi; c++) {
       if (CELLEQ(&lrow[c], &drow[c])) continue;
       if (same_look(&lrow[c], &drow[c])) drow[c] = lrow[c];
       else diff[nd++] = (unsigned char)c;
     }
+#endif
     if (nd == 0) continue;
     if (nd > 8) {   /* 空白だけの行 (消去・スクロールで空いた行) で描き直しが多い: 行ごと塗る */
       int bg0 = AT_BG(lrow[0].at), blank = 1;
@@ -666,6 +764,14 @@ static NOINLINE void flush(void)
     {
       volatile unsigned char *rv = TVRAM + (unsigned long)r * CH * VBYTES;
       for (i = 0; i < nd; i++) {
+#ifdef BLIT_ASM
+        if (sa_ok && !(AT_LO(&lrow[diff[i]]) & 0x1f)) {   /* ASCII・下線なしのセルは手書きの版でまとめて (止まったセルだけ下の C で) */
+          int k = vt_blitrow(rv, lrow, drow, diff + i, nd - i, pm_tab, CGROM16, &CRTC_R21, &sa_cur);
+          PROF(0, k);
+          i += k;
+          if (i >= nd) break;
+        }
+#endif
         c = diff[i];
         if (!sa_ok || (AT_LO(&lrow[c]) & (F_UNDERLINE | F_SPECIAL | F_WIDE | F_WIDECONT | F_EMOJI))) blit(c, r, &lrow[c], &drow[c]);
         else blit_plain(rv + c, &lrow[c], &drow[c]);
@@ -1326,14 +1432,25 @@ static NOINLINE int put_run(const unsigned char *p, int n)
 
 /* CSI の引数・中間・終端バイトを続けて読む (1 バイトごとに vt_write の switch を回らない。Claude Code の出力は
  * 6 割強が CSI)。p[0] から n バイトのうち使った数 (1 以上) を返す。終端・ESC・取り消しで止まる。 */
-static int csi_feed(const unsigned char *p, int n)
+static int csi_feed(const unsigned char *p, int n, int fresh)
 {
-  int k = 0, np = nparam;
+  int k = 0, np, priv, inter;   /* 前置・中間・引数の数は途中では局所変数で持つ (大域変数の読み書きは 68000 で重い) */
+  if (fresh) { np = 0; priv = 0; inter = 0; param[0] = 0; state = S_CSI; }   /* ESC [ の直後から */
+  else { np = nparam; priv = csi_priv; inter = csi_inter; }
   while (k < n) {
-    unsigned char b = p[k++], d = (unsigned char)(b - '0');
-    if (d <= 9) {   /* 値は MAXPVAL で頭打ち、MAXPARAM 個を越えた分は捨てる */
+    unsigned b = p[k++], d = b - '0';
+    if (d <= 9) {   /* 値は MAXPVAL で頭打ち、MAXPARAM 個を越えた分は捨てる。数字が続く間は局所変数で積む */
       if (np == 0) np = 1;
-      if (np <= MAXPARAM) { int *v = &param[np - 1], t = *v * 10 + d; *v = t > MAXPVAL ? MAXPVAL : t; }
+      if (np <= MAXPARAM) {
+        short *pv = &param[np - 1];
+        unsigned v = (unsigned short)*pv;
+        for (;;) {
+          v = v >= 1000 ? MAXPVAL : v * 10 + d;   /* 1000 以上なら 10 倍で必ず MAXPVAL を越える */
+          if (k >= n || (d = p[k] - '0') > 9) break;
+          k++;
+        }
+        *pv = (short)v;
+      }
       continue;
     }
     if (b == ';' || b == ':') {   /* ':' (38:5:N などのサブパラメータ) も区切りとして読む */
@@ -1342,15 +1459,17 @@ static int csi_feed(const unsigned char *p, int n)
       if (np <= MAXPARAM) np++;
       continue;
     }
-    nparam = np;
-    if (b >= 0x40 && b <= 0x7e) { if (nparam > MAXPARAM) nparam = MAXPARAM; state = S_GROUND; do_csi(b); return k; }
-    if (b == '?' || b == '>' || b == '<' || b == '=') csi_priv = b;
-    else if (b >= 0x20 && b <= 0x2f) csi_inter = b;
+    if (b >= 0x40 && b <= 0x7e) {
+      nparam = np > MAXPARAM ? MAXPARAM : np; csi_priv = priv; csi_inter = inter;
+      state = S_GROUND; do_csi((unsigned char)b); return k;
+    }
+    if (b == '?' || b == '>' || b == '<' || b == '=') priv = b;
+    else if (b >= 0x20 && b <= 0x2f) inter = b;
     else if (b == 0x1b) { state = S_ESC; return k; }
-    else if (b < 0x20) ground_ctrl(b);   /* CSI の途中の制御文字はその場で実行 (VT100 の動き) */
+    else if (b < 0x20) ground_ctrl((unsigned char)b);   /* CSI の途中の制御文字はその場で実行 (VT100 の動き) */
     else { state = S_GROUND; return k; }
   }
-  nparam = np;
+  nparam = np; csi_priv = priv; csi_inter = inter;   /* 続きは次の vt_write で */
   return k;
 }
 
@@ -1367,7 +1486,27 @@ void vt_write(const unsigned char *p, int n)
   for (i = 0; i < n; ) {
     unsigned char b = p[i];
     if (state == S_GROUND) {
-      /* 最頻: 字の連なり (印字 ASCII と、バッファ内で完結した UTF-8)。UTF-8 の途中 (u_need) は ASCII 以外を遅い道で */
+      /* 最頻: 行の中に収まる印字 ASCII の連なり (Claude Code は CSI の間に数字ずつ置くので、put_run を呼ぶ手間も惜しい)。
+       * put_run の ASCII と同じ処理: 行末で止め (次の字で put_run が折り返す)、両端だけ全角ペアの割れを見る。 */
+      if ((unsigned)(b - 0x20) < 0x5f && !pend_wrap && !g_special[gl]) {
+        cell_t *row = cur[cy], *c;
+        const unsigned char *q = p + i;
+        unsigned short at = cur_at, olast;
+        int x = cx, k = 0, lim = n - i, lo = x, hi;
+        if (lim > COLS - x) lim = COLS - x;
+        c = &row[x];
+        if ((c->at & F_WIDECONT) && x > 0 && (c[-1].at & F_WIDE)) { clear_cell(&c[-1]); lo--; }
+        do { olast = c->at; c->cp = b; c->at = at; c++; } while (++k < lim && (unsigned)((b = q[k]) - 0x20) < 0x5f);
+        hi = x + k - 1;
+        if ((olast & F_WIDE) && hi + 1 < COLS && (c->at & F_WIDECONT)) { clear_cell(c); hi++; }
+        touch_span(cy, lo, hi);
+        PROF(6, k);
+        x += k;
+        if (x >= COLS) { cx = COLS - 1; pend_wrap = decawm; } else cx = x;
+        u_need = 0; i += k;
+        continue;
+      }
+      /* 字の連なり (折り返し・UTF-8 を含む)。UTF-8 の途中 (u_need) は ASCII 以外を遅い道で */
       if (b >= 0x20 && b != 0x7f && (b < 0x80 || !u_need)) {
         int k = put_run(p + i, n - i);
         if (k) { u_need = 0; i += k; continue; }
@@ -1375,7 +1514,7 @@ void vt_write(const unsigned char *p, int n)
       i++;
       if (b == 0x1b) {
         u_need = 0;
-        if (i < n && p[i] == '[') { csi_begin(); i++; i += csi_feed(p + i, n - i); }   /* ESC [ に続く引数をそのまま読む */
+        if (i < n && p[i] == '[') { i++; i += csi_feed(p + i, n - i, 1); }   /* ESC [ に続く引数をそのまま読む */
         else state = S_ESC;
       }
       else if (b < 0x20) { ground_ctrl(b); u_need = 0; }
@@ -1384,7 +1523,7 @@ void vt_write(const unsigned char *p, int n)
     }
     i++;
     switch (state) {
-      case S_ESC: do_esc(b); if (state == S_CSI) i += csi_feed(p + i, n - i); break;   /* ESC [ に続く引数をそのまま読む */
+      case S_ESC: do_esc(b); if (state == S_CSI) i += csi_feed(p + i, n - i, 0); break;   /* ESC [ に続く引数をそのまま読む */
       case S_ESC_INT: /* '#' の次 */
         if (b == '8') { int r, c; for (r = 0; r < ROWS; r++) for (c = 0; c < COLS; c++) { cur[r][c].cp = 'E'; cur[r][c].at = cur_at; } touch_rows(0, ROWS - 1); }
         state = S_GROUND; break;
@@ -1396,7 +1535,7 @@ void vt_write(const unsigned char *p, int n)
       case S_CHARSET:
         g_special[cs_which] = (b == '0');   /* '0'=DEC 特殊, 'B'/'A' などは ASCII */
         state = S_GROUND; break;
-      case S_CSI: i += csi_feed(p + i - 1, n - i + 1) - 1; break;
+      case S_CSI: i += csi_feed(p + i - 1, n - i + 1, 0) - 1; break;
       case S_STR: str_byte(b); break;
       default: state = S_GROUND; break;
     }
@@ -1427,7 +1566,11 @@ void vt_init(int cols, int rows)
   for (c = 0; c < MAXCOLS; c++) tabstop[c] = (c % 8 == 0) ? 1 : 0;
   s = sup_enter();
   sa_cur = 0;
+#ifdef VT_NO_SA
+  sa_ok = 0;              /* -DVT_NO_SA: 同時アクセスを使わない (プレーンごとに書く) */
+#else
   sa_ok = sa_probe();
+#endif
   palette_setup();
   _iocs_b_curoff();           /* BIOS のカーソルは使わない (自前で描く) */
   for (r = 0; r < ROWS; r++)

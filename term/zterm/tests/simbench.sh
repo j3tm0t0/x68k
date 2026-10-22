@@ -24,12 +24,17 @@ build vtw "$VT/tests/m68ksim/benchmain.c" "$VT/vt100.c"
 build ztw "$HERE/m68ksim/ztbench.c" "$HERE/../client/ztdraw.c"
 Z="$HERE/../server/target/release/zterm"
 LIST=${*:-app_claude_stream app_claude app_claude_help app_top app_tmux app_vimjp app_lessu8 app_gitlog top vim jp_less}
-printf "%-18s %7s %9s %7s %9s %6s\n" fixture vtbytes "vt s" ztbytes "zt s" speedup
+bad=0
+printf "%-18s %7s %9s %7s %9s %6s  %s\n" fixture vtbytes "vt s" ztbytes "zt s" speedup "68k VRAM vs host"
 for n in $LIST; do
   f="$VT/tests/fixtures/$n.rec"
   sz=$(awk -v n="$n" '$1 == n { print $2 " " $3 }' "$VT/tests/fixtures/sizes.txt"); sz=${sz:-80 24}
   "$Z" --replay "$f" --chunk "$CHUNK" --cols ${sz% *} --rows ${sz#* } --out "$OUT/$n.zbin" 2>/dev/null
   a=$("$OUT/sim" "$OUT/vtw.bin" "$OUT/vtw.nm" "$CG" "$f" "$CHUNK" $sz | awk '{for(i=1;i<=NF;i++) if($i=="s") print $(i-1)}')
-  b=$("$OUT/sim" "$OUT/ztw.bin" "$OUT/ztw.nm" "$CG" "$OUT/$n.zbin" 1 $sz | awk '{for(i=1;i<=NF;i++) if($i=="s") print $(i-1)}')
-  printf "%-18s %7d %9s %7d %9s %6.1fx\n" "$n" "$(wc -c < "$f")" "$a" "$(wc -c < "$OUT/$n.zbin")" "$b" "$(echo "$a / $b" | bc -l)"
+  b=$(DUMP="$OUT/zsim.vram" "$OUT/sim" "$OUT/ztw.bin" "$OUT/ztw.nm" "$CG" "$OUT/$n.zbin" 1 $sz | awk '{for(i=1;i<=NF;i++) if($i=="s") print $(i-1)}')
+  # 68000 版 (term/vt100 の asm 込み) の最終 VRAM がホスト版 ztreplay と同じか
+  "$HERE/../client/ztreplay" -g "$CG" -v "$OUT/zhost.vram" "$OUT/$n.zbin" /dev/null >/dev/null
+  cmp -s "$OUT/zsim.vram" "$OUT/zhost.vram" && v=same || { v="VRAM DIFFERS"; bad=1; }
+  printf "%-18s %7d %9s %7d %9s %6.1fx  %s\n" "$n" "$(wc -c < "$f")" "$a" "$(wc -c < "$OUT/$n.zbin")" "$b" "$(echo "$a / $b" | bc -l)" "$v"
 done
+exit $bad

@@ -1,7 +1,7 @@
 /*
  * ztreplay.c -- zterm のフレーム列 (zterm --replay ... --out FILE) を ztdraw.c で描き、最終画面を書き出す試験。
  * サーバの差分・スクロール・消去の符号化と Z 側の適用が、サーバの持つ画面と同じ結果になるかを見る。
- *   usage: ztreplay [-V] [-g CGROM] [-v VRAM] FRAMES OUT.txt
+ *   usage: ztreplay [-V] [-g CGROM] [-v VRAM] FRAMES OUT.txt   (-v: 最終 VRAM を vthost -v と同じ形で)
  *   -V  フレームごとに VRAM = 論理画面の描き直し か確かめる
  */
 #include <stdio.h>
@@ -10,19 +10,21 @@
 #include "ztclient.h"
 #include "vt100.h"
 
-extern unsigned char vt_host_cgrom[];
+extern unsigned char vt_host_cgrom[], vt_host_vram[];
+extern unsigned short vt_host_pal[];
 int vt_host_verify(void);
 void vt_dump_text(FILE *f, int cols, int rows);
 
 int main(int argc, char **argv)
 {
   int i, verify = 0, bad = 0, frames = 0, c, r;
-  const char *in = 0, *out = 0;
+  const char *in = 0, *out = 0, *vram = 0;
   unsigned char *d;
   long n, o = 0;
   FILE *f;
   for (i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "-V")) verify = 1;
+    else if (!strcmp(argv[i], "-v") && i + 1 < argc) vram = argv[++i];
     else if (!strcmp(argv[i], "-g") && i + 1 < argc) {
       FILE *g = fopen(argv[++i], "rb");
       if (!g || fread(vt_host_cgrom, 1, 0xC0000, g) != 0xC0000) { fprintf(stderr, "cannot read CGROM\n"); return 1; }
@@ -51,6 +53,13 @@ int main(int argc, char **argv)
   f = fopen(out, "w");
   vt_dump_text(f, c, r);
   fclose(f);
+  if (vram) {   /* vthost -v と同じ形 (4 プレーン x 512 ライン x 128 バイト + パレット 16 ワード BE) */
+    FILE *v = fopen(vram, "wb");
+    int p;
+    for (p = 0; p < 4; p++) fwrite(vt_host_vram + (long)p * 0x20000, 1, 512 * 128, v);
+    for (p = 0; p < 16; p++) { fputc(vt_host_pal[p] >> 8, v); fputc(vt_host_pal[p] & 0xff, v); }
+    fclose(v);
+  }
   printf("%s: %d frames, verify-fail %d\n", in, frames, bad);
   return bad ? 1 : 0;
 }
