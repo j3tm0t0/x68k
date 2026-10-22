@@ -1,0 +1,6 @@
+syn_altscreen 96 32
+syn_edge 96 32
+syn_lines 96 32
+syn_queries 96 32
+syn_region 96 32
+syn_sgr 96 32

@@ -53,17 +53,37 @@ for rec in "${recs[@]}"; do
   name=$(basename "$rec" .rec)
   read -r COLS ROWS <<< "$(size_of "$name")"
   base="$OUT/$name"
-  ./vthost "${CGOPT[@]}" -s ${COLS}x${ROWS} -a "$base.attr" -v "$base.vram" "$rec" "$base.txt"
-  if msg=$($PY tests/compare.py "$rec" "$COLS" "$ROWS" "$base.txt" "$base.attr" 2>&1); then pass "$name (${COLS}x${ROWS} vs pyte)"
-  else fail "$name (${COLS}x${ROWS} vs pyte)"; echo "$msg" | head -30; fi
+  ./vthost ${CGOPT[@]+"${CGOPT[@]}"} -s ${COLS}x${ROWS} -a "$base.attr" -v "$base.vram" "$rec" "$base.txt"
+  exp=(); ref=pyte
+  [ -f "tests/fixtures/$name.expect" ] && { exp=("tests/fixtures/$name.expect"); ref=expect; }
+  if msg=$($PY tests/compare.py "$rec" "$COLS" "$ROWS" "$base.txt" "$base.attr" ${exp[@]+"${exp[@]}"} 2>&1); then pass "$name (${COLS}x${ROWS} vs $ref)"
+  else fail "$name (${COLS}x${ROWS} vs $ref)"; echo "$msg" | head -30; fi
   ok=1
   for ch in 1 7; do
-    ./vthost "${CGOPT[@]}" -c $ch -s ${COLS}x${ROWS} -a "$base.c$ch.attr" -v "$base.c$ch.vram" "$rec" "$base.c$ch.txt"
+    ./vthost ${CGOPT[@]+"${CGOPT[@]}"} -c $ch -s ${COLS}x${ROWS} -a "$base.c$ch.attr" -v "$base.c$ch.vram" "$rec" "$base.c$ch.txt"
     cmp -s "$base.txt" "$base.c$ch.txt" && cmp -s "$base.attr" "$base.c$ch.attr" && cmp -s "$base.vram" "$base.c$ch.vram" || { ok=0; echo "   -c $ch で結果が変わる"; }
     rm -f "$base.c$ch".*
   done
   [ $ok = 1 ] && pass "$name (分割 -c 1/-c 7)" || fail "$name (分割 -c 1/-c 7)"
+  if [ -f "tests/fixtures/$name.reply" ]; then   # 問い合わせへの応答
+    ./vthost -s ${COLS}x${ROWS} -r "$base.reply" "$rec" /dev/null
+    if cmp -s "$base.reply" "tests/fixtures/$name.reply"; then pass "$name (応答)"
+    else fail "$name (応答)"; echo "   mine: $(od -c "$base.reply" | head -5)"; echo "   want: $(od -c "tests/fixtures/$name.reply" | head -5)"; fi
+  fi
   [ -f "$CG" ] && $PY tests/vram2png.py "$base.vram" "$base.png"
 done
+# ---- 5. 頑健性: ASan/UBSan 版で全フィクスチャ + 乱数で壊したシーケンス (落ちない・止まらない・配列の外を触らない) ----
+if cc -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=undefined -DVT_HOSTTEST -o "$OUT/vthost_asan" vtcat.c vt100.c vtdump.c 2>/dev/null; then
+  ok=1
+  for rec in "${recs[@]}"; do
+    read -r COLS ROWS <<< "$(size_of "$(basename "$rec" .rec)")"
+    "$OUT/vthost_asan" -c 3 -s ${COLS}x${ROWS} -r /dev/null "$rec" /dev/null 2> "$OUT/asan.log" || { ok=0; echo "   $rec"; head -5 "$OUT/asan.log"; }
+  done
+  [ $ok = 1 ] && pass "asan (フィクスチャ)" || fail "asan (フィクスチャ)"
+  if msg=$($PY tests/fuzz.py "$OUT/vthost_asan" "$OUT/fuzz" ${VT_FUZZ:-300} 2>&1); then pass "fuzz (${VT_FUZZ:-300} 本)"
+  else fail "fuzz"; echo "$msg" | tail -20; fi
+else
+  echo "SKIP  asan/fuzz (cc -fsanitize が使えない)"
+fi
 echo "---- $npass PASS, $nfail FAIL  (PNG: $OUT/*.png)"
 [ $nfail = 0 ]

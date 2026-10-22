@@ -103,21 +103,26 @@ static unsigned char tabstop[MAXCOLS];
 static int csr_shown, csr_x, csr_y;
 
 /* ---- パーサ状態 ---- */
-enum { S_GROUND, S_ESC, S_CSI, S_STR, S_ESC_INT, S_CHARSET };
+enum { S_GROUND, S_ESC, S_CSI, S_STR, S_ESC_INT, S_CHARSET, S_ESC_SKIP };
 static int state = S_GROUND;
 static int csi_priv;                 /* '?' などの private 前置 */
-#define MAXPARAM 16
+static int csi_inter;                /* 中間バイト (0x20-0x2f、'$' や ' ' など。最後の 1 つ) */
+#define MAXPARAM 32
+#define MAXPVAL  9999                /* パラメータ値の上限 (桁あふれで負になり配列の外を書かないように) */
 static int param[MAXPARAM], nparam, param_seen;
 static int str_kind;                 /* 文字列シーケンスの種類 (']' 'P' など) */
 static int str_esc;                  /* 文字列中で ESC を見たか (ST 待ち) */
+#define STRBUF 8
+static unsigned char str_buf[STRBUF];   /* 文字列の先頭 (OSC 10;? / 11;? の問い合わせを見分ける分だけ) */
+static int str_len;
 static int cs_which;                 /* 文字セット指定の対象 ')' か '(' か */
 
 /* UTF-8 デコード */
 static unsigned long u_cp;
 static int u_need;
 
-/* ホストへの応答キュー (DSR / DA) */
-static unsigned char outq[64];
+/* ホストへの応答キュー (DSR / DA など)。vt_key が先に吐く */
+static unsigned char outq[256];
 static int outq_len;
 
 /* パレットの退避 */
@@ -379,6 +384,7 @@ static void put_cell(unsigned short cp, int extra, int width)
     if (cy == bot) scroll(1); else if (cy < ROWS - 1) cy++;
     pend_wrap = 0;
   }
+  if (width == 2 && COLS < 2) { cp = '?'; extra = 0; width = 1; }   /* 1 桁幅の画面に全角は置けない */
   if (width == 2 && cx == COLS - 1) {   /* 全角が右端に 1 桁しか入らない: 空けて次行へ */
     break_pair(cy, cx); clear_cell(&cur[cy][cx]);
     cx = 0;
@@ -418,18 +424,40 @@ static int p_def(int i, int def) {
 }
 
 /* ================= SGR ================= */
+/* 24bit 色をパレット 16 色 (原色 6 + 白黒、各 2 段) に寄せる。RGB の距離で選ぶと中間色 (Claude Code の
+ * 橙 215,119,87 など) がみな灰色になるので、彩度があれば色相で 6 色から選び、明るさで bright を決める。
+ * 彩度が低ければ明るさだけで 黒/暗灰/灰/白。 */
+static int nearest16(int r, int g, int b)
+{
+  int mx = r, mn = r, c, h;
+  if (g > mx) mx = g;
+  if (b > mx) mx = b;
+  if (g < mn) mn = g;
+  if (b < mn) mn = b;
+  c = mx - mn;
+  if (c < 64) {   /* 無彩色 */
+    int l = (r * 3 + g * 6 + b) / 10;
+    return l < 48 ? 0 : l < 128 ? 8 : l < 214 ? 7 : 15;
+  }
+  if (mx == r) { h = 60 * (g - b) / c; if (h < 0) h += 360; }
+  else if (mx == g) h = 120 + 60 * (b - r) / c;
+  else h = 240 + 60 * (r - g) / c;
+  /* 色相 330-30 赤 / 30-90 黄 / 90-150 緑 / 150-210 シアン / 210-270 青 / 270-330 マゼンタ */
+  {
+    static const unsigned char hue6[6] = { 1, 3, 2, 6, 4, 5 };
+    int idx = hue6[((h + 30) % 360) / 60];
+    return mx >= 200 ? idx + 8 : idx;
+  }
+}
+/* 256 色: 0-15 はそのまま、16-231 は 6x6x6 キューブ、232-255 は灰色。xterm の RGB に直して最寄りの 16 色へ */
 static int map256(int n)
 {
+  static const unsigned char lv[6] = { 0x00, 0x5f, 0x87, 0xaf, 0xd7, 0xff };
+  if (n < 0 || n > 255) return -1;
   if (n < 16) return n;
-  if (n >= 232) { int g = (n - 232) / 3; return g < 4 ? (g == 0 ? 0 : 8) : 15; }
-  { /* 6x6x6 キューブ → 8 色 + bright を近似 */
-    int c = n - 16, r = c / 36, g = (c / 6) % 6, b = c % 6, idx = 0, bright;
-    if (r > 2) idx |= 1;
-    if (g > 2) idx |= 2;
-    if (b > 2) idx |= 4;
-    bright = (r > 3 || g > 3 || b > 3);
-    return bright ? idx + 8 : idx;
-  }
+  if (n >= 232) { int v = 8 + (n - 232) * 10; return nearest16(v, v, v); }
+  n -= 16;
+  return nearest16(lv[n / 36], lv[(n / 6) % 6], lv[n % 6]);
 }
 static void do_sgr(void)
 {
@@ -447,15 +475,12 @@ static void do_sgr(void)
       case 27: a_reverse = 0; break;
       case 39: c_fg = 7; break;
       case 49: c_bg = 0; break;
-      case 38: case 48: {
+      case 38: case 48: {   /* 38;5;N / 38;2;R;G;B (':' 区切りも ';' と同じに読む)。足りない引数は 0 */
         int to_fg = (v == 38), col = -1;
-        if (i + 1 < nparam && param[i + 1] == 5) { col = map256(param[i + 2]); i += 2; }
+        if (i + 1 < nparam && param[i + 1] == 5) { col = map256(i + 2 < nparam ? param[i + 2] : 0); i += 2; }
         else if (i + 1 < nparam && param[i + 1] == 2) {
-          int r = param[i + 2], g = param[i + 3], b = param[i + 4], idx = 0;
-          if (r > 127) idx |= 1;
-          if (g > 127) idx |= 2;
-          if (b > 127) idx |= 4;
-          col = (r > 200 || g > 200 || b > 200) ? idx + 8 : idx; i += 4;
+          int r = i + 2 < nparam ? param[i + 2] : 0, g = i + 3 < nparam ? param[i + 3] : 0, b = i + 4 < nparam ? param[i + 4] : 0;
+          col = nearest16(r > 255 ? 255 : r, g > 255 ? 255 : g, b > 255 ? 255 : b); i += 4;
         }
         if (col >= 0) { if (to_fg) c_fg = col; else c_bg = col; }
         break;
@@ -504,14 +529,67 @@ static void set_mode(int set)
 }
 
 /* ================= CSI 終端処理 ================= */
-static void queue(const char *s) { while (*s && outq_len < (int)sizeof outq) outq[outq_len++] = (unsigned char)*s++; }
+/* 応答は丸ごと入るときだけ積む (途中で切れた応答はホスト側のパーサを壊す) */
+static void queue(const char *s)
+{
+  int n = 0;
+  while (s[n]) n++;
+  if (outq_len + n > (int)sizeof outq) return;
+  while (*s) outq[outq_len++] = (unsigned char)*s++;
+}
+static char *put_dec(char *b, int v)   /* 10 進を書いて次の位置を返す (0..9999) */
+{
+  if (v >= 1000) *b++ = '0' + v / 1000 % 10;
+  if (v >= 100) *b++ = '0' + v / 100 % 10;
+  if (v >= 10) *b++ = '0' + v / 10 % 10;
+  *b++ = '0' + v % 10;
+  return b;
+}
+
+/* 行の挿入/削除 (IL/DL): カーソル行から下端までを領域としてスクロールする (VRAM も TXRASCOPY でずらす)。
+ * 領域外では無視。DEC に合わせてカーソルは行頭へ。 */
+static void insdel_lines(int cnt)
+{
+  int save_top = top;
+  if (cy < top || cy > bot) return;
+  top = cy;
+  scroll(cnt);   /* 正: DL (上へ) / 負: IL (下へ) */
+  top = save_top;
+  cx = 0; pend_wrap = 0;
+}
+
+static int mode_state(int v)   /* DECRQM の答え: 1=set 2=reset 0=知らない */
+{
+  switch (v) {
+    case 1: return decckm ? 1 : 2;
+    case 7: return decawm ? 1 : 2;
+    case 25: return cur_vis ? 1 : 2;
+    case 47: case 1047: case 1049: return alt_active ? 1 : 2;
+    default: return 0;
+  }
+}
 
 static void do_csi(unsigned char f)
 {
   int n, a, b;
+  char buf[32], *q;
+  if (csi_inter) {   /* 中間バイト付き: DECRQM (CSI ? Ps $ p) だけ答え、他 (DECSCUSR "CSI Ps SP q" など) は無視 */
+    if (csi_inter == '$' && f == 'p') {
+      q = buf; *q++ = 0x1b; *q++ = '[';
+      if (csi_priv == '?') *q++ = '?';
+      q = put_dec(q, p_def(0, 0)); *q++ = ';';
+      q = put_dec(q, csi_priv == '?' ? mode_state(p_def(0, 0)) : 0);
+      *q++ = '$'; *q++ = 'y'; *q = 0; queue(buf);
+    }
+    return;
+  }
+  if (csi_priv && csi_priv != '?') {   /* '>' '=' '<' 前置: DA2 だけ答え、他 (kitty キーボード CSI > u、modifyOtherKeys CSI > 4;2 m 等) は無視 */
+    if (csi_priv == '>' && f == 'c') queue("\x1b[>0;95;0c");
+    return;
+  }
   switch (f) {
-    case 'A': cy -= p_def(0, 1); if (cy < top) cy = top; pend_wrap = 0; break;
-    case 'B': cy += p_def(0, 1); if (cy > bot) cy = bot; pend_wrap = 0; break;
+    case 'A': if (cy >= top) { cy -= p_def(0, 1); if (cy < top) cy = top; } else { cy -= p_def(0, 1); if (cy < 0) cy = 0; } pend_wrap = 0; break;
+    case 'B': if (cy <= bot) { cy += p_def(0, 1); if (cy > bot) cy = bot; } else { cy += p_def(0, 1); if (cy >= ROWS) cy = ROWS - 1; } pend_wrap = 0; break;
     case 'C': cx += p_def(0, 1); if (cx >= COLS) cx = COLS - 1; pend_wrap = 0; break;
     case 'D': cx -= p_def(0, 1); if (cx < 0) cx = 0; pend_wrap = 0; break;
     case 'E': cy += p_def(0, 1); cx = 0; if (cy > bot) cy = bot; pend_wrap = 0; break;
@@ -524,55 +602,53 @@ static void do_csi(unsigned char f)
       a = p_def(0, 0);
       if (a == 0) { erase_cells(cy, cx, COLS - 1); for (n = cy + 1; n < ROWS; n++) erase_cells(n, 0, COLS - 1); }
       else if (a == 1) { for (n = 0; n < cy; n++) erase_cells(n, 0, COLS - 1); erase_cells(cy, 0, cx); }
-      else { for (n = 0; n < ROWS; n++) erase_cells(n, 0, COLS - 1); }
-      break;
+      else if (a == 2) { for (n = 0; n < ROWS; n++) erase_cells(n, 0, COLS - 1); }
+      break;   /* 3 (スクロールバック消去) は持っていないので何もしない */
     case 'K':
       a = p_def(0, 0);
       if (a == 0) erase_cells(cy, cx, COLS - 1);
       else if (a == 1) erase_cells(cy, 0, cx);
       else erase_cells(cy, 0, COLS - 1);
       break;
-    case 'L': { int cnt = p_def(0, 1), r;    /* IL */
-      if (cy < top || cy > bot) break;
-      for (r = bot; r >= cy + cnt; r--) for (n = 0; n < COLS; n++) cur[r][n] = cur[r - cnt][n];
-      for (r = cy; r < cy + cnt && r <= bot; r++) erase_cells(r, 0, COLS - 1);
-      break; }
-    case 'M': { int cnt = p_def(0, 1), r;    /* DL */
-      if (cy < top || cy > bot) break;
-      for (r = cy; r <= bot - cnt; r++) for (n = 0; n < COLS; n++) cur[r][n] = cur[r + cnt][n];
-      for (r = bot - cnt + 1; r <= bot && r >= top; r++) erase_cells(r, 0, COLS - 1);
-      break; }
-    case '@': { int cnt = p_def(0, 1), c; for (c = COLS - 1; c >= cx + cnt; c--) cur[cy][c] = cur[cy][c - cnt]; /* ICH */
-      erase_cells(cy, cx, cx + cnt - 1); break; }
-    case 'P': { int cnt = p_def(0, 1), c; for (c = cx; c + cnt < COLS; c++) cur[cy][c] = cur[cy][c + cnt]; /* DCH */
-      erase_cells(cy, COLS - cnt, COLS - 1); break; }
-    case 'X': { int cnt = p_def(0, 1); erase_cells(cy, cx, cx + cnt - 1); break; }  /* ECH */
+    case 'L': insdel_lines(-p_def(0, 1)); break;   /* IL */
+    case 'M': insdel_lines(p_def(0, 1)); break;    /* DL */
+    case '@': { int cnt = p_def(0, 1), c;    /* ICH */
+      if (cnt > COLS - cx) cnt = COLS - cx;
+      for (c = COLS - 1; c >= cx + cnt; c--) cur[cy][c] = cur[cy][c - cnt];
+      erase_cells(cy, cx, cx + cnt - 1); pend_wrap = 0; break; }
+    case 'P': { int cnt = p_def(0, 1), c;    /* DCH */
+      if (cnt > COLS - cx) cnt = COLS - cx;
+      for (c = cx; c + cnt < COLS; c++) cur[cy][c] = cur[cy][c + cnt];
+      erase_cells(cy, COLS - cnt, COLS - 1); pend_wrap = 0; break; }
+    case 'X': { int cnt = p_def(0, 1); if (cnt > COLS - cx) cnt = COLS - cx; erase_cells(cy, cx, cx + cnt - 1); break; }  /* ECH */
     case 'S': scroll(p_def(0, 1)); break;
     case 'T': scroll(-p_def(0, 1)); break;
     case 'r':
       a = p_def(0, 1) - 1; b = (nparam >= 2 && param[1]) ? param[1] - 1 : ROWS - 1;
       if (a < 0) a = 0;
       if (b >= ROWS) b = ROWS - 1;
-      if (a < b) { top = a; bot = b; cx = 0; cy = top; pend_wrap = 0; }
+      if (a < b) { top = a; bot = b; cx = 0; cy = 0; pend_wrap = 0; }
       break;
-    case 'm': if (csi_priv == 0) do_sgr(); break;   /* ESC[>4;2m (xterm modifyOtherKeys) 等を SGR と誤読しない */
+    case 'm': if (csi_priv == 0) do_sgr(); break;
     case 'h': set_mode(1); break;
     case 'l': set_mode(0); break;
-    case 's': sv_cx = cx; sv_cy = cy; break;
-    case 'u': cx = sv_cx; cy = sv_cy; clamp_cursor(); break;
+    case 's': if (csi_priv == 0) { sv_cx = cx; sv_cy = cy; } break;               /* SCOSC */
+    case 'u': if (csi_priv == 0) { cx = sv_cx; cy = sv_cy; clamp_cursor(); } break; /* SCORC (CSI ? u 等は上で除外) */
     case 'n':
-      if (csi_priv == 0 && p_def(0, 0) == 6) {   /* DSR: カーソル位置を報告 */
-        char buf[16]; int r = cy + 1, c = cx + 1, k = 0;
-        buf[k++] = 0x1b; buf[k++] = '[';
-        if (r >= 10) buf[k++] = '0' + r / 10;
-        buf[k++] = '0' + r % 10;
-        buf[k++] = ';';
-        if (c >= 10) buf[k++] = '0' + c / 10;
-        buf[k++] = '0' + c % 10;
-        buf[k++] = 'R'; buf[k] = 0; queue(buf);
+      if (csi_priv == 0 && p_def(0, 0) == 5) queue("\x1b[0n");        /* DSR: 状態 = 正常 */
+      else if (p_def(0, 0) == 6) {                                    /* DSR: カーソル位置を報告 (CSI ? 6 n は DECXCPR) */
+        q = buf; *q++ = 0x1b; *q++ = '[';
+        if (csi_priv == '?') *q++ = '?';
+        q = put_dec(q, cy + 1); *q++ = ';'; q = put_dec(q, cx + 1); *q++ = 'R'; *q = 0; queue(buf);
       }
       break;
-    case 'c': if (csi_priv == 0) queue("\x1b[?1;2c"); break;   /* DA: VT100 を名乗る */
+    case 'c': if (csi_priv == 0 && p_def(0, 0) == 0) queue("\x1b[?1;2c"); break;   /* DA: VT100 を名乗る */
+    case 't':   /* XTWINOPS: 18 = 文字単位の大きさを報告。他 (タイトル退避など) は無視 */
+      if (p_def(0, 0) == 18) {
+        q = buf; *q++ = 0x1b; *q++ = '['; *q++ = '8'; *q++ = ';';
+        q = put_dec(q, ROWS); *q++ = ';'; q = put_dec(q, COLS); *q++ = 't'; *q = 0; queue(buf);
+      }
+      break;
     case 'g':
       if (p_def(0, 0) == 3) { int c; for (c = 0; c < COLS; c++) tabstop[c] = 0; }
       else tabstop[cx] = 0;
@@ -582,21 +658,41 @@ static void do_csi(unsigned char f)
 }
 
 /* ================= 文字列シーケンス (OSC/DCS/APC/PM) ================= */
-/* 中身は捨てる。ST (ESC \) か BEL で終わる。 */
+/* 中身は捨てる (先頭 STRBUF バイトだけ控えて OSC の色問い合わせに答える)。長さに上限は要らない (溜めないので)。
+ * 終端は BEL か ST (ESC \)。ESC の後が \ 以外なら文字列はそこで打ち切り、その ESC から新しいシーケンスとして読む
+ * (終端の無い OSC が後ろの CSI を飲み込まないように)。DCS の中の ESC ESC (tmux パススルーの二重 ESC) は中身扱い。 */
+static void do_esc(unsigned char b);
+static void str_end(int st)   /* st: 1=ST で終わった / 0=BEL */
+{
+  if (str_kind == ']' && str_len == 4 && str_buf[0] == '1' && (str_buf[1] == '0' || str_buf[1] == '1') &&
+      str_buf[2] == ';' && str_buf[3] == '?') {   /* OSC 10;? / 11;? (前景・背景色の問い合わせ) */
+    queue(str_buf[1] == '0' ? "\x1b]10;rgb:aaaa/aaaa/aaaa" : "\x1b]11;rgb:0000/0000/0000");
+    queue(st ? "\x1b\\" : "\x07");
+  }
+  state = S_GROUND;
+}
 static void str_byte(unsigned char b)
 {
-  if (str_esc) { state = S_GROUND; str_esc = 0; return; }  /* ESC の次 = 終端 (\ 想定) */
+  if (str_esc) {
+    str_esc = 0;
+    if (b == '\\') { str_end(1); return; }
+    if (b == 0x1b && str_kind == 'P') return;    /* DCS 内の ESC ESC */
+    str_end(1); state = S_ESC; do_esc(b); return;  /* ESC で打ち切り、b は ESC の次として読む */
+  }
   if (b == 0x1b) { str_esc = 1; return; }
-  if (b == 0x07) { state = S_GROUND; return; }             /* BEL */
+  if (b == 0x07) { str_end(0); return; }
+  if (b == 0x18 || b == 0x1a) { state = S_GROUND; return; }   /* CAN / SUB で取り消し */
+  if (str_len < STRBUF) str_buf[str_len] = b;
+  if (str_len < 32767) str_len++;
 }
 
 /* ================= ESC 直後 ================= */
 static void do_esc(unsigned char b)
 {
   switch (b) {
-    case '[': csi_priv = 0; nparam = 0; param_seen = 0; param[0] = 0; state = S_CSI; return;
+    case '[': csi_priv = 0; csi_inter = 0; nparam = 0; param_seen = 0; param[0] = 0; state = S_CSI; return;
     case ']': case 'P': case '^': case '_': case 'X':
-      str_kind = b; str_esc = 0; state = S_STR; return;
+      str_kind = b; str_esc = 0; str_len = 0; state = S_STR; return;
     case '(': cs_which = 0; state = S_CHARSET; return;
     case ')': cs_which = 1; state = S_CHARSET; return;
     case '7': sv_cx = cx; sv_cy = cy; sv_fg = c_fg; sv_bg = c_bg; sv_bold = a_bold; sv_ul = a_uline;
@@ -616,7 +712,10 @@ static void do_esc(unsigned char b)
         for (r = 0; r < ROWS; r++) for (c = 0; c < COLS; c++) clear_cell(&cur[r][c]); }
       break;
     case '#': state = S_ESC_INT; return;   /* DECALN 等 (# の後の 1 文字) */
-    default: break;
+    default:
+      /* 他の中間バイト (ESC % G = UTF-8 選択、ESC SP F、ESC * / + = G2/G3 指定など) は終端の 1 文字まで読み捨てる */
+      if (b >= 0x20 && b <= 0x2f) { state = S_ESC_SKIP; return; }
+      break;
   }
   state = S_GROUND;
 }
@@ -666,7 +765,13 @@ static int is_wide(long cp)
 static void put_cp(long cp)
 {
   int special = g_special[gl];
-  if (cp == 0xfe0f || cp == 0x200d) return;   /* 異体字セレクタ VS16 / ZWJ は無視 (幅 0) */
+  /* 幅 0 の文字は捨てる (桁を進めない): 異体字セレクタ (VS1-16、VS17-256)、ZWJ/ZWNJ/ZWSP・方向制御、
+   * 結合文字 (アクセント類・結合半角記号・濁点の結合形)、絵文字の肌色修飾。前の文字との合成はしない。 */
+  if ((cp >= 0xfe00 && cp <= 0xfe0f) || (cp >= 0x200b && cp <= 0x200f) || (cp >= 0x2028 && cp <= 0x202e) ||
+      (cp >= 0x2060 && cp <= 0x2064) || cp == 0xfeff || cp == 0x00ad ||
+      (cp >= 0x0300 && cp <= 0x036f) || (cp >= 0x1ab0 && cp <= 0x1aff) || (cp >= 0x1dc0 && cp <= 0x1dff) ||
+      (cp >= 0x20d0 && cp <= 0x20ff) || (cp >= 0xfe20 && cp <= 0xfe2f) || cp == 0x3099 || cp == 0x309a ||
+      (cp >= 0x1f3fb && cp <= 0x1f3ff) || (cp >= 0xe0100 && cp <= 0xe01ef) || (cp >= 0xe0000 && cp <= 0xe007f)) return;
   { int ei = emoji_index((unsigned long)cp);   /* 絵文字: 16x16・16色で全角 2 セル */
     if (ei >= 0) { put_cell((unsigned short)ei, F_EMOJI, 2); return; } }
   if (cp >= 0x20 && cp < 0x7f) { put_cell((unsigned short)cp, special ? F_SPECIAL : 0, 1); return; }
@@ -746,16 +851,30 @@ void vt_write(const unsigned char *p, int n)
       case S_ESC_INT: /* '#' の次 */
         if (b == '8') { int r, c; for (r = 0; r < ROWS; r++) for (c = 0; c < COLS; c++) { cur[r][c].cp = 'E'; resolve_attr(&cur[r][c]); } }
         state = S_GROUND; break;
+      case S_ESC_SKIP:   /* 中間バイトは続けて読み、終端 (0x30-0x7e) で終わり */
+        if (b == 0x1b) state = S_ESC;
+        else if (b < 0x20) ground_ctrl(b);
+        else if (b >= 0x30) state = S_GROUND;
+        break;
       case S_CHARSET:
         g_special[cs_which] = (b == '0');   /* '0'=DEC 特殊, 'B'/'A' などは ASCII */
         state = S_GROUND; break;
       case S_CSI:
-        if (b >= '0' && b <= '9') { if (nparam == 0) nparam = 1; param[nparam - 1] = param[nparam - 1] * 10 + (b - '0'); param_seen = 1; }
-        else if (b == ';') { if (nparam < MAXPARAM) { param[nparam] = 0; nparam++; } }
+        if (b >= '0' && b <= '9') {   /* 値は MAXPVAL で頭打ち、MAXPARAM 個を越えた分は捨てる */
+          if (nparam == 0) nparam = 1;
+          if (nparam <= MAXPARAM) { int *v = &param[nparam - 1]; *v = *v * 10 + (b - '0'); if (*v > MAXPVAL) *v = MAXPVAL; }
+          param_seen = 1;
+        }
+        else if (b == ';' || b == ':') {   /* ':' (38:5:N などのサブパラメータ) も区切りとして読む */
+          if (nparam == 0) nparam = 1;    /* 先頭が空 (CSI ;5H) */
+          if (nparam < MAXPARAM) param[nparam] = 0;
+          if (nparam <= MAXPARAM) nparam++;
+        }
         else if (b == '?' || b == '>' || b == '<' || b == '=') { csi_priv = b; }
-        else if (b >= 0x20 && b <= 0x2f) { /* 中間バイトは無視 */ }
-        else if (b >= 0x40 && b <= 0x7e) { do_csi(b); state = S_GROUND; }
+        else if (b >= 0x20 && b <= 0x2f) { csi_inter = b; }
+        else if (b >= 0x40 && b <= 0x7e) { if (nparam > MAXPARAM) nparam = MAXPARAM; do_csi(b); state = S_GROUND; }
         else if (b == 0x1b) { state = S_ESC; }
+        else if (b < 0x20) { ground_ctrl(b); }   /* CSI の途中の制御文字はその場で実行 (VT100 の動き) */
         else { state = S_GROUND; }
         break;
       case S_STR: str_byte(b); break;

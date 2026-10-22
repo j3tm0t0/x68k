@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """pyte (参照レンダラ) とエミュレータの画面を、文字と属性 (前景・背景・下線) で比べる。
-usage: compare.py REC COLS ROWS MINE.txt MINE.attr
+usage: compare.py REC COLS ROWS MINE.txt MINE.attr [EXPECT.txt]
+  EXPECT.txt があれば文字はそれと比べ、属性は比べない (pyte が xterm と違う動きをする手書きフィクスチャ用)。
   MINE.txt / MINE.attr は vthost (vtcat) の出力 (vt_dump_text / vt_dump_attr)。
 属性の期待値はエミュレータの規則で pyte の属性から作る:
   ・16 色 (30-37/90-97/40-47/100-107) はそのまま、bold は前景 0-7 を 8-15 に、reverse は前景と背景を入れ替える
   ・256 色・24bit 色 (pyte は 16 進 RGB で持つ) はパレット 16 色への「妥当な」縮退か調べる:
-    エミュレータの色と元の色の距離が、最も近いパレット色との距離 + SLACK 以内なら可
+    色相 6 分割 + 明るさで選んだ色と同じか、元の色との距離が最寄りのパレット色との距離 + SLACK 以内なら可
 差分があれば最初の数件を出して終了コード 1。"""
 import sys
 import pyte
@@ -33,9 +34,25 @@ def dist(a, b):
     return sum((x - y) ** 2 for x, y in zip(a, b)) ** 0.5
 
 
+def hue_family(rgb):
+    """彩度があれば色相 6 分割 + 明るさ、無ければ明るさ 4 段 (vt100.c nearest16 と同じ考え方を独立に書いたもの)"""
+    import colorsys
+    r, g, b = rgb
+    mx, mn = max(rgb), min(rgb)
+    if mx - mn < 64:
+        l = (r * 3 + g * 6 + b) / 10
+        return 0 if l < 48 else 8 if l < 128 else 7 if l < 214 else 15
+    h = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)[0] * 360
+    idx = [1, 3, 2, 6, 4, 5][int(((h + 30) % 360) // 60)]
+    return idx + 8 if mx >= 200 else idx
+
+
 def ok_colour(got, exp_idx, exp_rgb):
+    """16 色ならそのもの。RGB なら、色相・明るさで選んだ色か、RGB 距離で最寄りに近い (SLACK 以内) 色なら可"""
     if exp_idx is not None:
         return got == exp_idx
+    if got == hue_family(exp_rgb):
+        return True
     best = min(dist(p, exp_rgb) for p in PAL)
     return dist(PAL[got], exp_rgb) <= best + SLACK
 
@@ -47,6 +64,14 @@ def main():
     mine = open(mine_txt, encoding="utf-8").read().split("\n")
     attrs = [ln.split() for ln in open(mine_attr).read().split("\n")]
     errs = []
+    if len(sys.argv) > 6:
+        exp = open(sys.argv[6], encoding="utf-8").read().split("\n")
+        for r in range(rows):
+            if mine[r] != exp[r]:
+                errs.append("text row %2d\n   mine:   |%s|\n   expect: |%s|" % (r, mine[r], exp[r]))
+        for e in errs[:8]:
+            print("   " + e)
+        sys.exit(1 if errs else 0)
     for r, line in enumerate(screen.display):
         if r >= len(mine) or mine[r] != line:
             errs.append("text row %2d\n   mine: |%s|\n   pyte: |%s|" % (r, mine[r] if r < len(mine) else "", line))

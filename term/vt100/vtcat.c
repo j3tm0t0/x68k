@@ -9,6 +9,7 @@
  *   -a FILE    属性 (fg,bg,flags) も FILE に書く
  *   -v FILE    描画後のテキスト VRAM (4 プレーン x 512 ライン x 128 バイト) とパレット 16 ワード
  *              (ビッグエンディアン) を FILE に書く。tests/vram2png.py で PNG にする
+ *   -r FILE    ホストへの応答 (DA/DSR など、vt_key が吐くもの) を FILE に書く
  *   -g FILE    (vthost のみ) CGROM イメージ (768KB、0xF00000-0xFBFFFF) を読み込んで実フォントで描く
  */
 #include <stdio.h>
@@ -68,7 +69,7 @@ static void dump_vram(const char *name)
 int main(int argc, char **argv)
 {
   int chunk = 4096, cols = 0, rows = 0, i, off, waitkey = 0, bench = 0;
-  const char *attrfile = 0, *infile = 0, *outfile = 0, *vramfile = 0;
+  const char *attrfile = 0, *infile = 0, *outfile = 0, *vramfile = 0, *replyfile = 0;
   long fsz;
   unsigned char *buf;
   FILE *fp;
@@ -78,6 +79,7 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[i], "-s") && i + 1 < argc) { sscanf(argv[++i], "%dx%d", &cols, &rows); }
     else if (!strcmp(argv[i], "-a") && i + 1 < argc) attrfile = argv[++i];
     else if (!strcmp(argv[i], "-v") && i + 1 < argc) vramfile = argv[++i];
+    else if (!strcmp(argv[i], "-r") && i + 1 < argc) replyfile = argv[++i];
 #ifdef VT_HOSTTEST
     else if (!strcmp(argv[i], "-g") && i + 1 < argc) {
       FILE *g = fopen(argv[++i], "rb");
@@ -135,6 +137,12 @@ int main(int argc, char **argv)
   }
   vt_get_size(&cols, &rows);
   if (vramfile) dump_vram(vramfile);   /* vt_fini はパレットを戻すので、その前に (カーソルも写る) */
+  if (replyfile) {   /* 応答キューを吐かせる (vthost のキーボードは空なので応答だけが出る) */
+    unsigned char rb[256];
+    int k = vt_key(rb, sizeof rb);
+    FILE *rf = fopen(replyfile, "wb");
+    if (rf) { fwrite(rb, 1, k, rf); fclose(rf); }
+  }
   if (waitkey) {
     unsigned char kb[8];
     while (vt_key(kb, sizeof kb) == 0) { volatile long d; for (d = 0; d < 20000; d++) ; }
