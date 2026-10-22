@@ -52,4 +52,23 @@ void vt_get_cell(int r, int c, unsigned short *cp, unsigned char *fg, unsigned c
 void vt_get_cursor(int *x, int *y);
 unsigned long vt_emoji_cp(int idx);   /* F_EMOJI セルの cp (インデックス) -> Unicode コードポイント */
 
+/* --- 仮想コンソール (-DVT_VCONS): VRAM 1 枚で複数の端末を切り替える (vt100.c の末尾) ---
+ * 入れ物 (vt_con_size バイト) に端末の状態を写して持ち替える。画面のセルは vt_con_new に渡した置き場
+ * (vt_con_scrsize バイト = main + alt の 2 面) にあり、入れ物はそれを指すだけ。最初の端末 (vt_init) は内蔵の置き場。
+ *   新しい端末: vt_con_save(old); vt_con_new(scr);  (裏に置かれる)  表に出す: vt_con_visible(1)
+ *   切り替え:   vt_con_visible(0); vt_con_save(a); vt_con_load(b); vt_con_visible(1);
+ * 裏の端末は vt_write しても VRAM に描かない。表に出すとき全面を描き直す。vt_init 済みの間の vt_init は
+ * いまの端末の状態だけを初期化する (zterm の HELLO)。 */
+int vt_con_size(void);
+int vt_con_scrsize(void);
+void vt_con_save(void *st);
+void vt_con_load(const void *st);
+void vt_con_new(void *scr);
+void vt_con_visible(int on);
+void vt_con_status(const char *s);     /* 最上行の右端に s を反転で一時表示 (論理画面は変えない)。NULL で消す */
+int vt_reply(unsigned char *out, int max);   /* DSR/DA の応答だけ取り出す (キーボードは読まない) */
+/* vt_key が IOCS のキー (bit8-15 スキャン、bit0-7 ASCII) を読むたびに呼ぶ。1 を返すとそのキーを捨てる、
+ * 2 なら捨てて vt_key を抜ける (端末を切り替えるので後のキーは次の vt_key で)。 */
+extern int (*vt_keyhook)(int code);
+
 #endif /* VT100_H */
