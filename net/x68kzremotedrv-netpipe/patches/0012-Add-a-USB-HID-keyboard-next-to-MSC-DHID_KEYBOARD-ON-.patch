@@ -1,0 +1,759 @@
+From 961aeaaeb4088f284a81aa6734cdc79babac9984 Mon Sep 17 00:00:00 2001
+From: moto <j3tm0t0@gmail.com>
+Date: Thu, 22 Oct 2026 18:18:49 +0900
+Subject: [PATCH] Add a USB HID keyboard next to MSC (-DHID_KEYBOARD=ON):
+ picokbd's UDP 6869 commands
+
+The netpipe Pico can now type into the X68000 Z itself, replacing the
+separate picokbd Pico. x68key (PICOKBD=<this Pico>) sends the same
+one-line commands (key / combo / hold / type) and gets "ok" back.
+
+- Off by default; with HID_KEYBOARD=OFF the binary is byte-identical.
+- MSC stays interface 0 (EP 0x01/0x81); the boot keyboard is interface 1
+  (EP 0x82, 8 bytes, 10 ms). VID:PID stays 0xCafe:0x4002 so the Z sees the
+  same MSC device; bcdDevice 0x0101 marks the HID build.
+- hidkbd_cmd.c turns a command into HID reports one at a time (no USB or
+  lwIP), with the same keys, 40 ms taps and persistent hold as picokbd;
+  unknown key names now press nothing and reply "err key".
+- hidkbd.c: the lwIP callback copies the line; the USB task's
+  hidkbd_task() sends the next report when its time has come and the HID
+  endpoint is free, never waiting (the same task serves the Z's SCSI).
+  The 6869 socket opens once Wi-Fi is up, independent of netpipe, so a
+  frozen Z can still be reset. Busy -> "err busy"; no HID poll for 1 s ->
+  "err usb". MEMP_NUM_UDP_PCB 6 (DHCP, DNS, netpipe, hidkbd use the
+  default 4).
+- test/hidkbd: host test of the parser (make -C test/hidkbd).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PrGdt1XK1exBgERrMmLA1u
+---
+ CMakeLists.txt            |  11 +++
+ src/hidkbd.c              | 141 ++++++++++++++++++++++++++++++++++++
+ src/hidkbd.h              |  14 ++++
+ src/hidkbd_cmd.c          | 146 ++++++++++++++++++++++++++++++++++++++
+ src/hidkbd_cmd.h          |  37 ++++++++++
+ src/main.c                |   6 ++
+ src/tusb_config.h         |   7 ++
+ src/usb_descriptors.c     |  52 ++++++++++++--
+ test/hidkbd/.gitignore    |   1 +
+ test/hidkbd/Makefile      |  14 ++++
+ test/hidkbd/hidkbd_test.c | 119 +++++++++++++++++++++++++++++++
+ test/hidkbd/tusb_config.h |   2 +
+ 12 files changed, 544 insertions(+), 6 deletions(-)
+ create mode 100644 src/hidkbd.c
+ create mode 100644 src/hidkbd.h
+ create mode 100644 src/hidkbd_cmd.c
+ create mode 100644 src/hidkbd_cmd.h
+ create mode 100644 test/hidkbd/.gitignore
+ create mode 100644 test/hidkbd/Makefile
+ create mode 100644 test/hidkbd/hidkbd_test.c
+ create mode 100644 test/hidkbd/tusb_config.h
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 6dc5790..4b88b3a 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -72,6 +72,17 @@ else()
+     target_compile_definitions(${PROJECT_NAME} PRIVATE ACCEL_ENABLE=0)
+ endif()
+ 
++# USB キーボード (src/hidkbd.c、UDP 6869 で picokbd と同じコマンドを受ける) を MSC に足す。-DHID_KEYBOARD=ON で入れる
++option(HID_KEYBOARD "USB HID keyboard (remote typing over UDP 6869) next to MSC" OFF)
++if(HID_KEYBOARD)
++    target_sources(${PROJECT_NAME} PRIVATE
++        src/hidkbd.c
++        src/hidkbd_cmd.c
++    )
++    # UDP の口: DHCP, DNS, netpipe, hidkbd で既定の 4 を使い切るので余裕を持たせる
++    target_compile_definitions(${PROJECT_NAME} PRIVATE HID_KEYBOARD=1 MEMP_NUM_UDP_PCB=6)
++endif()
++
+ pico_enable_stdio_usb(${PROJECT_NAME} 0)
+ pico_enable_stdio_uart(${PROJECT_NAME} 1)
+ pico_enable_stdio_semihosting(${PROJECT_NAME} 0)
+diff --git a/src/hidkbd.c b/src/hidkbd.c
+new file mode 100644
+index 0000000..286aaf3
+--- /dev/null
++++ b/src/hidkbd.c
+@@ -0,0 +1,141 @@
++/*
++ * hidkbd.c -- USB キーボード (HID) を MSC と同じデバイスに足し、Wi-Fi (UDP 6869) で受けたコマンドどおりにキーを押す
++ *
++ * 別の Pico W で動かしていた picokbd (x68k の harness/picokbd) をこのファームに取り込んだもの。
++ * Raspberry Pi などの x68key (PICOKBD=この Pico の IP) から ESC で rcmd を止めたり、Ctrl+F11+Del でリセットしたりする。
++ * コマンドは hidkbd_cmd.c。終わったら "ok" (解釈できなければ "err ...") を返す。実行中に来たものには "err busy"。
++ *
++ * picokbd は押すたびに tud_task() を回しながら待っていたが、ここの USB タスクは Z の MSC (SCSI) も受け持つので
++ * 待たない: lwIP スレッドの受信コールバックは 1 行を写すだけ、USB タスクは毎周 hidkbd_task() で
++ * 「時刻が来ていて、HID の送信口が空いていれば次のレポートを送る」だけをする。
++ * 6869 の口は Wi-Fi がつながったら開く (Z が netpipe を使っていなくても、Z が固まっていてもリセットできるように)。
++ */
++#include <stdio.h>
++#include <string.h>
++
++#include "pico/stdlib.h"
++#include "pico/cyw43_arch.h"
++#include "hardware/sync.h"
++#include "lwip/udp.h"
++#include "tusb.h"
++
++#include "main.h"
++#include "vd_command.h"
++#include "hidkbd_cmd.h"
++#include "hidkbd.h"
++
++#define HIDKBD_PORT     6869
++#define READY_TIMEOUT   1000            /* Z が HID を読みに来ないまま (ms) なら諦める */
++
++static struct udp_pcb *kpcb;
++static char line[512];
++static volatile bool pending;           /* line にコマンドがある (lwIP スレッドが立て、USB タスクが終わったら下ろす) */
++static ip_addr_t from;
++static u16_t from_port;
++
++/* USB タスクだけが触る */
++static struct hidkbd_cmd cmd;
++static struct hidkbd_report rep;
++static bool running, have_rep;
++static uint32_t due, wait_from;
++
++/* lwIP スレッドの中で呼ぶ */
++static void sendto_locked(const char *s, const ip_addr_t *addr, u16_t port)
++{
++    struct pbuf *p = pbuf_alloc(PBUF_TRANSPORT, strlen(s), PBUF_RAM);
++    if (p == NULL)
++        return;
++    memcpy(p->payload, s, strlen(s));
++    udp_sendto(kpcb, p, addr, port);
++    pbuf_free(p);
++}
++
++
++static void on_udp(void *arg, struct udp_pcb *upcb, struct pbuf *p, const ip_addr_t *addr, u16_t port)
++{
++    if (pending) {
++        sendto_locked("err busy", addr, port);
++    } else {
++        int n = pbuf_copy_partial(p, line, sizeof line - 1, 0);
++        while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r'))
++            n--;
++        line[n] = '\0';
++        from = *addr;
++        from_port = port;
++        __dmb();
++        pending = true;
++    }
++    pbuf_free(p);
++}
++
++/* 返事をして次のコマンドを受け付ける。返事より先に pending を下ろす (返事を受けてすぐ次を送る相手に "err busy" を返さない) */
++static void finish(const char *s)
++{
++    ip_addr_t to = from;
++    u16_t port = from_port;
++    running = have_rep = false;
++    __dmb();
++    pending = false;
++    cyw43_arch_lwip_begin();
++    sendto_locked(s, &to, port);
++    cyw43_arch_lwip_end();
++}
++
++void hidkbd_task(void)
++{
++    if (kpcb == NULL) {
++        if (sysstatus < STAT_WIFI_CONNECTED)
++            return;
++        cyw43_arch_lwip_begin();
++        kpcb = udp_new();
++        if (kpcb != NULL) {
++            udp_bind(kpcb, IP_ANY_TYPE, HIDKBD_PORT);
++            udp_recv(kpcb, on_udp, NULL);
++        }
++        cyw43_arch_lwip_end();
++        if (kpcb != NULL)
++            printf("hidkbd: ready (udp %d)\n", HIDKBD_PORT);
++        return;
++    }
++    if (!pending)
++        return;
++    uint32_t now = to_ms_since_boot(get_absolute_time());
++    if (!running) {
++        __dmb();
++        const char *r = hidkbd_parse(&cmd, line);
++        if (r != NULL) {
++            finish(r);
++            return;
++        }
++        running = true;
++        due = now;
++    }
++    if ((int32_t)(now - due) < 0)
++        return;
++    if (!have_rep) {
++        if (!hidkbd_next(&cmd, &rep)) {
++            finish("ok");
++            return;
++        }
++        have_rep = true;
++        wait_from = now;
++    }
++    if (!tud_hid_ready()) {
++        if (now - wait_from > READY_TIMEOUT)
++            finish("err usb");
++        return;
++    }
++    tud_hid_keyboard_report(0, rep.mod, rep.keys);
++    have_rep = false;
++    due = now + rep.ms;
++}
++
++/* HID の必須コールバック (使わない。LED の状態などは捨てる) */
++uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type, uint8_t *buffer, uint16_t reqlen)
++{
++    return 0;
++}
++
++void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type, uint8_t const *buffer, uint16_t bufsize)
++{
++}
+diff --git a/src/hidkbd.h b/src/hidkbd.h
+new file mode 100644
+index 0000000..22d29dc
+--- /dev/null
++++ b/src/hidkbd.h
+@@ -0,0 +1,14 @@
++#ifndef _HIDKBD_H_
++#define _HIDKBD_H_
++
++/* HID_KEYBOARD=1 (cmake -DHID_KEYBOARD=ON) で USB キーボードを MSC に足す。既定は外す */
++#ifndef HID_KEYBOARD
++#define HID_KEYBOARD 0
++#endif
++#if HID_KEYBOARD
++void hidkbd_task(void);                 /* USB タスクから毎周呼ぶ。待たない */
++#else
++#define hidkbd_task()   ((void)0)
++#endif
++
++#endif
+diff --git a/src/hidkbd_cmd.c b/src/hidkbd_cmd.c
+new file mode 100644
+index 0000000..32eff50
+--- /dev/null
++++ b/src/hidkbd_cmd.c
+@@ -0,0 +1,146 @@
++/*
++ * hidkbd_cmd.c -- UDP 6869 のコマンド (picokbd と同じ) を HID キーボードレポートの列にする
++ *
++ *   key esc enter ...        1 つずつ押して離す
++ *   combo ctrl f11 del       1 つずつ押し足し (Ctrl を先に押した状態にする)、hold ms 押したまま待って離す
++ *   hold <ms>                以後の combo の押している時間 (既定 100。リセットは 600 が要る)
++ *   type <文字列>             ASCII を US 配列の文字として打つ (打てない文字は飛ばす)
++ * キーコードは US 配列の HID のまま送る。Z は JIS のスキャンコードとして受け取るので、記号の違いは Z 側
++ * (KeyWitch の us.env) で直す (picokbd と同じ)。
++ * picokbd との違い: 知らないキー名があれば何も押さずに "err key" を返す (picokbd は手前まで押していた)。
++ */
++#include <ctype.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include "class/hid/hid.h"
++#include "hidkbd_cmd.h"
++
++enum { V_KEY = 1, V_COMBO, V_TYPE };
++
++static int hold = HIDKBD_HOLD_MS;
++static const uint8_t ascii[128][2] = { HID_ASCII_TO_KEYCODE };
++
++static const struct { const char *name; uint8_t code; uint8_t mod; } names[] = {
++    { "esc", HID_KEY_ESCAPE }, { "enter", HID_KEY_ENTER }, { "ret", HID_KEY_ENTER },
++    { "tab", HID_KEY_TAB }, { "bs", HID_KEY_BACKSPACE }, { "space", HID_KEY_SPACE },
++    { "del", HID_KEY_DELETE }, { "ins", HID_KEY_INSERT }, { "home", HID_KEY_HOME }, { "end", HID_KEY_END },
++    { "pgup", HID_KEY_PAGE_UP }, { "pgdn", HID_KEY_PAGE_DOWN },
++    { "up", HID_KEY_ARROW_UP }, { "down", HID_KEY_ARROW_DOWN }, { "left", HID_KEY_ARROW_LEFT }, { "right", HID_KEY_ARROW_RIGHT },
++    { "f1", HID_KEY_F1 }, { "f2", HID_KEY_F2 }, { "f3", HID_KEY_F3 }, { "f4", HID_KEY_F4 },
++    { "f5", HID_KEY_F5 }, { "f6", HID_KEY_F6 }, { "f7", HID_KEY_F7 }, { "f8", HID_KEY_F8 },
++    { "f9", HID_KEY_F9 }, { "f10", HID_KEY_F10 }, { "f11", HID_KEY_F11 }, { "f12", HID_KEY_F12 },
++    { "ctrl", 0, KEYBOARD_MODIFIER_LEFTCTRL }, { "shift", 0, KEYBOARD_MODIFIER_LEFTSHIFT },
++    { "alt", 0, KEYBOARD_MODIFIER_LEFTALT }, { "gui", 0, KEYBOARD_MODIFIER_LEFTGUI },
++};
++
++/* 1 語をキーにする。英数字 1 文字も受け付ける。戻り値: 見つかれば true */
++static bool lookup(const char *w, uint8_t *code, uint8_t *mod)
++{
++    for (unsigned i = 0; i < sizeof names / sizeof names[0]; i++)
++        if (strcmp(w, names[i].name) == 0) {
++            *code = names[i].code;
++            *mod = names[i].mod;
++            return true;
++        }
++    if (strlen(w) == 1) {
++        unsigned char c = w[0];
++        if (c < 128 && ascii[c][1]) {
++            *code = ascii[c][1];
++            *mod = ascii[c][0] ? KEYBOARD_MODIFIER_LEFTSHIFT : 0;
++            return true;
++        }
++    }
++    return false;
++}
++
++int hidkbd_hold(void)
++{
++    return hold;
++}
++
++const char *hidkbd_parse(struct hidkbd_cmd *c, char *line)
++{
++    char *save, *verb = strtok_r(line, " ", &save);
++    memset(c, 0, sizeof *c);
++    if (verb == NULL)
++        return "err empty";
++    if (strcmp(verb, "type") == 0) {
++        c->verb = V_TYPE;
++        c->text = save ? save : "";
++        return NULL;
++    }
++    if (strcmp(verb, "hold") == 0) {
++        char *w = strtok_r(NULL, " ", &save);
++        hold = w ? atoi(w) : HIDKBD_HOLD_MS;
++        if (hold < 0)
++            hold = 0;
++        if (hold > 10000)
++            hold = 10000;
++        return "ok";
++    }
++    if (strcmp(verb, "combo") == 0)
++        c->verb = V_COMBO;
++    else if (strcmp(verb, "key") == 0)
++        c->verb = V_KEY;
++    else
++        return "err verb";
++    for (char *w; (w = strtok_r(NULL, " ", &save)) != NULL; ) {
++        for (char *q = w; *q; q++)
++            *q = tolower((unsigned char)*q);
++        if (c->n >= HIDKBD_MAXW)
++            return "err long";
++        if (!lookup(w, &c->code[c->n], &c->mod[c->n]))
++            return "err key";
++        c->n++;
++    }
++    return NULL;
++}
++
++/* 次に送るレポート。戻り値: 終わりなら false */
++bool hidkbd_next(struct hidkbd_cmd *c, struct hidkbd_report *r)
++{
++    memset(r, 0, sizeof *r);
++    r->ms = HIDKBD_TAP_MS;
++    switch (c->verb) {
++    case V_TYPE:
++        if (!c->up) {
++            unsigned char ch;
++            while ((ch = *c->text) != '\0' && (ch >= 128 || ascii[ch][1] == 0))
++                c->text++;
++            if (ch == '\0')
++                return false;
++            r->mod = ascii[ch][0] ? KEYBOARD_MODIFIER_LEFTSHIFT : 0;
++            r->keys[0] = ascii[ch][1];
++            c->text++;
++        }
++        c->up = !c->up;
++        return true;
++    case V_KEY:
++        if (c->i >= c->n)
++            return false;
++        if (!c->up) {
++            r->mod = c->mod[c->i];
++            r->keys[0] = c->code[c->i];
++        } else {
++            c->i++;
++        }
++        c->up = !c->up;
++        return true;
++    case V_COMBO:
++        if (c->i > c->n)
++            return false;
++        if (c->i < c->n) {
++            c->cmod |= c->mod[c->i];
++            if (c->code[c->i] && c->nk < 6)
++                c->ckeys[c->nk++] = c->code[c->i];
++            r->mod = c->cmod;
++            memcpy(r->keys, c->ckeys, 6);
++            if (c->i == c->n - 1)
++                r->ms += hold;          /* 全部押したら hold ms そのまま */
++        }
++        c->i++;                         /* c->i == c->n の回は全部離す */
++        return true;
++    }
++    return false;
++}
+diff --git a/src/hidkbd_cmd.h b/src/hidkbd_cmd.h
+new file mode 100644
+index 0000000..ce31456
+--- /dev/null
++++ b/src/hidkbd_cmd.h
+@@ -0,0 +1,37 @@
++#ifndef _HIDKBD_CMD_H_
++#define _HIDKBD_CMD_H_
++#include <stdint.h>
++#include <stdbool.h>
++
++/* picokbd (x68k の harness/picokbd) と同じ 1 行のコマンドを、送る HID キーボードレポートの列にする。
++ * USB にも lwIP にも触らない (ホストでも試験できるように)。使い方:
++ *   r = hidkbd_parse(&c, line);    NULL なら実行する。NULL 以外はそのまま返事にする ("ok" は hold、"err ...")
++ *   while (hidkbd_next(&c, &rep))  rep を送り、rep.ms だけ待つ
++ * line は終わるまで書き換えないこと (type は line の中を指す) */
++
++#define HIDKBD_TAP_MS   40              /* 押してから離すまで / 次のキーまで */
++#define HIDKBD_HOLD_MS  100             /* combo の押している時間の既定 (hold で変え、以後のコマンドにも残る) */
++#define HIDKBD_MAXW     256             /* key / combo の語の数 (1 行 511 文字なら超えない) */
++
++struct hidkbd_report {
++    uint8_t mod;
++    uint8_t keys[6];
++    uint32_t ms;                        /* このレポートを送ってから次を送るまで */
++};
++
++struct hidkbd_cmd {
++    int verb;
++    int n;                              /* key / combo: 語の数 */
++    uint8_t code[HIDKBD_MAXW], mod[HIDKBD_MAXW];
++    const char *text;                   /* type: 次の文字 */
++    int i;                              /* key / combo: 次の語 */
++    bool up;                            /* key / type: 次は離す */
++    uint8_t cmod, ckeys[6];             /* combo: 押し足したもの */
++    int nk;
++};
++
++const char *hidkbd_parse(struct hidkbd_cmd *c, char *line);
++bool hidkbd_next(struct hidkbd_cmd *c, struct hidkbd_report *r);
++int hidkbd_hold(void);
++
++#endif
+diff --git a/src/main.c b/src/main.c
+index 62c60b2..2bd49a0 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -39,6 +39,7 @@
+ #include "vd_command.h"
+ #include "virtual_disk.h"
+ #include "config_file.h"
++#include "hidkbd.h"
+ 
+ //****************************************************************************
+ // Global variables
+@@ -96,13 +97,18 @@ static void main_task(void *params)
+ 
+     vd_init();
+ 
++#if HID_KEYBOARD
++    printf("Start USB MSC + HID keyboard device.\n");
++#else
+     printf("Start USB MSC device.\n");
++#endif
+ 
+     /* USB MSC main loop */
+ 
+     tusb_init();
+     while (1) {
+         tud_task();
++        hidkbd_task();
+         taskYIELD();
+     }
+ }
+diff --git a/src/tusb_config.h b/src/tusb_config.h
+index ad855af..4a90ecc 100644
+--- a/src/tusb_config.h
++++ b/src/tusb_config.h
+@@ -87,13 +87,20 @@
+ //------------- CLASS -------------//
+ #define CFG_TUD_CDC              0
+ #define CFG_TUD_MSC              1
++#if defined(HID_KEYBOARD) && HID_KEYBOARD
++#define CFG_TUD_HID              1      // USB キーボード (src/hidkbd.c)
++#else
+ #define CFG_TUD_HID              0
++#endif
+ #define CFG_TUD_MIDI             0
+ #define CFG_TUD_VENDOR           0
+ 
+ // MSC Buffer size of Device Mass storage
+ #define CFG_TUD_MSC_EP_BUFSIZE   512
+ 
++// HID buffer size: boot keyboard report (8 bytes, no report ID)
++#define CFG_TUD_HID_EP_BUFSIZE   8
++
+ #ifdef __cplusplus
+  }
+ #endif
+diff --git a/src/usb_descriptors.c b/src/usb_descriptors.c
+index cbc6cfd..80eda60 100644
+--- a/src/usb_descriptors.c
++++ b/src/usb_descriptors.c
+@@ -25,6 +25,7 @@
+  */
+ 
+ #include "tusb.h"
++#include "hidkbd.h"
+ 
+ /* A combination of interfaces must have a unique product id, since PC will save device driver after the first plug.
+  * Same VID/PID with different interface e.g MSC (first), then CDC (later) will possibly cause system error on PC.
+@@ -33,8 +34,17 @@
+  *   [MSB]         HID | MSC | CDC          [LSB]
+  */
+ #define _PID_MAP(itf, n)  ( (CFG_TUD_##itf) << (n) )
++#if HID_KEYBOARD
++/* キーボードを足しても PID は MSC だけのとき (0xCafe:0x4002) のままにし、Z から見た MSC の素性を変えない。
++   区別は bcdDevice で付ける */
++#define USB_PID           (0x4000 | _PID_MAP(CDC, 0) | _PID_MAP(MSC, 1) | \
++                           _PID_MAP(MIDI, 3) | _PID_MAP(VENDOR, 4) )
++#define USB_BCDDEVICE     0x0101
++#else
+ #define USB_PID           (0x4000 | _PID_MAP(CDC, 0) | _PID_MAP(MSC, 1) | _PID_MAP(HID, 2) | \
+                            _PID_MAP(MIDI, 3) | _PID_MAP(VENDOR, 4) )
++#define USB_BCDDEVICE     0x0100
++#endif
+ 
+ #define USB_VID   0xCafe
+ #define USB_BCD   0x0200
+@@ -55,7 +65,7 @@ tusb_desc_device_t const desc_device =
+ 
+     .idVendor           = USB_VID,
+     .idProduct          = USB_PID,
+-    .bcdDevice          = 0x0100,
++    .bcdDevice          = USB_BCDDEVICE,
+ 
+     .iManufacturer      = 0x01,
+     .iProduct           = 0x02,
+@@ -77,22 +87,51 @@ uint8_t const * tud_descriptor_device_cb(void)
+ 
+ enum
+ {
+-  ITF_NUM_MSC,
++  ITF_NUM_MSC,                  // MSC は 0 番のまま (キーボードはその後ろ)
++#if HID_KEYBOARD
++  ITF_NUM_HID,
++#endif
+   ITF_NUM_TOTAL
+ };
+ 
+-#define CONFIG_TOTAL_LEN    (TUD_CONFIG_DESC_LEN + TUD_MSC_DESC_LEN)
+-
+ #define EPNUM_MSC_OUT     0x01
+ #define EPNUM_MSC_IN      0x81
+ 
++#if HID_KEYBOARD
++#define CONFIG_TOTAL_LEN    (TUD_CONFIG_DESC_LEN + TUD_MSC_DESC_LEN + TUD_HID_DESC_LEN)
++#define EPNUM_HID         0x82
++
++//--------------------------------------------------------------------+
++// HID Report Descriptor (boot protocol keyboard)
++//--------------------------------------------------------------------+
++
++uint8_t const desc_hid_keyboard_report[] =
++{
++  TUD_HID_REPORT_DESC_KEYBOARD()
++};
++
++// Invoked when received GET HID REPORT DESCRIPTOR
++uint8_t const * tud_hid_descriptor_report_cb(uint8_t instance)
++{
++  (void) instance;
++  return desc_hid_keyboard_report;
++}
++
++// Interface number, string index, protocol, report descriptor len, EP In address, size & polling interval
++#define HID_DESC  , TUD_HID_DESCRIPTOR(ITF_NUM_HID, 0, HID_ITF_PROTOCOL_KEYBOARD, sizeof(desc_hid_keyboard_report), EPNUM_HID, CFG_TUD_HID_EP_BUFSIZE, 10)
++#else
++#define CONFIG_TOTAL_LEN    (TUD_CONFIG_DESC_LEN + TUD_MSC_DESC_LEN)
++#define HID_DESC
++#endif
++
+ uint8_t const desc_fs_configuration[] =
+ {
+   // Config number, interface count, string index, total length, attribute, power in mA
+   TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN, 0x00, 100),
+ 
+   // Interface number, string index, EP Out & EP In address, EP size
+-  TUD_MSC_DESCRIPTOR(ITF_NUM_MSC, 0, EPNUM_MSC_OUT, EPNUM_MSC_IN, 64),
++  TUD_MSC_DESCRIPTOR(ITF_NUM_MSC, 0, EPNUM_MSC_OUT, EPNUM_MSC_IN, 64)
++  HID_DESC
+ };
+ 
+ #if TUD_OPT_HIGH_SPEED
+@@ -102,7 +141,8 @@ uint8_t const desc_hs_configuration[] =
+   TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN, 0x00, 100),
+ 
+   // Interface number, string index, EP Out & EP In address, EP size
+-  TUD_MSC_DESCRIPTOR(ITF_NUM_MSC, 5, EPNUM_MSC_OUT, EPNUM_MSC_IN, 512),
++  TUD_MSC_DESCRIPTOR(ITF_NUM_MSC, 5, EPNUM_MSC_OUT, EPNUM_MSC_IN, 512)
++  HID_DESC
+ };
+ #endif // highspeed
+ 
+diff --git a/test/hidkbd/.gitignore b/test/hidkbd/.gitignore
+new file mode 100644
+index 0000000..014971d
+--- /dev/null
++++ b/test/hidkbd/.gitignore
+@@ -0,0 +1 @@
++hidkbd_test
+diff --git a/test/hidkbd/Makefile b/test/hidkbd/Makefile
+new file mode 100644
+index 0000000..582292e
+--- /dev/null
++++ b/test/hidkbd/Makefile
+@@ -0,0 +1,14 @@
++# hidkbd_cmd.c (UDP 6869 のコマンド -> HID レポート) をホストで試験する: make -C test/hidkbd
++TOP = ../..
++CFLAGS = -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -O2 -I. -I$(TOP)/src -I$(TOP)/pico-sdk/lib/tinyusb/src
++
++test: hidkbd_test
++	./hidkbd_test
++
++hidkbd_test: hidkbd_test.c $(TOP)/src/hidkbd_cmd.c $(TOP)/src/hidkbd_cmd.h
++	$(CC) $(CFLAGS) -o $@ hidkbd_test.c $(TOP)/src/hidkbd_cmd.c
++
++clean:
++	rm -f hidkbd_test
++
++.PHONY: test clean
+diff --git a/test/hidkbd/hidkbd_test.c b/test/hidkbd/hidkbd_test.c
+new file mode 100644
+index 0000000..03a1f06
+--- /dev/null
++++ b/test/hidkbd/hidkbd_test.c
+@@ -0,0 +1,119 @@
++/* hidkbd_cmd.c の試験: コマンド 1 行から出るレポートの列 (修飾, キー, 待ち ms) と返事を、picokbd の動きと突き合わせる */
++#include <stdio.h>
++#include <string.h>
++#include "class/hid/hid.h"
++#include "hidkbd_cmd.h"
++
++#define T  HIDKBD_TAP_MS
++#define LC KEYBOARD_MODIFIER_LEFTCTRL
++#define LS KEYBOARD_MODIFIER_LEFTSHIFT
++
++struct exp { uint8_t mod; uint8_t k[6]; uint32_t ms; };
++
++static int fails, checks;
++
++/* line を実行し、返事 want (NULL = 実行して "ok") とレポート列 e[0..n-1] を比べる */
++static void run(const char *name, const char *line, const char *want, const struct exp *e, int n)
++{
++    static struct hidkbd_cmd c;
++    char buf[512];
++    struct hidkbd_report r;
++    int i = 0, bad = 0;
++    checks++;
++    snprintf(buf, sizeof buf, "%s", line);
++    const char *res = hidkbd_parse(&c, buf);
++    if ((res == NULL) != (want == NULL) || (res && strcmp(res, want) != 0)) {
++        printf("FAIL %s: reply %s, want %s\n", name, res ? res : "(run)", want ? want : "(run)");
++        fails++;
++        return;
++    }
++    if (res != NULL) {
++        printf("ok   %s -> %s\n", name, res);
++        return;
++    }
++    while (hidkbd_next(&c, &r)) {
++        if (i >= n || r.mod != e[i].mod || memcmp(r.keys, e[i].k, 6) != 0 || r.ms != e[i].ms) {
++            printf("FAIL %s: step %d got mod=%02x keys=%02x,%02x,%02x ms=%u", name, i, r.mod, r.keys[0], r.keys[1], r.keys[2], r.ms);
++            if (i < n)
++                printf(" want mod=%02x keys=%02x,%02x,%02x ms=%u", e[i].mod, e[i].k[0], e[i].k[1], e[i].k[2], e[i].ms);
++            printf("\n");
++            bad = 1;
++            break;
++        }
++        i++;
++    }
++    if (!bad && i != n) {
++        printf("FAIL %s: %d steps, want %d\n", name, i, n);
++        bad = 1;
++    }
++    if (bad)
++        fails++;
++    else
++        printf("ok   %s (%d reports)\n", name, n);
++}
++
++#define RUN(name, line, ...) do { static const struct exp e_[] = { __VA_ARGS__ }; run(name, line, NULL, e_, sizeof e_ / sizeof e_[0]); } while (0)
++#define UP  { 0, {0}, T }
++
++int main(void)
++{
++    RUN("key esc", "key esc", { 0, {HID_KEY_ESCAPE}, T }, UP);
++    RUN("key esc enter", "key esc enter", { 0, {HID_KEY_ESCAPE}, T }, UP, { 0, {HID_KEY_ENTER}, T }, UP);
++    RUN("key upper-case names", "key ESC Ret", { 0, {HID_KEY_ESCAPE}, T }, UP, { 0, {HID_KEY_ENTER}, T }, UP);
++    RUN("key single char (lowered)", "key A 1", { 0, {HID_KEY_A}, T }, UP, { 0, {HID_KEY_1}, T }, UP);
++    RUN("key shifted symbol", "key !", { LS, {HID_KEY_1}, T }, UP);
++    RUN("key modifier alone", "key ctrl", { LC, {0}, T }, UP);
++    RUN("key f11 trailing spaces", "key  f11  ", { 0, {HID_KEY_F11}, T }, UP);
++
++    /* 既定の hold (100ms): ctrl -> ctrl+f11 -> ctrl+f11+del を押し足し、最後だけ TAP + hold 待って全部離す */
++    RUN("combo ctrl f11 del (hold 100)", "combo ctrl f11 del",
++        { LC, {0}, T }, { LC, {HID_KEY_F11}, T }, { LC, {HID_KEY_F11, HID_KEY_DELETE}, T + 100 }, UP);
++    run("hold 600", "hold 600", "ok", NULL, 0);
++    if (hidkbd_hold() != 600) { printf("FAIL hold = %d\n", hidkbd_hold()); fails++; }
++    RUN("combo after hold 600 (reset)", "combo ctrl f11 del",
++        { LC, {0}, T }, { LC, {HID_KEY_F11}, T }, { LC, {HID_KEY_F11, HID_KEY_DELETE}, T + 600 }, UP);
++    RUN("hold persists", "combo shift a", { LS, {0}, T }, { LS, {HID_KEY_A}, T + 600 }, UP);
++    run("hold (no arg) resets", "hold", "ok", NULL, 0);
++    if (hidkbd_hold() != HIDKBD_HOLD_MS) { printf("FAIL hold = %d\n", hidkbd_hold()); fails++; }
++    run("hold clamps", "hold 99999", "ok", NULL, 0);
++    if (hidkbd_hold() != 10000) { printf("FAIL hold = %d\n", hidkbd_hold()); fails++; }
++    run("hold 100", "hold 100", "ok", NULL, 0);
++    RUN("combo 7 keys keeps 6", "combo a b c d e f g",
++        { 0, {4}, T }, { 0, {4,5}, T }, { 0, {4,5,6}, T }, { 0, {4,5,6,7}, T }, { 0, {4,5,6,7,8}, T },
++        { 0, {4,5,6,7,8,9}, T }, { 0, {4,5,6,7,8,9}, T + 100 }, UP);
++    RUN("combo with no keys", "combo", UP);
++
++    RUN("type Ab!", "type Ab!", { LS, {HID_KEY_A}, T }, UP, { 0, {HID_KEY_B}, T }, UP, { LS, {HID_KEY_1}, T }, UP);
++    RUN("type keeps spaces after the first", "type  a b",
++        { 0, {HID_KEY_SPACE}, T }, UP, { 0, {HID_KEY_A}, T }, UP, { 0, {HID_KEY_SPACE}, T }, UP, { 0, {HID_KEY_B}, T }, UP);
++    RUN("type skips non-ASCII", "type a\xe3\x81\x82z", { 0, {HID_KEY_A}, T }, UP, { 0, {HID_KEY_Z}, T }, UP);
++    RUN("type ver + newline", "type ver\n", { 0, {HID_KEY_V}, T }, UP, { 0, {HID_KEY_E}, T }, UP, { 0, {HID_KEY_R}, T }, UP,
++        { 0, {HID_KEY_ENTER}, T }, UP);
++    RUN("type empty", "type");
++
++    run("empty", "", "err empty", NULL, 0);
++    run("spaces only", "   ", "err empty", NULL, 0);
++    run("unknown verb", "press esc", "err verb", NULL, 0);
++    run("unknown key", "key esc nosuchkey", "err key", NULL, 0);
++    run("unknown key in combo", "combo ctrl f13", "err key", NULL, 0);
++    {
++        char big[512] = "key";
++        for (int i = 0; i < 254; i++) strcat(big, " a");
++        static struct hidkbd_cmd c;
++        struct hidkbd_report r;
++        int n = 0;
++        checks++;
++        if (hidkbd_parse(&c, big) != NULL) {
++            printf("FAIL 254 words: not accepted\n");
++            fails++;
++        } else {
++            while (hidkbd_next(&c, &r))
++                n++;
++            if (n != 508) { printf("FAIL 254 words: %d reports\n", n); fails++; }
++            else printf("ok   254 words (508 reports)\n");
++        }
++    }
++
++    printf("%d/%d passed\n", checks - fails, checks);
++    return fails != 0;
++}
+diff --git a/test/hidkbd/tusb_config.h b/test/hidkbd/tusb_config.h
+new file mode 100644
+index 0000000..1a087a0
+--- /dev/null
++++ b/test/hidkbd/tusb_config.h
+@@ -0,0 +1,2 @@
++/* ホストで hidkbd_cmd.c を試験するときだけ使う (TinyUSB の class/hid/hid.h が読む) */
++#define CFG_TUSB_MCU OPT_MCU_NONE
+-- 
+2.54.0 (Apple Git-157)
+
