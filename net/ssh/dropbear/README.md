@@ -46,6 +46,8 @@ sshd (例 ~/sshtest の :2222) が要る。
 |---|---|
 | `localoptions.h` | dropbear の機能選択 (client のみ、curve25519/chacha20poly1305/ed25519) |
 | `x68k_shim.c` | Human68k/newlib/libsocket に無い関数の補完 (下記) |
+| `x68k_vcons.c` | 端末まわり: VT100 画面の占有・復帰、チャネルの読み書き、zterm (-Z)、仮想コンソール (x68k_shim.c が #include) |
+| `tests/vcshim.sh` | 仮想コンソールのホスト試験 (`tests/vcshim.c`: dropbear のチャネルと IOCS のキーを真似て x68k_vcons.c を動かす) |
 | `x68kinc/` | newlib に無いヘッダの最小スタブ (sys/ioctl.h, sys/un.h, sys/uio.h, syslog.h, termios.h, netinet/ip.h, netinet/tcp.h) と `x68k_compat.h` (AF_UNSPEC 等 + `FD_SETSIZE` 拡張) |
 | `patches/` | dropbear 本体への最小パッチ (下記) |
 | `fetch.sh` / `build.sh` | 取得・ビルド |
@@ -58,8 +60,9 @@ sshd (例 ~/sshtest の :2222) が要る。
 - `x68k_tty_setup` / `x68k_tty_cleanup`: `-t` のとき `cli_tty_setup` / `cli_tty_cleanup` から呼ばれ、
   `vt_init` / `vt_fini` (term/vt100) で画面を占有・復帰する。復帰時は残った画面をプレーン 0,1 に潰し
   (Human68k のコンソールはプレーン 0,1 しかスクロールしない)、IOCS のカーソルを VT のカーソル行の次に置く。
-- `x68k_chan_write` / `x68k_chan_read`: チャネルの stdout/stderr 書き込みと stdin 読み出し。VT 有効なら
-  `vt_write` / キーバッファ、無効なら素の write / read。空のときは -1/EINTR (0 や EAGAIN は EOF 扱いされる)。
+- `x68k_chan_write` / `x68k_chan_read` (x68k_vcons.c): チャネル番号付きの stdout/stderr 書き込みと stdin 読み出し。
+  そのチャネルのコンソールの `vt_write` / 送信待ち (キー・DSR の応答) / zterm、VT 無効なら素の write / read。
+  空のときは -1/EINTR (0 や EAGAIN は EOF 扱いされる)。
 - `ioctl(TIOCGWINSZ)`: `vt_get_size` (96x32) を返す (pty 要求のウィンドウサイズ)。
 - `x68dbg()`: 位相ごとの印。`DEBUG=1` ビルドでのみ「[ 12.34] 印」(IOCS _ONTIME の経過秒) を
   IOCS _B_PRINT でテキスト画面に出す (rcmd の redirect を迂回し、contee.sys 経由で Pi の
@@ -86,10 +89,15 @@ sshd (例 ~/sshtest の :2222) が要る。
   `buf_readfile` (鍵ファイル) を `O_RDONLY | O_BINARY` で開く (newlib の既定はテキストモードで
   0x0d/0x1a を捨てるため、二進の秘密鍵が壊れて "Failed loading keyfile" になっていた)。
   `setnonblocking` はソケット以外の fd では何もしない (fcntl が無く "Couldn't set nonblocking" で落ちていた)。
+  `m_close` は fd 0/1/2 を閉じない (セッションのチャネルは全部 fd 0/1/2 を共有する。1 本目が閉じても他が使う)。
 - `cli-chansession.c` : `cli_tty_setup` / `cli_tty_cleanup` から `x68k_tty_setup` / `x68k_tty_cleanup` を呼ぶ。
+  仮想コンソール: `x68k_open_session` (同じ接続にセッションチャネルをもう 1 本)、`cli_initchansess` の頭で
+  `x68k_vc_initchan` (2 本目以降の pty 要求・コマンド)、`cli_closechansess` は `x68k_vc_closed` が 1 なら画面を戻さない
+  ("Waiting for other channels" も出さない)。zterm が始まらなかったときの -t への開き直しもここから (旧 x68k_zterm_closed)。
+- `cli-session.c` : `SESSION_RUNNING` で `x68k_vc_loop` (頼まれたチャネルを開く。チャネル 0 本の終了判定より前)。
   pty 要求の TERM は Human68k の TERM (x68000) でなく **xterm** (環境変数 `SSHTERM` で上書き)。
   SIGWINCH の signal() 失敗は無視。
-- `common-channel.c` : チャネルの fd への write / read を `x68k_chan_write` / `x68k_chan_read` に。
+- `common-channel.c` : チャネルの fd への write / read を `x68k_chan_write` / `x68k_chan_read` に (チャネル番号付き)。
 - `x68kinc/termios.h` : `tcgetattr` は cooked な既定値 (ECHO/ICANON/ISIG/ICRNL/OPOST/ONLCR、VERASE=0x7f …)
   を返す。pty-req の termcodes はこれをそのまま sshd に送るので、全部 0 だとエコー無しの pty になる。
 - `common-kex.c` / `cli-kex.c` / `cli-auth.c` / `cli-authpubkey.c` / `cli-chansession.c` /
@@ -126,3 +134,38 @@ pty を要求すると term/vt100 の VT100 エミュレータ (xterm サブセ�
 スクロール、Ctrl-C、`vi` (代替画面)、`less`、`exit` で Human68k のプロンプトに戻るところまで確認
 (../PROGRESS.md「結論 2」)。キー変換は term/vt100/README.md の表 (BS は DEL 0x7f、矢印は CSI/SS3)。
 画面サイズ変更は無い。終了時は最後の画面を (色を落として) 残し、その下にメッセージとプロンプトが出る。
+
+### 仮想コンソール (`Ctrl+F1`..`F4`、2026-10-22)
+
+Linux のコンソールの Alt+F1.. と同じく、**1 本の接続 (ハンドシェイク 1 回) にシェルを最大 4 つ**開き、画面ごと切り替える。
+`ssh.x -t host` / `ssh.x -Z host` はコンソール 1 で始まる。
+
+| キー | 動き |
+|---|---|
+| `CTRL` + `F1`..`F4` (`OPT.1` + `F1`..`F4` でも) | コンソール 1..4 へ。無ければ新しいセッションチャネルを開く (`-t` は pty + ログインシェル、`-Z` は zterm の起動スクリプト。ヘルパはキャッシュ済みなので速い) |
+| `Ctrl-]` の後に `1`..`4` | 同じ (前置キー。修飾キーの状態に頼らない) |
+| `Ctrl-]` `Ctrl-]` | `Ctrl-]` を 1 つ送る (vim のタグジャンプなど)。`Ctrl-]` の後のその他のキーは `Ctrl-]` とそのキーを送る |
+| `-oConsoleEscape=none` / `-oConsoleEscape=^X` | 前置キーを使わない / 別のキーに (ZTERM=1 ビルドのオプション解析で読む) |
+
+- キーの判定: IOCS `_B_KEYINP` のスキャンコード F1..F4 = `0x63`..`0x66` と、そのときの `_B_SFTSNS` の bit1 (CTRL) / bit2 (OPT.1)
+  (BIOS ワーク `$0811`: SHIFT|CTRL|OPT.1|OPT.2|…。IPLROM の `_B_SFTSNS` は `move.w $810,d0`)。前置キーの次のキーは
+  `_B_KEYSNS` で先読みする (IPLROM で確認: `$0001xxxx`、下位ワードは `_B_KEYINP` と同じキーコード)。`_B_KEYINP` の値には修飾キーが入らないので、キーを読んだ時点の状態を見る
+  (描画で読むのが遅れて先に CTRL を離すと普通の F2 になる。そのときは前置キーで)。今までも `Ctrl+F1` は修飾無しの F1 (`ESC O P`)
+  を送っていたので、リモートのアプリから取り上げるキーは無い。X68000 Z の USB キーボードでは OPT.1 = F11。
+- 切り替えると最上行の右端に ` 1 [2] 3 ` (表は括弧) が 1.5 秒出る (論理画面は変えず、消すときその桁を描き直す)。
+- 裏のコンソールも受信を続ける: `-t` は VT100 の解析と論理画面 (VRAM には描かない)、DSR/DA の応答はそのチャネルへ。
+  `-Z` はフレームを論理画面に置いて ACK を返す (サーバが止まらない)。表に出すとき全面を描き直す (96x32 で最大 0.3 秒ほど)。
+- キーは表のコンソールのチャネルにだけ送る。どのコンソールも 96x32。
+- サーバがセッションを開かなかった (MaxSessions など) ときは ` open failed ` を出してそのコンソールを捨てる。
+- シェルが終わったコンソールはそのチャネルだけ閉じ、表なら前に表だったコンソールに戻る。最後の 1 つが閉じたら今までどおり
+  画面を (色を落として) 残して終わる。`~.` は接続ごと切る。
+- `-Z` でヘルパが始まらなかったコンソールは同じ番号で `-t` に開き直す。以後の新しいコンソールも `-t`。
+- メモリ (コンソール 1 つ増えるごと): 端末の状態 0.9 KB + 画面 2 面 24 KB + dropbear のチャネルの受信バッファ 2 x 24 KB、
+  `-Z` は + zterm の状態 38 KB (フレーム 32 KB) + 予測 2 KB。4 つで `-t` は +220 KB、`-Z` は +340 KB ほど。開く前に 60 KB
+  残っているか確かめ、足りなければ ` no memory ` を出して開かない (dropbear の m_malloc は足りないと接続ごと終わるため)。
+- 作り: `x68k_vcons.c`。term/vt100 の `vt_con_*` (端末の状態の持ち替え・裏の端末は VRAM に触らない、`-DVT_VCONS`)、
+  term/zterm の `zc_ctx_use` / `ztd_ctx_use` (チャネルごとの通信路・予測の状態)。新しいチャネルはパケットを作っている途中
+  (キーを読むのは `send_msg_channel_data` の中) では開けないので、`cli_sessionloop` (`x68k_vc_loop`) で開く。
+- 試験 (Mac): `tests/vcshim.sh` (-t / -Z / zterm の開き直しの筋書き)、term/vt100 の `tests/run.sh` (vcons: 4 つの端末に
+  フィクスチャを混ぜて流す)、term/zterm の `tests/replay.sh` (ztvctest: フレーム列を 4 本のチャネルに混ぜて流す)。
+  **実機 (Z) では未確認。**

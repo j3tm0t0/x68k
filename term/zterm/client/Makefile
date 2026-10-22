@@ -14,6 +14,10 @@ ztreplay: ztreplay.c ztdraw.c ztclient.h $(VT100)/vt100.c $(VT100)/vtdump.c
 ztpredtest: ztpredtest.c ztdraw.c ztclient.h $(VT100)/vt100.c
 	$(HOSTCC) -O2 -Wall -Wno-unused-function -DVT_HOSTTEST -I$(VT100) -o $@ ztpredtest.c ztdraw.c
 
+# 仮想コンソール (ssh.x -Z の Ctrl+F1..F4): 複数チャネルの状態を持ち替えて混ぜて流す
+ztvctest: ztvctest.c ztclient.c ztdraw.c ztclient.h $(VT100)/vt100.c $(VT100)/vt100.h
+	$(HOSTCC) -O2 -Wall -Wno-unused-function -DVT_HOSTTEST -DVT_VCONS -I$(VT100) -o $@ ztvctest.c ztclient.c ztdraw.c
+
 # 68000 版がコンパイルできるかだけ確かめる (ssh.x に入るのと同じフラグ)
 CROSS   = m68k-xelf-
 check68k: ztclient.c ztdraw.c ztclient.h
@@ -21,5 +25,5 @@ check68k: ztclient.c ztdraw.c ztclient.h
 	$(CROSS)gcc -m68000 -O2 -fomit-frame-pointer -Wall -Wno-array-bounds -Wno-unused-function -I$(VT100) -c ztdraw.c -o /dev/null
 
 clean:
-	rm -f zthost ztreplay ztpredtest
+	rm -f zthost ztreplay ztpredtest ztvctest
 .PHONY: clean check68k

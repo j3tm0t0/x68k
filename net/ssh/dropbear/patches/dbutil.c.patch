@@ -13,7 +13,21 @@
  
  	if (fd < 0) {
  		goto out;
-@@ -584,6 +589,13 @@
+@@ -563,6 +568,13 @@
+ 	if (fd < 0) {
+ 		return;
+ 	}
++#if DROPBEAR_X68K
++	/* x68k: 標準入出力は閉じない。セッションのチャネル (仮想コンソール) は全部 fd 0/1/2 を共有するので、
++	   1 本目が閉じても他のチャネルが使う (Human68k で 2 度目の close が EBADF 以外を返すと dropbear_exit になる) */
++	if (fd <= STDERR_FILENO) {
++		return;
++	}
++#endif
+ 
+ 	do {
+ 		val = close(fd);
+@@ -584,6 +596,13 @@
  	}
  #endif
  
@@ -27,7 +41,7 @@
  	if (fcntl(fd, F_SETFL, O_NONBLOCK) < 0) {
  		if (errno == ENODEV) {
  			/* Some devices (like /dev/null redirected in)
-@@ -599,6 +611,7 @@
+@@ -599,6 +618,7 @@
  }
  
  void disallow_core() {
@@ -35,7 +49,7 @@
  	struct rlimit lim = {0};
  	if (getrlimit(RLIMIT_CORE, &lim) < 0) {
  		TRACE(("getrlimit(RLIMIT_CORE) failed"));
-@@ -607,6 +620,7 @@
+@@ -607,6 +627,7 @@
  	if (setrlimit(RLIMIT_CORE, &lim) < 0) {
  		TRACE(("setrlimit(RLIMIT_CORE) failed"));
  	}

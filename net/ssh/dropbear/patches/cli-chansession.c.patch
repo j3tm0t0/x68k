@@ -1,26 +1,35 @@
 --- dropbear-2022.83/cli-chansession.c
 +++ x68k/cli-chansession.c
-@@ -84,6 +84,19 @@
+@@ -83,6 +83,20 @@
+ 	
  
  /* If the main session goes, we close it up */
- static void cli_closechansess(const struct Channel *UNUSED(channel)) {
-+#if DROPBEAR_X68K && X68K_ZTERM
-+	/* zterm のチャネルが閉じた。始まらずに終わった (ヘルパが無い・動かない) なら、同じ接続で
-+	   -t の対話セッションを開き直す (ハンドシェイクのやり直しは数十秒かかるので) */
++#if DROPBEAR_X68K
++static void cli_closechansess(const struct Channel *channel) {
++	/* 仮想コンソール (x68k_shim.c): このチャネルのコンソールだけ閉じる。他のコンソールが残っている
++	   (表なら切り替えた) / zterm が始まらずに同じコンソールを -t で開き直す なら、画面は戻さずに終わり */
 +	{
-+		extern int x68k_zterm_closed(void);
-+		if (x68k_zterm_closed()) {
-+			cli_opts.wantpty = 1;
-+			cli_opts.cmd = NULL;
-+			cli_send_chansess_request();
++		extern int x68k_vc_closed(int chan);
++		if (x68k_vc_closed(channel->index)) {
 +			return;
 +		}
 +	}
-+#endif
++	cli_tty_cleanup(); /* Restore tty modes etc */
++	/* "Waiting for other channels" は出さない (stderr は画面を壊す。セッションのチャネルは全部コンソール) */
++}
++#else
+ static void cli_closechansess(const struct Channel *UNUSED(channel)) {
  	cli_tty_cleanup(); /* Restore tty modes etc */
  
- 	/* This channel hasn't gone yet, so we have > 1 */
-@@ -105,6 +118,10 @@
+@@ -91,6 +105,7 @@
+ 		dropbear_log(LOG_INFO, "Waiting for other channels to close...");
+ 	}
+ }
++#endif
+ 
+ /* Taken from OpenSSH's sshtty.c:
+  * RCSID("OpenBSD: sshtty.c,v 1.5 2003/09/19 17:43:35 markus Exp "); */
+@@ -105,6 +120,10 @@
  		return;
  	}
  
@@ -31,7 +40,7 @@
  	if (tcgetattr(STDIN_FILENO, &tio) == -1) {
  		dropbear_exit("Failed to set raw TTY mode");
  	}
-@@ -136,6 +153,11 @@
+@@ -136,6 +155,11 @@
  
  	TRACE(("enter cli_tty_cleanup"))
  
@@ -43,7 +52,7 @@
  	if (cli_ses.tty_raw_mode == 0) {
  		TRACE(("leave cli_tty_cleanup: not in raw mode"))
  		return;
-@@ -282,10 +304,19 @@
+@@ -282,10 +306,19 @@
  	buf_putbyte(ses.writepayload, 0);
  
  	/* Get the terminal */
@@ -63,7 +72,7 @@
  	buf_putstring(ses.writepayload, term, strlen(term));
  
  	/* Window size */
-@@ -297,15 +328,21 @@
+@@ -297,15 +330,21 @@
  	encrypt_packet();
  
  	/* Set up a window-change handler */
@@ -85,3 +94,37 @@
  
  	TRACE(("enter send_chansess_shell_req"))
  
+@@ -353,6 +392,11 @@
+ 
+ static int cli_initchansess(struct Channel *channel) {
+ 
++#if DROPBEAR_X68K
++	/* 仮想コンソール (x68k_shim.c): 2 つ目以降のコンソールのチャネルなら、その pty 要求とコマンド
++	   (-t: pty + ログインシェル、-Z: zterm の起動スクリプト) を cli_opts に入れる。最初のチャネルはそのまま */
++	{ extern void x68k_vc_initchan(int, int *, char **); x68k_vc_initchan(channel->index, &cli_opts.wantpty, &cli_opts.cmd); }
++#endif
+ 	cli_init_stdpipe_sess(channel);
+ 
+ #if DROPBEAR_CLI_AGENTFWD
+@@ -413,6 +457,21 @@
+ }
+ #endif
+ 
++#if DROPBEAR_X68K
++/* 仮想コンソール (x68k_shim.c の x68k_vc_loop から): 同じ接続でセッションチャネルをもう 1 本開く。戻り値は
++   そのチャネルの番号 (newchannel と同じく最初の空き)、失敗は -1。pty・コマンドは開けたとき x68k_vc_initchan が決める */
++int x68k_open_session(void) {
++	unsigned int i;
++	for (i = 0; i < ses.chansize && ses.channels[i] != NULL; i++) {
++	}
++	if (send_msg_channel_open_init(STDIN_FILENO, &clichansess) == DROPBEAR_FAILURE) {
++		return -1;
++	}
++	encrypt_packet();
++	return (int)i;
++}
++#endif
++
+ void cli_send_chansess_request() {
+ 
+ 	TRACE(("enter cli_send_chansess_request"))

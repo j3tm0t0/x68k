@@ -7,6 +7,7 @@
  * セル (cp + 色 + フラグ) まで決めてくるので、ここではセルを書いて flush するだけ。
  */
 #include "vt100.c"
+#include <string.h>
 #include "ztclient.h"
 
 /* フレーム命令 (term/zterm/server/src/proto.rs と同じ) */
@@ -48,17 +49,48 @@ void ztd_cursor(int *x, int *y, int *vis) { *x = cx; *y = cy; *vis = cur_vis; }
  * Enter・Tab・Ctrl・他のエスケープの後は、それまでの予測が決まるまで新しい予測をしない。 */
 #define PR_MAX 64
 typedef struct { unsigned char r, c, shown, drawn, same; unsigned short cp; cell_t base, base0; unsigned long seq, rowh; long t; unsigned epoch; } pred_t;
-static pred_t pr[PR_MAX];
-static int pr_n;                 /* 未確定の予測の数 */
-static int pr_on;                /* サーバが ECHOACK を送ってくる (予測してよい) */
-static int pr_want = 1;          /* 利用者の設定 (-oZtermEcho=no で 0) */
-static int pr_trust[4];          /* 場面ごとの信用 */
-static int pr_hold;              /* 予測できないキーの後: 決まるまで予測しない */
-static int pr_cx, pr_cy, pr_curset;   /* 予測したカーソル位置 (pr_curset のとき) */
-static int srv_cx, srv_cy, srv_vis = 1;
-static unsigned long pr_ack, pr_lastseq;
-static long pr_nhit, pr_nmiss;
-static unsigned pr_epoch;        /* Enter などで進む。前の epoch の予測が当たっても信用にしない */
+/* 予測とサーバの画面の状態 (1 本のチャネルぶん)。ssh.x の仮想コンソールはチャネルごとに持ち替える (ztd_ctx_use) */
+typedef struct {
+  pred_t pr[PR_MAX];
+  int pr_n;                 /* 未確定の予測の数 */
+  int pr_on;                /* サーバが ECHOACK を送ってくる (予測してよい) */
+  int pr_want;              /* 利用者の設定 (-oZtermEcho=no で 0) */
+  int pr_trust[4];          /* 場面ごとの信用 */
+  int pr_hold;              /* 予測できないキーの後: 決まるまで予測しない */
+  int pr_cx, pr_cy, pr_curset;   /* 予測したカーソル位置 (pr_curset のとき) */
+  int srv_cx, srv_cy, srv_vis;
+  unsigned long pr_ack, pr_lastseq;
+  long pr_nhit, pr_nmiss;
+  unsigned pr_epoch;        /* Enter などで進む。前の epoch の予測が当たっても信用にしない */
+  int bye, mode;            /* 持ち替えるときの zd_bye / zd_mode の控え */
+} ztd_ctx;
+static ztd_ctx zd0 = { .pr_want = 1, .srv_vis = 1 }, *zdx = &zd0;
+#define pr (zdx->pr)
+#define pr_n (zdx->pr_n)
+#define pr_on (zdx->pr_on)
+#define pr_want (zdx->pr_want)
+#define pr_trust (zdx->pr_trust)
+#define pr_hold (zdx->pr_hold)
+#define pr_cx (zdx->pr_cx)
+#define pr_cy (zdx->pr_cy)
+#define pr_curset (zdx->pr_curset)
+#define srv_cx (zdx->srv_cx)
+#define srv_cy (zdx->srv_cy)
+#define srv_vis (zdx->srv_vis)
+#define pr_ack (zdx->pr_ack)
+#define pr_lastseq (zdx->pr_lastseq)
+#define pr_nhit (zdx->pr_nhit)
+#define pr_nmiss (zdx->pr_nmiss)
+#define pr_epoch (zdx->pr_epoch)
+int ztd_ctx_size(void) { return (int)sizeof(ztd_ctx); }
+/* 以後の ztd_* を ctx の状態で (NULL なら内蔵)。fresh=1 なら初期状態に。zd_bye / zd_mode は写して持ち替える */
+void ztd_ctx_use(void *ctx, int fresh)
+{
+  zdx->bye = zd_bye; zdx->mode = zd_mode;
+  zdx = ctx ? (ztd_ctx *)ctx : &zd0;
+  if (fresh) { memset(zdx, 0, sizeof *zdx); pr_want = 1; srv_vis = 1; zdx->bye = -1; }
+  zd_bye = zdx->bye; zd_mode = zdx->mode;
+}
 #define PR_TIMEOUT 1500
 
 #if defined(VT_SIM_TXRAS)

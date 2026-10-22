@@ -117,6 +117,9 @@ ssh.x (`net/ssh/dropbear`、`ZTERM=1`):
   「読める」にする。HELLO で画面を占有したら DOS コンソールには触らない。
 - `cli-chansession.c` のパッチ: チャネルが閉じたとき zterm が始まっていなければ、同じ接続で `wantpty=1` のセッションを
   開き直す (`-t` と同じ VT100)。
+- 仮想コンソール (Ctrl+F1..F4、net/ssh/dropbear/README.md): チャネルごとに `ztclient.c` / `ztdraw.c` の状態を持つ
+  (`zc_ctx_use` / `ztd_ctx_use`。名前は #define でそのまま)。裏のチャネルもフレームを置いて ACK を返す (描かない)。
+  試験は `client/ztvctest.c` (tests/replay.sh)。
 
 ## 試験 (Mac)
 

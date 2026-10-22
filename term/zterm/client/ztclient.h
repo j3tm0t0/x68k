@@ -33,6 +33,12 @@ const char *zc_error(void);
 int zc_exit_code(void);
 void zc_stats(long *in_bytes, long *frames, long *push_bytes);
 void zc_log(void (*fn)(const char *));   /* 位相の印 (OK/NEED/GO/HELLO) を出す関数 */
+/* 複数のチャネル (ssh.x の仮想コンソール): 状態の入れ物を持ち替える。NULL は内蔵の 1 つ目。fresh=1 で初期状態に。
+ * ztdraw の状態 (ztd_ctx_*) と term/vt100 の端末 (vt_con_*) も同じチャネルのものに揃えてから zc_input / zc_keys を呼ぶ */
+int zc_ctx_size(void);
+void zc_ctx_use(void *ctx, int fresh);
+int ztd_ctx_size(void);
+void ztd_ctx_use(void *ctx, int fresh);
 
 /* ztdraw.c (term/vt100/vt100.c の論理画面・描画を直接使う) */
 void ztd_init(int cols, int rows);

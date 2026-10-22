@@ -9,22 +9,56 @@
 
 #define FRAME_MAX 32768   /* 1 フレームの上限 (サーバの全画面描き直しは 96x32 で十数 KB) */
 
-static int st = ZC_FAIL;
-static char z_dir[200], z_ver[40], z_err[240], z_cmd[2400];
-static int z_cols, z_rows;
-static char line[160];
-static int line_len;
-static unsigned char fbuf[FRAME_MAX + 3];
-static int flen;                 /* fbuf に溜めたバイト数 (ヘッダ 3 バイト込み) */
-static int got_hello;
-static unsigned char obuf[2048];
-static int olen;
-static FILE *push_fp;
-static long push_left;
-static long s_in, s_frames, s_push;
-static int z_exit = -1;
-static int z_echo = 1;          /* 予測エコー (サーバに ECHOACK を頼む) */
-static unsigned long z_kseq;    /* 送ったキーのバイト数 (サーバの ECHOACK と同じ数え方) */
+/* 1 本のチャネルの状態。ssh.x の仮想コンソールはチャネルごとに持ち替える (zc_ctx_use)。下の #define で名前はそのまま使う */
+typedef struct {
+  int st;
+  char z_dir[200], z_ver[40], z_err[240], z_cmd[2400];
+  int z_cols, z_rows;
+  char line[160];
+  int line_len;
+  unsigned char *fbuf;      /* フレームを溜める (FRAME_MAX + 3 バイト。入れ物の直後、内蔵は fbuf0。32 KB を .data に置かないため) */
+  int flen;                 /* fbuf に溜めたバイト数 (ヘッダ 3 バイト込み) */
+  int got_hello;
+  unsigned char obuf[2048];
+  int olen;
+  FILE *push_fp;
+  long push_left;
+  long s_in, s_frames, s_push;
+  int z_exit;
+  int z_echo;               /* 予測エコー (サーバに ECHOACK を頼む) */
+  unsigned long z_kseq;     /* 送ったキーのバイト数 (サーバの ECHOACK と同じ数え方) */
+} zc_ctx;
+static unsigned char fbuf0[FRAME_MAX + 3];
+static zc_ctx zc0 = { .st = ZC_FAIL, .fbuf = fbuf0, .z_exit = -1, .z_echo = 1 }, *zcx = &zc0;
+#define st (zcx->st)
+#define z_dir (zcx->z_dir)
+#define z_ver (zcx->z_ver)
+#define z_err (zcx->z_err)
+#define z_cmd (zcx->z_cmd)
+#define z_cols (zcx->z_cols)
+#define z_rows (zcx->z_rows)
+#define line (zcx->line)
+#define line_len (zcx->line_len)
+#define fbuf (zcx->fbuf)
+#define flen (zcx->flen)
+#define got_hello (zcx->got_hello)
+#define obuf (zcx->obuf)
+#define olen (zcx->olen)
+#define push_fp (zcx->push_fp)
+#define push_left (zcx->push_left)
+#define s_in (zcx->s_in)
+#define s_frames (zcx->s_frames)
+#define s_push (zcx->s_push)
+#define z_exit (zcx->z_exit)
+#define z_echo (zcx->z_echo)
+#define z_kseq (zcx->z_kseq)
+int zc_ctx_size(void) { return (int)sizeof(zc_ctx) + FRAME_MAX + 3; }
+/* 以後の zc_* を ctx (zc_ctx_size バイト) の状態で動かす。NULL なら内蔵の状態。fresh=1 なら ctx を初期状態にする */
+void zc_ctx_use(void *ctx, int fresh)
+{
+  zcx = ctx ? (zc_ctx *)ctx : &zc0;
+  if (fresh) { memset(zcx, 0, sizeof *zcx); st = ZC_FAIL; z_exit = -1; z_echo = 1; fbuf = ctx ? (unsigned char *)(zcx + 1) : fbuf0; }
+}
 void zc_echo(int on) { z_echo = on; ztd_echo(on); }
 static void (*logfn)(const char *);
 

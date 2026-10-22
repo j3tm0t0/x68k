@@ -36,6 +36,15 @@ vt_fini();
 スーパーバイザ切り替えはライブラリ内で完結する。クライアントはユーザモードのままでよい。
 `vt_init`〜`vt_fini` の間は DOS のコンソール出力に触れないこと。
 
+### 仮想コンソール (`-DVT_VCONS`)
+VRAM 1 枚で複数の端末を切り替える (ssh.x の Ctrl+F1..F4)。端末の状態 (カーソル・属性・モード・解析の途中・応答キュー・
+行ポインタ表、約 0.9 KB) を `vt_con_save` / `vt_con_load` で入れ物と写し合い、画面 2 面 (24 KB) は `vt_con_new` に渡した
+置き場に置く (最初の端末は内蔵)。裏の端末は `vt_write` しても `flush` と `scroll` の VRAM・`drawn` に触らない (解析と論理画面
+だけ)。`vt_con_visible(1)` で `drawn` を「分からない」にして全面を描き直す。`vt_con_status` は最上行の右端に反転の短い表示を
+重ねる (論理画面は変えない)。`vt_reply` は DSR/DA の応答だけを取り出す (裏の端末の応答をそのチャネルへ)。`vt_keyhook` は
+`vt_key` が読んだ IOCS のキーを先に見る。vt_init 済みの間の `vt_init` (zterm の HELLO) はいまの端末の状態だけ初期化する。
+`VT_VCONS` 無しのオブジェクトは変わらない。試験は `tests/vctest.c` (run.sh の 6)。
+
 ## 画面と描画
 - 既定 96x32 (768x512, 8x16 フォント)。`vt_init(cols,rows)` で指定可 (横最大 96・縦最大 32)。
 - セル (`cell_t`) は 4 バイト: コードポイント 16bit + 属性語 16bit (`fg<<12 | bg<<8 | flags`、bold/reverse 解決済み)。

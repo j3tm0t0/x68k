@@ -2,7 +2,7 @@
 # zterm サーバの画面変換が term/vt100 (vt100.c) と同じ結果になるかを、記録済みフィクスチャで確かめる。
 # 各 .rec をサーバの --replay と vthost に食わせ、最終画面の文字と属性 (fg,bg,flags) を比べる。
 # さらにサーバが出したフレーム列を Z 側の描画 (ztdraw.c、ztreplay -V) に通した画面がサーバの画面と同じか確かめる。
-#   usage: tests/replay.sh            (要: cargo build --release、term/vt100 の make vthost、client の make ztreplay ztpredtest)
+#   usage: tests/replay.sh            (要: cargo build --release、term/vt100 の make vthost、client の make ztreplay ztpredtest ztvctest)
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 FX="$HERE/../../vt100/tests/fixtures"
@@ -31,6 +31,14 @@ for f in "$FX"/*.rec; do
   if [ $ok = 1 ] && [ $vt = 1 ]; then pass=$((pass+1)); echo "PASS $b"
   elif [ $ok = 1 ] && echo " $KNOWN " | grep -q " $b "; then known=$((known+1)); echo "KNOWN $b (往復は一致。vt100.c との違いは vt100 crate の制限)"
   else fail=$((fail+1)); echo "FAIL $b (vt100.c と一致 $vt / 往復 $ok)"; fi
+done
+# 仮想コンソール (ssh.x -Z の Ctrl+F1..F4): フレーム列を 4 本 / 3 本のチャネルに混ぜて流す (client/ztvctest.c)
+VC="$HERE/../client/ztvctest"
+CG="$HERE/../../vt100/tests/cgrom/CGROM.DAT"; CGO=(); [ -f "$CG" ] && CGO=(-g "$CG")
+for set in "app_top app_vimjp app_claude_stream app_tmux" "app_lessu8 app_gitlog app_emoji"; do
+  a=(); for b in $set; do "$Z" --replay "$FX/$b.rec" --cols 96 --rows 32 --chunk 7 --out "$T/$b.vc.zbin" 2>/dev/null; a+=("$T/$b.vc.zbin"); done
+  if msg=$("$VC" ${CGO[@]+"${CGO[@]}"} "${a[@]}" 2>&1); then pass=$((pass+1)); echo "PASS ztvctest ($set)"
+  else fail=$((fail+1)); echo "FAIL ztvctest ($set)"; echo "$msg" | tail -5; fi
 done
 rm -rf "$T"
 # 予測エコーの筋書き試験

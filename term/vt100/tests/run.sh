@@ -88,5 +88,18 @@ if cc -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=undefined -DVT_H
 else
   echo "SKIP  asan/fuzz (cc -fsanitize が使えない)"
 fi
+# ---- 6. 仮想コンソール (-DVT_VCONS、ssh.x の Ctrl+F1..F4): 4 つの端末に混ぜて流し、裏の端末が VRAM を汚さず、
+#         各端末の結果が単独で流したときと同じか (tests/vctest.c)。ASan 版で ----
+if cc -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=undefined -DVT_HOSTTEST -DVT_VCONS -I. -o "$OUT/vctest" tests/vctest.c vt100.c 2>/dev/null ||
+   cc -O2 -DVT_HOSTTEST -DVT_VCONS -I. -o "$OUT/vctest" tests/vctest.c vt100.c 2>/dev/null; then
+  F=tests/fixtures
+  for set in "app_top app_vimjp app_claude_stream syn_queries" "app_tmux app_emoji app_lessu8 app_gitlog" "shell syn_altscreen syn_region jp_less"; do
+    a=(); for n in $set; do a+=("$F/$n.rec"); done
+    if msg=$("$OUT/vctest" ${CGOPT[@]+"${CGOPT[@]}"} "${a[@]}" 2>&1); then pass "vcons ($set)"
+    else fail "vcons ($set)"; echo "$msg" | tail -10; fi
+  done
+else
+  fail "vcons (vctest をコンパイルできない)"
+fi
 echo "---- $npass PASS, $nfail FAIL  (PNG: $OUT/*.png)"
 [ $nfail = 0 ]
