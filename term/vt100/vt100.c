@@ -311,21 +311,42 @@ static const unsigned char *kanji_glyph(unsigned short jis)
 }
 
 /* 絵文字 16x16・16色 (4bpp) を 4 プレーンに直接描く (セルの fg/bg は使わず各ピクセル自身の色)。 */
+#ifndef VT_EMOJI_SA
+#define VT_EMOJI_SA 1   /* 1: 描く前に R21 を必ず 0 に書く / 2: 同時アクセスで 1 プレーンずつ選んで書く / 0: 旧版 */
+#endif
+static int sa_ok;              /* 定義は下の「同時アクセス」の節 */
+static unsigned short sa_cur;
+static void sa_mask(int m);
 static void blit_emoji(int col, int row, int idx)
 {
   const unsigned char *bm = emojitab[idx].bm;   /* 16 行 x 8 バイト, 2px/byte, 上位ニブル = 左 */
+  unsigned char pl[16][4][2];
   int s, p, px;
   for (s = 0; s < 16; s++) {
-    unsigned char pl[4][2];
-    volatile unsigned char *v;
-    for (p = 0; p < 4; p++) { pl[p][0] = 0; pl[p][1] = 0; }
+    for (p = 0; p < 4; p++) { pl[s][p][0] = 0; pl[s][p][1] = 0; }
     for (px = 0; px < 16; px++) {
       unsigned char n = (px & 1) ? (bm[s * 8 + px / 2] & 0x0f) : (bm[s * 8 + px / 2] >> 4);
       int half = px >> 3, bit = 7 - (px & 7);
-      for (p = 0; p < 4; p++) if ((n >> p) & 1) pl[p][half] |= (unsigned char)(1 << bit);
+      for (p = 0; p < 4; p++) if ((n >> p) & 1) pl[s][p][half] |= (unsigned char)(1 << bit);
     }
-    v = TVRAM + (unsigned long)(row * CH + s) * VBYTES + col;
-    for (p = 0; p < 4; p++) { v[p * PLANE] = pl[p][0]; v[1 + p * PLANE] = pl[p][1]; }
+  }
+#if VT_EMOJI_SA == 2
+  if (sa_ok) {   /* Z 実機で sa_off 後も同時アクセスが残る疑い: 切れていなくても正しい書き方 (プレーン 0 の番地に 1 枚ずつ) */
+    for (p = 0; p < 4; p++) {
+      sa_mask(1 << p);
+      for (s = 0; s < 16; s++) {
+        volatile unsigned char *v = TVRAM + (unsigned long)(row * CH + s) * VBYTES + col;
+        v[0] = pl[s][p][0]; v[1] = pl[s][p][1];
+      }
+    }
+    return;
+  }
+#elif VT_EMOJI_SA == 1
+  CRTC_R21 = 0; sa_cur = 0;   /* 記録 (sa_cur) と実機の R21 がずれていても必ず切る */
+#endif
+  for (s = 0; s < 16; s++) {
+    volatile unsigned char *v = TVRAM + (unsigned long)(row * CH + s) * VBYTES + col;
+    for (p = 0; p < 4; p++) { v[p * PLANE] = pl[s][p][0]; v[1 + p * PLANE] = pl[s][p][1]; }
   }
 }
 
