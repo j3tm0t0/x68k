@@ -1574,6 +1574,7 @@ void vt_init(int cols, int rows)
   int r, c, s;
 #ifdef VT_VCONS
   if (vc_inited) { vt_con_new(0); return; }   /* 画面は占有済み (2 つ目以降の端末の HELLO など): 端末の状態だけ初期化 */
+  vt_hidden = 0;
 #endif
   if (cols <= 0) cols = MAXCOLS;
   if (rows <= 0) rows = MAXROWS;
