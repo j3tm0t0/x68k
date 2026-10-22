@@ -1,4 +1,4 @@
-From a143c7e24f62139f7de5e060b787987e73937ac7 Mon Sep 17 00:00:00 2001
+From 008f08f96f42c7a08541724fdf6c4bd672da24bb Mon Sep 17 00:00:00 2001
 From: moto <j3tm0t0@gmail.com>
 Date: Thu, 22 Oct 2026 09:14:56 +0900
 Subject: [PATCH] netpipe: crypto accelerator (X25519/Ed25519 on the Pico) via
@@ -24,9 +24,9 @@ text +36.7KB, bss +2.4KB; task stack 6KB (deepest path measured 2.1KB).
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01S5R6WJAV75Fci9XiiCqM54
 ---
- CMakeLists.txt                      |    5 +
+ CMakeLists.txt                      |   14 +
  src/accel.c                         |  119 ++
- src/accel.h                         |   11 +
+ src/accel.h                         |   22 +
  src/accel_ops.c                     |   86 +
  src/accel_ops.h                     |    7 +
  src/accel_proto.h                   |  158 ++
@@ -37,7 +37,7 @@ Claude-Session: https://claude.ai/code/session_01S5R6WJAV75Fci9XiiCqM54
  src/monocypher/monocypher.c         | 2956 +++++++++++++++++++++++++++
  src/monocypher/monocypher.h         |  321 +++
  src/netpipe.c                       |   16 +-
- 13 files changed, 4495 insertions(+), 1 deletion(-)
+ 13 files changed, 4515 insertions(+), 1 deletion(-)
  create mode 100644 src/accel.c
  create mode 100644 src/accel.h
  create mode 100644 src/accel_ops.c
@@ -51,21 +51,10 @@ Claude-Session: https://claude.ai/code/session_01S5R6WJAV75Fci9XiiCqM54
  create mode 100644 src/monocypher/monocypher.h
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 49755ce..1ab61ec 100644
+index 49755ce..6dc5790 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -33,6 +33,10 @@ add_executable(
- 	src/smb2connect.c
-         src/config_file.c
-         src/netpipe.c
-+        src/accel.c
-+        src/accel_ops.c
-+        src/monocypher/monocypher.c
-+        src/monocypher/monocypher-ed25519.c
-         src/usb_descriptors.c
-         x68kserremote/service/remoteserv.c
-         iconv/iconv_mini.c
-@@ -47,6 +51,7 @@ add_dependencies(${PROJECT_NAME} driver)
+@@ -47,6 +47,7 @@ add_dependencies(${PROJECT_NAME} driver)
  include_directories(
          ${CMAKE_CURRENT_LIST_DIR}
          ${CMAKE_CURRENT_LIST_DIR}/src
@@ -73,6 +62,26 @@ index 49755ce..1ab61ec 100644
          ${CMAKE_CURRENT_LIST_DIR}/include
          ${CMAKE_CURRENT_LIST_DIR}/driver
          ${CMAKE_CURRENT_LIST_DIR}/iconv
+@@ -58,6 +59,19 @@ include_directories(
+         ${LIBSMB2_PATH}/include/picow
+ )
+ 
++# 暗号アクセラレータ (src/accel.c, Monocypher)。-DACCEL_ENABLE=0 で外す (A/B 比較用)
++option(ACCEL_ENABLE "X25519/Ed25519 accelerator for the X68000 Z over netpipe" ON)
++if(ACCEL_ENABLE)
++    target_sources(${PROJECT_NAME} PRIVATE
++        src/accel.c
++        src/accel_ops.c
++        src/monocypher/monocypher.c
++        src/monocypher/monocypher-ed25519.c
++    )
++else()
++    target_compile_definitions(${PROJECT_NAME} PRIVATE ACCEL_ENABLE=0)
++endif()
++
+ pico_enable_stdio_usb(${PROJECT_NAME} 0)
+ pico_enable_stdio_uart(${PROJECT_NAME} 1)
+ pico_enable_stdio_semihosting(${PROJECT_NAME} 0)
 diff --git a/src/accel.c b/src/accel.c
 new file mode 100644
 index 0000000..9b2beb7
@@ -200,19 +209,30 @@ index 0000000..9b2beb7
 +}
 diff --git a/src/accel.h b/src/accel.h
 new file mode 100644
-index 0000000..99ad41c
+index 0000000..abdaf0a
 --- /dev/null
 +++ b/src/accel.h
-@@ -0,0 +1,11 @@
+@@ -0,0 +1,22 @@
 +#ifndef _ACCEL_H_
 +#define _ACCEL_H_
 +#include <stdint.h>
 +#include <stdbool.h>
 +
++/* ACCEL_ENABLE=0 (cmake -DACCEL_ENABLE=0) でアクセラレータを丸ごと外す (Monocypher も組み込まない。A/B 比較用) */
++#ifndef ACCEL_ENABLE
++#define ACCEL_ENABLE 1
++#endif
++#if ACCEL_ENABLE
++
 +/* 暗号アクセラレータ (X25519 / Ed25519 を Z の代わりに計算する)。netpipe.c から呼ぶ。詳細は accel.c */
 +void accel_init(void);
 +void accel_submit(const uint8_t *payload, int len);     /* 要求レコードの中身 (ACCEL_MARK から)。USB タスクから */
 +int accel_result(uint8_t *dst);                         /* 応答があれば dst に写して長さを返す (無ければ 0)。USB タスクから */
++#else
++#define accel_init()            ((void)0)
++#define accel_submit(p, n)      ((void)0)
++#define accel_result(d)         0
++#endif
 +
 +#endif
 diff --git a/src/accel_ops.c b/src/accel_ops.c
