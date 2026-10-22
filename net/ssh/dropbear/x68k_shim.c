@@ -90,10 +90,26 @@ static int kbuf_len;
 
 /* キーボードを非ブロッキングで読んでバッファに足す。VT が無効でも IOCS のキー読みは害が無いので
    同じ経路を使う (コマンドモードで stdin を要求されたときも同じ)。 */
+#ifdef X68K_ZTERM
+static int zt_mode;                   /* -Z: zterm のチャネルで話している */
+static void zt_keys_fill(void);
+static int zt_ready(void);
+#endif
 static void kbuf_fill(void)
 {
+#ifdef X68K_ZTERM
+  if (zt_mode) { zt_keys_fill(); return; }
+#endif
   if (kbuf_len < (int)sizeof kbuf)
     kbuf_len += vt_key(kbuf + kbuf_len, (int)sizeof kbuf - kbuf_len);
+}
+/* チャネルの stdin に送るものがあるか (キーバッファ / zterm の送信待ち) */
+static int in_ready(void)
+{
+#ifdef X68K_ZTERM
+  if (zt_mode) return zt_ready();
+#endif
+  return kbuf_len > 0;
 }
 
 /* --- ioctl: TIOCGWINSZ だけ VT の寸法 (96x32) を返す。他は -1 --- */
@@ -168,6 +184,12 @@ void x68k_tty_cleanup(void)
 /* チャネルの fd 書き込み (writechannel_fallback から)。VT 有効時の stdout/stderr は画面へ */
 int x68k_chan_write(int fd, const void *p, unsigned int n)
 {
+#ifdef X68K_ZTERM
+  if (zt_mode && fd < X68K_SOCKFD_MIN) {
+    extern int x68k_zterm_write(int, const void *, unsigned int);
+    return x68k_zterm_write(fd, p, n);
+  }
+#endif
   if (vt_active && fd < X68K_SOCKFD_MIN) { vt_write((const unsigned char *)p, (int)n); return (int)n; }
   return (int)write(fd, p, n);
 }
@@ -176,6 +198,12 @@ int x68k_chan_write(int fd, const void *p, unsigned int n)
    0 や EAGAIN を返すと dropbear は EOF 扱いで stdin を閉じるので、空なら -1/EINTR。 */
 int x68k_chan_read(int fd, void *p, unsigned int n)
 {
+#ifdef X68K_ZTERM
+  if (zt_mode && fd < X68K_SOCKFD_MIN) {
+    extern int x68k_zterm_read(void *, unsigned int);
+    return x68k_zterm_read(p, n);
+  }
+#endif
   if (fd < X68K_SOCKFD_MIN) {
     unsigned int k;
     kbuf_fill();
@@ -188,6 +216,101 @@ int x68k_chan_read(int fd, void *p, unsigned int n)
   }
   return (int)read(fd, p, n);
 }
+
+#ifdef X68K_ZTERM
+/* --- zterm (term/zterm): リモートのヘルパが画面を持ち、変わったセルだけ送ってくる ---
+   ssh.x -Z host [cmd]: pty を要求せず、1 本の exec チャネルで起動スクリプトを動かす (ztclient.c)。
+   チャネルの stdout は zc_input (行の段階 -> フレーム)、stdin は zc_output (ヘルパの転送・ACK・キー)。
+   画面は最初のフレーム (HELLO) で ztdraw.c が vt_init する。ヘルパは ZTERMDIR (既定 B:/zterm) の
+   <uname -s>-<uname -m>.gz (小文字) と VERSION。始まらずにチャネルが閉じたら -t の対話セッションに切り替える
+   (cli-chansession.c の cli_closechansess から x68k_zterm_closed)。 */
+#include "ztclient.h"
+static int zt_want;                   /* -Z が付いていた */
+/* 位相の印 (cached / helper のパス / pushed / go / エラー)。画面を占有する前だけ IOCS で直接出す
+   (チャネルが閉じる頃には dropbear が fd 2 を閉じていることがあるので stderr は使わない) */
+static void zt_log(const char *m)
+{
+  x68dbg(m);
+#ifndef X68K_SSH_DEBUG
+  if (!vt_active) { _iocs_b_print(m); _iocs_b_print("\r\n"); }
+#endif
+}
+static void zt_keys_fill(void)
+{
+  unsigned char t[64];
+  int k = vt_key(t, (int)sizeof t);
+  if (k > 0) zc_keys(t, k);
+}
+static int zt_ready(void) { return zc_pending() > 0; }
+
+/* cli-main.c (getopts の前) から: -Z を argv から抜く */
+int x68k_zterm_args(int *argc, char **argv)
+{
+  int i, j;
+  for (i = j = 0; i < *argc; i++) {
+    if (i > 0 && !strcmp(argv[i], "-Z")) { zt_want = 1; continue; }
+    argv[j++] = argv[i];
+  }
+  argv[j] = 0;
+  *argc = j;
+  return zt_want;
+}
+
+/* cli-main.c (getopts の後) から: exec するコマンド (起動スクリプト) を返す。-Z が無ければ NULL */
+const char *x68k_zterm_command(const char *usercmd)
+{
+  const char *dir = getenv("ZTERMDIR");
+  int c, r;
+  if (!zt_want) return 0;
+  vt_default_size(&c, &r);
+  zc_init(dir ? dir : "B:/zterm", c, r, usercmd);
+  zc_log(zt_log);
+  zt_mode = 1;
+  return zc_command();
+}
+
+int x68k_zterm_write(int fd, const void *p, unsigned int n)
+{
+  if (fd == 1) {
+    zc_input((const unsigned char *)p, (int)n);
+    if (zc_started() && !vt_active) vt_active = 1;   /* HELLO で画面を占有した (以後 DOS コンソールに触らない) */
+    if (zc_state() == ZC_FAIL && vt_active) {
+      /* 動き出した後に通信路が壊れた: 画面を戻して終わる */
+      extern void dropbear_exit(const char *, ...);
+      x68k_tty_cleanup();
+      dropbear_exit("zterm: %s", zc_error());
+    }
+    return (int)n;
+  }
+  /* stderr: 始まる前 (起動スクリプトのエラー) はコンソールへ、描画中は捨てる */
+  if (!vt_active) return (int)write(fd, p, n);
+  return (int)n;
+}
+
+int x68k_zterm_read(void *p, unsigned int n)
+{
+  int k;
+  zt_keys_fill();
+  k = zc_output((unsigned char *)p, (int)n);
+  if (k <= 0) { errno = EINTR; return -1; }
+  return k;
+}
+
+/* チャネルが閉じた (cli_closechansess から)。1 を返したら -t の対話セッションを開き直してもらう */
+int x68k_zterm_closed(void)
+{
+  if (!zt_mode) return 0;
+  zt_mode = 0;
+  if (zc_started()) {
+    x68k_tty_cleanup();
+    return 0;
+  }
+  _iocs_b_print("zterm: ");
+  _iocs_b_print(zc_error()[0] ? zc_error() : "helper did not start");
+  _iocs_b_print(" -- falling back to -t\r\n");
+  return 1;
+}
+#endif
 
 /* --- select() を libsocket の poll() で実装 ---
    ソケット以外の fd (標準入出力など、X68K_SOCKFD_MIN 未満) は poll に渡せないので
@@ -226,7 +349,7 @@ int select(int nfds, fd_set *rfds, fd_set *wfds, fd_set *efds, struct timeval *t
     for (;;) {
       int slice = timeout;
       kbuf_fill();
-      if (kbuf_len > 0) slice = 0;
+      if (in_ready()) slice = 0;
       else if (timeout < 0 || timeout > KEY_SLICE_MS) slice = KEY_SLICE_MS;
       if (n > 0) {
         r = poll(pfd, n, slice);
@@ -235,7 +358,7 @@ int select(int nfds, fd_set *rfds, fd_set *wfds, fd_set *efds, struct timeval *t
         _dos_change_pr();                      /* ソケット無し: 譲るだけ */
       }
       kbuf_fill();
-      if (kbuf_len > 0) break;
+      if (in_ready()) break;
       if (timeout >= 0 && _dos_time_pr() - t0 >= timeout) break;
     }
   } else if (n > 0) {
@@ -246,7 +369,7 @@ int select(int nfds, fd_set *rfds, fd_set *wfds, fd_set *efds, struct timeval *t
   if (efds) FD_ZERO(efds);
   if (r < 0) return r;
   if (nw) { for (i = 0; i < nfds; i++) if (FD_ISSET(i, &wready)) FD_SET(i, wfds); count = nw; }
-  if (want_kbd && kbuf_len > 0 && rfds) { FD_SET(0, rfds); count++; }
+  if (want_kbd && in_ready() && rfds) { FD_SET(0, rfds); count++; }
   if (r == 0) return count;
   for (i = 0; i < n; i++) {
     if (rfds && (pfd[i].revents & (POLLIN | POLLHUP | POLLERR))) { FD_SET(map[i], rfds); count++; }

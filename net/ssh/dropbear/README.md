@@ -19,7 +19,14 @@ FAST=1 ./build.sh       # 68000 高速体演算を組み込む (XEiJ 計測で s
 FAST=1 FAST_C=1 ./build.sh   # asm 無しの C 版だけ (22s)。mul68k.s 不要
 ./build.sh /path/ssh.x  # 出力先を指定
 DEBUG=1 FAST=1 ./build.sh /path/dbg.x   # 位相ごとの印 (経過秒付き) をテキスト画面に出す版
+ZTERM=1 FAST=1 ./build.sh    # -Z (zterm: リモートのヘルパが画面を持ち、変わったセルだけ受け取る) が使える版
+ZTERM=1 FAST=1 ACCEL=1 ACCELDIR=../../../../x68k-accel/net/accel ./build.sh   # + 暗号を Pico W に (-oAccel=...)
 ```
+
+`ZTERM=1` は term/zterm/client の `ztclient.c` と `ztdraw.c` (vt100.c を #include する) を vt100.c の代わりに組む。
+`ssh.x -Z host [cmd]` で pty を要求せず 1 本の exec チャネルでヘルパを確かめ・押し込み・起動する。ヘルパは
+`B:/zterm/` (環境変数 `ZTERMDIR`) の `<uname -s>-<uname -m>.gz` と `VERSION` (term/zterm/server/dist.sh が作る)。
+始まらなければ同じ接続で `-t` のセッションに切り替わる。詳細は [term/zterm/README.md](../../../term/zterm/README.md)。
 
 `VTKEEP=1` は終了時に VT100 の画面をプレーン 0,1 に潰さない試験用の版 (VRAM ダンプで色を見る)。
 

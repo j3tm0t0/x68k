@@ -44,6 +44,27 @@ if [ "$FAST" = "1" ]; then
   [ "${FAST_C:-0}" != "1" ] && EXTRA_DEF="$EXTRA_DEF -DUSE_ASM"   # mul68k.o は make clean 後に組む
 fi
 
+# ACCEL=1: 暗号を Pico W に任せる (branch accel の net/accel。-oAccel=verify|kex|all で有効化)
+ACCEL="${ACCEL:-0}"
+ACCELDIR="${ACCELDIR:-$HERE/../../accel}"
+if [ "$ACCEL" = "1" ]; then
+  [ -f "$ACCELDIR/accel.c" ] || { echo "build: ACCEL=1 だが $ACCELDIR が無い (branch accel の net/accel)" >&2; exit 1; }
+  cp "$ACCELDIR/accel.h" "$ACCELDIR/accel_proto.h" "$ACCELDIR/dropbear/x68k_accel.h" "$ACCELDIR/dropbear/x68k_accel.c" "$SRC/"
+  if patch -d "$SRC" -p1 --dry-run -f < "$ACCELDIR/dropbear/dropbear-accel.patch" >/dev/null 2>&1; then
+    patch -d "$SRC" -p1 < "$ACCELDIR/dropbear/dropbear-accel.patch"
+  fi
+  EXTRA_DEF="$EXTRA_DEF -DX68K_ACCEL=1"
+fi
+
+# ZTERM=1: ssh.x -Z host で zterm (term/zterm) を使う。リモートのヘルパが画面を持ち、変わったセルだけ受け取る。
+# vt100.c は ztdraw.c が #include する (論理画面と描画をそのまま使う) ので、vt100.c の代わりに ztdraw.c を組む。
+ZTERM="${ZTERM:-0}"
+ZTERMC="${ZTERMC:-$HERE/../../../term/zterm/client}"
+if [ "$ZTERM" = "1" ]; then
+  [ -f "$ZTERMC/ztclient.c" ] || { echo "build: ZTERM=1 だが $ZTERMC が無い (term/zterm/client)" >&2; exit 1; }
+  EXTRA_DEF="$EXTRA_DEF -DX68K_ZTERM=1"
+fi
+
 # パッチ (冪等: 既に当たっていれば skip)
 for p in "$HERE"/patches/*.patch; do
   f=$(basename "$p" .patch)
@@ -75,9 +96,21 @@ rm -f config.h.bak
 
 # シム単体をコンパイル (make clean で消えるので make の前に用意し、LIBS に渡す)
 [ -f "$VT100/vt100.c" ] || { echo "build: $VT100/vt100.c が無い (term/vt100)" >&2; exit 1; }
-${CROSS}gcc -m68000 -O2 -fomit-frame-pointer -I"$INC" -I"$VT100" -include "$INC/x68k_compat.h" $EXTRA_DEF -c x68k_shim.c -o x68k_shim.o
-${CROSS}gcc -m68000 -O2 -fomit-frame-pointer -Wno-array-bounds -I"$VT100" -c "$VT100/vt100.c" -o vt100.o
-EXTRA_OBJ="$SRC/vt100.o"
+${CROSS}gcc -m68000 -O2 -fomit-frame-pointer -I"$INC" -I"$VT100" -I"$ZTERMC" -include "$INC/x68k_compat.h" $EXTRA_DEF -c x68k_shim.c -o x68k_shim.o
+if [ "$ZTERM" = "1" ]; then
+  ${CROSS}gcc -m68000 -O2 -fomit-frame-pointer -Wno-array-bounds -I"$VT100" -c "$ZTERMC/ztdraw.c" -o vt100.o
+  ${CROSS}gcc -m68000 -O2 -fomit-frame-pointer -I"$VT100" -c "$ZTERMC/ztclient.c" -o ztclient.o
+  EXTRA_OBJ="$SRC/vt100.o $SRC/ztclient.o"
+else
+  ${CROSS}gcc -m68000 -O2 -fomit-frame-pointer -Wno-array-bounds -I"$VT100" -c "$VT100/vt100.c" -o vt100.o
+  EXTRA_OBJ="$SRC/vt100.o"
+fi
+if [ "$ACCEL" = "1" ]; then
+  ${CROSS}gcc -m68000 -O2 -fomit-frame-pointer -I"$ACCELDIR" -c x68k_accel.c -o x68k_accel.o
+  ${CROSS}gcc -m68000 -O2 -fomit-frame-pointer -I"$ACCELDIR" -c "$ACCELDIR/accel.c" -o accel.o
+  ${CROSS}gcc -m68000 -c "$ACCELDIR/accel_etd.S" -o accel_etd.o
+  EXTRA_OBJ="$EXTRA_OBJ $SRC/x68k_accel.o $SRC/accel.o $SRC/accel_etd.o"
+fi
 # FAST の asm 乗算も make clean 後に組む
 case "$EXTRA_DEF" in *USE_ASM*) ${CROSS}as -m68000 "$CRYPTO68K/mul68k.s" -o "$SRC/mul68k.o"; EXTRA_OBJ="$EXTRA_OBJ $SRC/mul68k.o";; esac
 

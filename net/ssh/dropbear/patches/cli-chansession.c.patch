@@ -1,6 +1,26 @@
 --- dropbear-2022.83/cli-chansession.c
 +++ x68k/cli-chansession.c
-@@ -105,6 +105,10 @@
+@@ -84,6 +84,19 @@
+ 
+ /* If the main session goes, we close it up */
+ static void cli_closechansess(const struct Channel *UNUSED(channel)) {
++#if DROPBEAR_X68K && X68K_ZTERM
++	/* zterm のチャネルが閉じた。始まらずに終わった (ヘルパが無い・動かない) なら、同じ接続で
++	   -t の対話セッションを開き直す (ハンドシェイクのやり直しは数十秒かかるので) */
++	{
++		extern int x68k_zterm_closed(void);
++		if (x68k_zterm_closed()) {
++			cli_opts.wantpty = 1;
++			cli_opts.cmd = NULL;
++			cli_send_chansess_request();
++			return;
++		}
++	}
++#endif
+ 	cli_tty_cleanup(); /* Restore tty modes etc */
+ 
+ 	/* This channel hasn't gone yet, so we have > 1 */
+@@ -105,6 +118,10 @@
  		return;
  	}
  
@@ -11,7 +31,7 @@
  	if (tcgetattr(STDIN_FILENO, &tio) == -1) {
  		dropbear_exit("Failed to set raw TTY mode");
  	}
-@@ -146,6 +150,10 @@
+@@ -146,6 +163,10 @@
  	} else {
  		cli_ses.tty_raw_mode = 0; 
  	}
@@ -22,7 +42,7 @@
  
  	TRACE(("leave cli_tty_cleanup"))
  }
-@@ -282,10 +290,19 @@
+@@ -282,10 +303,19 @@
  	buf_putbyte(ses.writepayload, 0);
  
  	/* Get the terminal */
@@ -42,7 +62,7 @@
  	buf_putstring(ses.writepayload, term, strlen(term));
  
  	/* Window size */
-@@ -297,15 +314,21 @@
+@@ -297,15 +327,21 @@
  	encrypt_packet();
  
  	/* Set up a window-change handler */

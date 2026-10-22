@@ -1,6 +1,6 @@
 --- dropbear-2022.83/cli-main.c
 +++ x68k/cli-main.c
-@@ -52,12 +52,14 @@
+@@ -52,12 +52,29 @@
  	_dropbear_exit = cli_dropbear_exit;
  	_dropbear_log = cli_dropbear_log;
  
@@ -10,12 +10,27 @@
  	seedrandom();
  	crypto_init();
  
++#if DROPBEAR_X68K && X68K_ZTERM
++	/* -Z: zterm (リモートで端末を模擬し、変わったセルだけ受け取る。term/zterm) で話す。-Z は getopts の前に抜く */
++	{ extern int x68k_zterm_args(int *argc, char **argv); x68k_zterm_args(&argc, argv); }
++#endif
  	cli_getopts(argc, argv);
++#if DROPBEAR_X68K && X68K_ZTERM
++	{
++		extern const char *x68k_zterm_command(const char *usercmd);
++		const char *zc = x68k_zterm_command(cli_opts.cmd);
++		if (zc) {
++			/* 1 本の exec チャネルで起動スクリプト -> ヘルパ転送 -> zterm。pty は要求しない (二進の通信路) */
++			cli_opts.cmd = (char *)zc;
++			cli_opts.wantpty = 0;
++		}
++	}
++#endif
 +	x68dbg("getopts-done");
  
  #ifndef DISABLE_SYSLOG
  	if (opts.usingsyslog) {
-@@ -88,10 +90,18 @@
+@@ -88,10 +105,18 @@
  	} else
  #endif
  	{
