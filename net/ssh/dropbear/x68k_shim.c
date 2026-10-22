@@ -247,6 +247,9 @@ static void zt_snap(void)
   FILE *f;
   int p, y, i, s;
   if (done || ztd_echo_shown() < 3) return;
+#ifdef X68K_ZT_SNAP_ROW
+  { int x, y, v; ztd_cursor(&x, &y, &v); if (y < X68K_ZT_SNAP_ROW) return; }   /* その行より下 (入力欄) で打っているときだけ */
+#endif
   done = 1;
   f = fopen("B:/ztsnap.bin", "wb");
   if (!f) return;

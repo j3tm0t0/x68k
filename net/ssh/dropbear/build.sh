@@ -70,6 +70,7 @@ if [ "$ZTERM" = "1" ]; then
   EXTRA_DEF="$EXTRA_DEF -DX68K_ZTERM=1"
   # ZTSNAP=1: 予測エコーを 3 つ描いたとき VRAM を B:/ztsnap.bin に書く試験用の版
   [ "${ZTSNAP:-0}" = "1" ] && EXTRA_DEF="$EXTRA_DEF -DX68K_ZT_SNAP"
+  [ -n "${ZTSNAP_ROW:-}" ] && EXTRA_DEF="$EXTRA_DEF -DX68K_ZT_SNAP_ROW=$ZTSNAP_ROW"
 fi
 
 if [ "$CHACHA68K" = "1" ]; then
