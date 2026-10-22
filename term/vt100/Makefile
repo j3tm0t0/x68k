@@ -14,12 +14,14 @@ kanjitab.h: genkanji.py
 # 絵文字を足すときは Twemoji の <コードポイント>.png を集めて再生成する (要 Pillow):
 #   python3 genemoji.py <PNGディレクトリ> > emojitab.h
 
-vtcat.x: $(SRC) vt100.h kanjitab.h emojitab.h
+# 文字幅表 widthtab.h (コミット済み。pyte と同じ wcwidth から作る): tests/venv/bin/python genwidth.py > widthtab.h
+
+vtcat.x: $(SRC) vt100.h kanjitab.h emojitab.h widthtab.h
 	$(CC) $(CFLAGS) -o $@ $(SRC) -s
 
 # Mac 上でパーサ・スクロール・属性だけを pyte と比べる (VRAM/IOCS はスタブ)
 HOSTCC  = cc
-vthost: $(SRC) vt100.h kanjitab.h emojitab.h
+vthost: $(SRC) vt100.h kanjitab.h emojitab.h widthtab.h
 	$(HOSTCC) -O2 -Wall -DVT_HOSTTEST -o $@ $(SRC)
 
 clean:

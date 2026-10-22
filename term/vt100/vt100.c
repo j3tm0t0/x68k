@@ -37,6 +37,7 @@ unsigned char vt_host_cgrom[0xC0000];   /* CGROM 0xF00000-0xFBFFFF の写し */
 #include "vt100.h"
 #include "kanjitab.h"   /* UTF-8(Unicode) -> JIS X0208 (genkanji.py 生成) */
 #include "emojitab.h"   /* 絵文字 16x16・16色 (genemoji.py 生成、Twemoji 由来) */
+#include "widthtab.h"   /* 全角・幅 0 の範囲表 (genwidth.py 生成、wcwidth 由来) */
 
 /* ---- 画面の寸法 ---- */
 #define MAXCOLS 96
@@ -138,6 +139,7 @@ static void sup_leave(int s) { if (s >= 0) _dos_super(s); }
 /* VT100 の 0x60-0x7e。CGROM の罫線は 16 幅の漢字で使えないので自前で 8x16 を作る。
  * 横線はセル中央 (ラスタ 7,8)、縦線は中央列 (bit3 = 0x08)。使う記号だけ埋める。 */
 static unsigned char sg_glyph[32][16];
+static unsigned char blk_glyph[32][16];   /* U+2580-259F ブロック要素 */
 static int sg_ready;
 
 static void sg_hline(unsigned char *g, int y) { g[y] = 0xff; }
@@ -167,6 +169,32 @@ static void sg_build(void)
   g = sg_glyph[0x60 - 0x60]; for (y = 4; y < 12; y++) g[y] = 0x3c;                /* ◆ */
   g = sg_glyph[0x7e - 0x60]; g[7] = g[8] = 0x18;                                  /* · 中点 */
   g = sg_glyph[0x66 - 0x60]; g[1] = g[4] = 0x30; g[2] = g[3] = 0x48;              /* ° */
+  /* ブロック要素 U+2580-259F (Claude Code のロゴ ▐▛███▜▌ など)。四分割は上 8 ラスタ・下 8 ラスタ x 左 4・右 4 ドット */
+  for (i = 0; i < 32; i++) {
+    static const unsigned char quad[32] = {   /* bit3=左上 bit2=右上 bit1=左下 bit0=右下 (0xff は個別に作る) */
+      0x0c, 0xff, 0xff, 0xff, 0x03, 0xff, 0xff, 0xff, 0x0f, 0xff, 0xff, 0xff, 0x0a, 0xff, 0xff, 0xff,
+      0x05, 0xff, 0xff, 0xff, 0xff, 0xff, 0x02, 0x01, 0x08, 0x0b, 0x09, 0x0e, 0x0d, 0x04, 0x06, 0x07 };
+    unsigned char q = quad[i];
+    g = blk_glyph[i];
+    for (y = 0; y < 16; y++) g[y] = 0;
+    if (q != 0xff) {
+      for (y = 0; y < 16; y++) {
+        int top = y < 8;
+        g[y] = (unsigned char)(((q & (top ? 8 : 2)) ? 0xf0 : 0) | ((q & (top ? 4 : 1)) ? 0x0f : 0));
+      }
+    }
+  }
+  for (y = 0; y < 16; y++) {
+    int k;
+    for (k = 1; k <= 7; k++) if (y >= 16 - k * 2) blk_glyph[k][y] = 0xff;          /* ▁▂▃▄▅▆▇ 下から k/8 */
+    for (k = 9; k <= 15; k++) blk_glyph[k][y] = (unsigned char)(0xff << (8 - (16 - k)));   /* ▉▊▋▌▍▎▏ 左から */
+    blk_glyph[0x11][y] = (y & 1) ? 0x22 : 0x88;                                     /* ░ */
+    blk_glyph[0x12][y] = (y & 1) ? 0x55 : 0xaa;                                     /* ▒ */
+    blk_glyph[0x13][y] = (y & 1) ? 0xdd : 0x77;                                     /* ▓ */
+    blk_glyph[0x14][y] = (y < 2) ? 0xff : 0;                                        /* ▔ */
+    blk_glyph[0x15][y] = 0x01;                                                      /* ▕ */
+  }
+  blk_glyph[0x10][0] = 0; { int k; for (k = 0; k < 16; k++) blk_glyph[0x10][k] = 0x0f; }   /* ▐ 右半分 */
   sg_ready = 1;
 }
 
@@ -188,8 +216,9 @@ static void palette_setup(void)
 }
 
 /* ================= グリフ描画 ================= */
-/* CGROM の 0x7e は JIS X 0201 のオーバーライン (‾) なので、ASCII のチルダは自前のグリフで描く
- * (実機で "moto@host:~$" の ~ が点に見えた)。 */
+/* CGROM の ANK は JIS X 0201: 0x5c は ¥、0x7e はオーバーライン (‾)、0xa1-0xdf は半角カナ。
+ * ASCII の \ は CGROM 0x80 (X68000 の文字セットのバックスラッシュ) で、~ は自前のグリフで描く
+ * (実機で "moto@host:~$" の ~ が点に見えた)。逆に U+00A5 ¥・U+203E ‾ は 0x5c・0x7e で描く。 */
 static const unsigned char tilde_glyph[16] = { 0,0,0,0,0,0, 0x32,0x4c, 0,0,0,0,0,0,0,0 };
 static const unsigned char *glyph_of(const cell_t *c)   /* 8x16 ANK / DEC 罫線 (16 バイト) */
 {
@@ -197,8 +226,15 @@ static const unsigned char *glyph_of(const cell_t *c)   /* 8x16 ANK / DEC 罫線
     return sg_glyph[c->cp - 0x60];
   if (c->cp == 0x7e)
     return tilde_glyph;
+  if (c->cp == 0x5c)
+    return CGROM16 + 0x80 * 16;
   if (c->cp >= 0x20 && c->cp <= 0x7e)
     return CGROM16 + (int)c->cp * 16;
+  if (c->cp >= 0xff61 && c->cp <= 0xff9f)   /* 半角カナ */
+    return CGROM16 + (int)(c->cp - 0xff61 + 0xa1) * 16;
+  if (c->cp >= 0x2580 && c->cp <= 0x259f) return blk_glyph[c->cp - 0x2580];
+  if (c->cp == 0x00a5) return CGROM16 + 0x5c * 16;
+  if (c->cp == 0x203e) return CGROM16 + 0x7e * 16;
   return CGROM16 + 0x20 * 16;   /* 空白 */
 }
 
@@ -752,81 +788,96 @@ static long utf8_feed(unsigned char b)
   return 0xfffd;
 }
 
-static int is_wide(long cp)
+static int is_wide(long cp)   /* 全角 (2 桁) か。widthtab.h (wcwidth 由来、East Asian Width W/F + 絵文字) */
 {
-  return (cp >= 0x1100 && cp <= 0x115f) || (cp >= 0x2e80 && cp <= 0xa4cf) ||
-         (cp >= 0xac00 && cp <= 0xd7a3) || (cp >= 0xf900 && cp <= 0xfaff) ||
-         (cp >= 0xff00 && cp <= 0xff60) || (cp >= 0xffe0 && cp <= 0xffe6) ||
-         (cp >= 0x1f300 && cp <= 0x1faff) || (cp >= 0x1f000 && cp <= 0x1f2ff) ||
-         (cp >= 0x20000 && cp <= 0x3fffd);
+  if (cp < 0x1100) return 0;
+  return in_ranges(widetab, (int)WIDETAB_N, (unsigned long)cp);
+}
+
+/* 字形の無い文字の代用: ASCII (*a) か DEC 特殊グリフ (*m) に寄せる (Claude Code などの TUI の記号)。
+ * 見つかれば 1。全角の記号 (✅ ⚡ など) にも使い、そのときは代用字 + 空白で 2 桁を保つ。 */
+static int fallback(long cp, unsigned char *a, unsigned char *m)
+{
+  static const char latin1[] =   /* U+00C0-00FF のアクセント付きラテン文字 -> アクセントを外した字 */
+    "AAAAAAACEEEEIIIIDNOOOOOxOUUUUYTsaaaaaaaceeeeiiiidnooooo/ouuuuyty";
+  *a = 0; *m = 0;
+  if (cp >= 0xc0 && cp <= 0xff) { *a = (unsigned char)latin1[cp - 0xc0]; return 1; }
+  switch (cp) {
+    case 0x23bf: *m = 0x6d; break;                                  /* ⎿ → └ */
+    case 0x00b7: case 0x2022: case 0x2219: case 0x30fb: *m = 0x7e; break;   /* · • → 中点 */
+    case 0x00b0: *m = 0x66; break;                                  /* ° */
+    case 0x00b1: *a = '+'; break;                                   /* ± */
+    case 0x2264: *a = '<'; break;                                   /* ≤ */
+    case 0x2265: *a = '>'; break;                                   /* ≥ */
+    case 0x23fa: case 0x25cf: case 0x25cb: case 0x25c9: case 0x25ef: case 0x26aa: case 0x26ab: *a = 'o'; break;   /* ⏺ ● ○ ◉ */
+    case 0x273b: case 0x273d: case 0x2736: case 0x2733: case 0x2722: case 0x2217: case 0x2731: case 0x2728: *a = '*'; break;   /* ✻ ✽ ✶ ✳ ✢ ✨ */
+    case 0x276f: case 0x203a: case 0x25b8: case 0x25b6: case 0x23f5: case 0x2192: case 0x21d2: case 0x23e9: *a = '>'; break;   /* ❯ › ▸ ▶ ⏵ → */
+    case 0x2039: case 0x25c2: case 0x25c0: case 0x2190: case 0x23ea: *a = '<'; break;
+    case 0x2191: case 0x25b4: case 0x25b2: *a = '^'; break;
+    case 0x2193: case 0x25be: case 0x25bc: *a = 'v'; break;
+    case 0x2713: case 0x2714: case 0x2705: case 0x2611: *a = 'v'; break;   /* ✓ ✅ */
+    case 0x2717: case 0x2718: case 0x00d7: case 0x2715: case 0x274c: case 0x274e: *a = 'x'; break;   /* ✗ × ❌ */
+    case 0x2026: *a = '.'; break;                                   /* … (1 桁なので 1 字) */
+    case 0x2013: case 0x2014: case 0x2015: case 0x2212: *a = '-'; break;
+    case 0x2018: case 0x2019: *a = '\''; break;
+    case 0x201c: case 0x201d: *a = '"'; break;
+    case 0x26a0: case 0x2757: case 0x2755: *a = '!'; break;         /* ⚠ ❗ */
+    case 0x2753: case 0x2754: *a = '?'; break;
+    case 0x26a1: *a = 'z'; break;                                   /* ⚡ */
+    case 0x23f0: case 0x23f1: case 0x23f2: case 0x23f3: case 0x231a: case 0x231b: *a = '@'; break;   /* ⏰ ⏳ ⌚ (時計) */
+    case 0x2b50: case 0x2605: case 0x2606: *a = '*'; break;          /* ⭐ ★ ☆ */
+    case 0x2795: *a = '+'; break;
+    case 0x2796: *a = '-'; break;
+    case 0x00a0: *a = ' '; break;
+    case 0x00a9: *a = 'c'; break;
+    case 0x00ae: *a = 'r'; break;
+    default: return 0;
+  }
+  return 1;
 }
 
 /* 確定コードポイントを画面に置く */
 static void put_cp(long cp)
 {
   int special = g_special[gl];
-  /* 幅 0 の文字は捨てる (桁を進めない): 異体字セレクタ (VS1-16、VS17-256)、ZWJ/ZWNJ/ZWSP・方向制御、
-   * 結合文字 (アクセント類・結合半角記号・濁点の結合形)、絵文字の肌色修飾。前の文字との合成はしない。 */
-  if ((cp >= 0xfe00 && cp <= 0xfe0f) || (cp >= 0x200b && cp <= 0x200f) || (cp >= 0x2028 && cp <= 0x202e) ||
-      (cp >= 0x2060 && cp <= 0x2064) || cp == 0xfeff || cp == 0x00ad ||
-      (cp >= 0x0300 && cp <= 0x036f) || (cp >= 0x1ab0 && cp <= 0x1aff) || (cp >= 0x1dc0 && cp <= 0x1dff) ||
-      (cp >= 0x20d0 && cp <= 0x20ff) || (cp >= 0xfe20 && cp <= 0xfe2f) || cp == 0x3099 || cp == 0x309a ||
-      (cp >= 0x1f3fb && cp <= 0x1f3ff) || (cp >= 0xe0100 && cp <= 0xe01ef) || (cp >= 0xe0000 && cp <= 0xe007f)) return;
+  unsigned char a, m;
+  if (cp >= 0x20 && cp < 0x7f) { put_cell((unsigned short)cp, special ? F_SPECIAL : 0, 1); return; }   /* ASCII (最頻) */
+  if (cp == 0x7f) return;
+  /* 幅 0 の文字は捨てる (桁を進めない): 異体字セレクタ、ZWJ/ZWSP・方向制御、結合文字 (widthtab.h)。
+   * 前の文字との合成はしない。絵文字の肌色修飾 (U+1F3FB-1F3FF) は wcwidth では 2 だが、前の絵文字に
+   * 重なって 1 字に見えるのが普通なので捨てる。 */
+  if ((cp >= 0x1f3fb && cp <= 0x1f3ff) || in_ranges(zerotab, (int)ZEROTAB_N, (unsigned long)cp)) return;
   { int ei = emoji_index((unsigned long)cp);   /* 絵文字: 16x16・16色で全角 2 セル */
     if (ei >= 0) { put_cell((unsigned short)ei, F_EMOJI, 2); return; } }
-  if (cp >= 0x20 && cp < 0x7f) { put_cell((unsigned short)cp, special ? F_SPECIAL : 0, 1); return; }
-  if (cp == 0x7f) return;
+  if ((cp >= 0xff61 && cp <= 0xff9f) || cp == 0x00a5 || cp == 0x203e) { put_cell((unsigned short)cp, 0, 1); return; }   /* CGROM の JIS X 0201 にある半角 */
   if (cp >= 0x2500 && cp <= 0x257f) {   /* Unicode 罫線 → DEC 特殊グリフに寄せる (半角) */
-    unsigned char m = 0;
+    m = 0;
     switch (cp) {
-      case 0x2500: case 0x2501: m = 0x71; break;  /* ─ */
-      case 0x2502: case 0x2503: m = 0x78; break;  /* │ */
-      case 0x250c: case 0x250f: m = 0x6c; break;  /* ┌ */
-      case 0x2510: case 0x2513: m = 0x6b; break;  /* ┐ */
-      case 0x2514: case 0x2517: m = 0x6d; break;  /* └ */
-      case 0x2518: case 0x251b: m = 0x6a; break;  /* ┘ */
-      case 0x251c: case 0x2523: m = 0x74; break;  /* ├ */
-      case 0x2524: case 0x252b: m = 0x75; break;  /* ┤ */
-      case 0x252c: case 0x2533: m = 0x77; break;  /* ┬ */
-      case 0x2534: case 0x253b: m = 0x76; break;  /* ┴ */
-      case 0x253c: case 0x254b: m = 0x6e; break;  /* ┼ */
+      case 0x2500: case 0x2501: case 0x2504: case 0x2505: case 0x2508: case 0x2509: case 0x254c: case 0x254d: case 0x2550: m = 0x71; break;  /* ─ ═ ┄ */
+      case 0x2502: case 0x2503: case 0x2506: case 0x2507: case 0x250a: case 0x250b: case 0x254e: case 0x254f: case 0x2551: m = 0x78; break;  /* │ ║ */
+      case 0x250c: case 0x250f: case 0x256d: case 0x2554: m = 0x6c; break;  /* ┌ ╭ ╔ */
+      case 0x2510: case 0x2513: case 0x256e: case 0x2557: m = 0x6b; break;  /* ┐ ╮ ╗ */
+      case 0x2514: case 0x2517: case 0x2570: case 0x255a: m = 0x6d; break;  /* └ ╰ ╚ */
+      case 0x2518: case 0x251b: case 0x256f: case 0x255d: m = 0x6a; break;  /* ┘ ╯ ╝ */
+      case 0x251c: case 0x2523: case 0x2560: m = 0x74; break;  /* ├ */
+      case 0x2524: case 0x252b: case 0x2563: m = 0x75; break;  /* ┤ */
+      case 0x252c: case 0x2533: case 0x2566: m = 0x77; break;  /* ┬ */
+      case 0x2534: case 0x253b: case 0x2569: m = 0x76; break;  /* ┴ */
+      case 0x253c: case 0x254b: case 0x256c: m = 0x6e; break;  /* ┼ */
       default: m = 0; break;
     }
     if (m) { put_cell(m, F_SPECIAL, 1); return; }
     put_cell('+', 0, 1); return;
   }
-  if (cp == 0x2592) { put_cell(0x61, F_SPECIAL, 1); return; }   /* ▒ */
+  if (cp >= 0x2580 && cp <= 0x259f) { put_cell((unsigned short)cp, 0, 1); return; }   /* ブロック要素 (自前グリフ) */
   if (is_wide(cp)) {
     unsigned short jis = ucs_to_jis(cp);
-    if (jis) put_cell((unsigned short)cp, 0, 2);   /* 全角: CGROM 16x16 漢字 */
-    else { put_cell('?', 0, 1); put_cell('?', 0, 1); }  /* 変換不能な全角は '??' で桁を保つ */
+    if (jis) { put_cell((unsigned short)cp, 0, 2); return; }   /* 全角: CGROM 16x16 漢字 */
+    if (fallback(cp, &a, &m)) { if (m) put_cell(m, F_SPECIAL, 1); else put_cell(a, 0, 1); put_cell(' ', 0, 1); return; }
+    put_cell('?', 0, 1); put_cell('?', 0, 1);   /* 変換不能な全角は '??' で桁を保つ */
     return;
   }
-  { unsigned char a = 0, m = 0;   /* 半角の記号は ASCII / DEC 特殊グリフに寄せる (Claude Code などの TUI 向け) */
-    switch (cp) {
-      case 0x23bf: m = 0x6d; break;                                  /* ⎿ → └ */
-      case 0x00b7: case 0x2022: case 0x2219: m = 0x7e; break;        /* · • → 中点 */
-      case 0x00b0: m = 0x66; break;                                  /* ° */
-      case 0x00b1: a = '+'; break;                                   /* ± */
-      case 0x2264: a = '<'; break;                                   /* ≤ */
-      case 0x2265: a = '>'; break;                                   /* ≥ */
-      case 0x23fa: case 0x25cf: case 0x25cb: case 0x25c9: case 0x25ef: a = 'o'; break;   /* ⏺ ● ○ ◉ */
-      case 0x273b: case 0x273d: case 0x2736: case 0x2733: case 0x2722: case 0x2217: case 0x2731: a = '*'; break;   /* ✻ ✽ ✶ ✳ ✢ */
-      case 0x276f: case 0x203a: case 0x25b8: case 0x25b6: case 0x23f5: case 0x2192: case 0x21d2: a = '>'; break;   /* ❯ › ▸ ▶ ⏵ → */
-      case 0x2039: case 0x25c2: case 0x25c0: case 0x2190: a = '<'; break;
-      case 0x2191: case 0x25b4: case 0x25b2: a = '^'; break;
-      case 0x2193: case 0x25be: case 0x25bc: a = 'v'; break;
-      case 0x2713: case 0x2714: case 0x2705: a = 'v'; break;         /* ✓ */
-      case 0x2717: case 0x2718: case 0x00d7: case 0x2715: a = 'x'; break;   /* ✗ × */
-      case 0x2026: a = '.'; break;                                   /* … (1 桁なので 1 字) */
-      case 0x2013: case 0x2014: case 0x2015: case 0x2212: a = '-'; break;
-      case 0x2018: case 0x2019: a = '\''; break;
-      case 0x201c: case 0x201d: a = '"'; break;
-      case 0x26a0: a = '!'; break;                                   /* ⚠ */
-      case 0x00a0: a = ' '; break;
-    }
-    if (m) { put_cell(m, F_SPECIAL, 1); return; }
-    if (a) { put_cell(a, 0, 1); return; } }
+  if (fallback(cp, &a, &m)) { if (m) put_cell(m, F_SPECIAL, 1); else put_cell(a, 0, 1); return; }
   put_cell('?', 0, 1);   /* 半角の未対応文字 */
 }
 
