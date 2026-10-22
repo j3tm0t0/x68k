@@ -177,7 +177,15 @@ impl Encoder {
         if bell {
             w.o.push(OP_BELL);
         }
-        // 大半が変わった (画面消去・切り替え): まず全面を空白にしてから差分を取る (帯域の節約。Z の描画量は同じ)
+        // まずスクロール (流れる文字は「ずらして新しい行だけ」)。それでも大半が変わる (画面消去・切り替え・1 画面以上流れた) なら
+        // 全面を空白にしてから差分を取る (帯域の節約。Z の描画量は同じ)
+        if self.scroll_detect {
+            if let Some((t, b, n)) = self.find_scroll(new) {
+                w.o.extend_from_slice(&[OP_SCROLL, t as u8, b as u8, n as i8 as u8]);
+                self.apply_scroll(t, b, n);
+                self.stats_scrolls += 1;
+            }
+        }
         let changed = new.iter().zip(&self.sent).filter(|(a, b)| !a.same_look(b)).count();
         if changed > rows * cols / 2 {
             let mut cnt = [0usize; 16];
@@ -190,12 +198,6 @@ impl Encoder {
                 *c = ZCell::blank(bg);
             }
             self.stats_clears += 1;
-        } else if self.scroll_detect {
-            if let Some((t, b, n)) = self.find_scroll(new) {
-                w.o.extend_from_slice(&[OP_SCROLL, t as u8, b as u8, n as i8 as u8]);
-                self.apply_scroll(t, b, n);
-                self.stats_scrolls += 1;
-            }
         }
         for r in 0..rows {
             let nr = &new[r * cols..(r + 1) * cols];
@@ -311,10 +313,6 @@ impl Encoder {
         out.extend_from_slice(&(body.len() as u16).to_be_bytes());
         out.extend_from_slice(&body);
         true
-    }
-
-    pub fn sent(&self) -> &[ZCell] {
-        &self.sent
     }
 }
 

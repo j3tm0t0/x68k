@@ -10,7 +10,7 @@
 #define FRAME_MAX 32768   /* 1 フレームの上限 (サーバの全画面描き直しは 96x32 で十数 KB) */
 
 static int st = ZC_FAIL;
-static char z_dir[128], z_ver[40], z_err[240], z_cmd[1400];
+static char z_dir[200], z_ver[40], z_err[240], z_cmd[2400];
 static int z_cols, z_rows;
 static char line[160];
 static int line_len;
@@ -31,10 +31,10 @@ void zc_log(void (*fn)(const char *)) { logfn = fn; }
 static void fail(const char *m)
 {
   if (st == ZC_FAIL) return;
-  strncpy(z_err, m, sizeof z_err - 1); z_err[sizeof z_err - 1] = 0;
+  if (!z_err[0]) { strncpy(z_err, m, sizeof z_err - 1); z_err[sizeof z_err - 1] = 0; }   /* 最初の原因を残す */
   st = ZC_FAIL;
   if (push_fp) { fclose(push_fp); push_fp = 0; }
-  zlog(z_err);
+  zlog(m);
 }
 
 /* 起動スクリプト。$1=版 $2=桁 $3=行。キャッシュに同じ版が無ければ NEED を出してバイト数の行と本体を待つ。
@@ -52,12 +52,12 @@ static const char script[] =
   "chmod +x \"$F.tmp\" && \"$F.tmp\" --version >/dev/null 2>&1 && mv -f \"$F.tmp\" \"$F\" || { rm -f \"$F.tmp\"; echo ZTERM FAIL exec; exit 1; };"
   "for O in \"$D\"/zterm-*-$A; do [ \"$O\" = \"$F\" ] || rm -f \"$O\"; done;"
   "fi;"
-  "echo ZTERM GO; exec \"$F\" --cols $C --rows $R";
+  "echo ZTERM GO; exec \"$F\" --cols $C --rows $R ${4:+-- sh -c \"$4\"}";
 
-void zc_init(const char *dir, int cols, int rows)
+void zc_init(const char *dir, int cols, int rows, const char *usercmd)
 {
   FILE *f;
-  char path[160];
+  char path[240];
   int i;
   st = ZC_HANDSHAKE; line_len = 0; flen = 0; got_hello = 0; olen = 0; push_fp = 0; push_left = 0;
   s_in = s_frames = s_push = 0; z_exit = -1; z_err[0] = 0;
@@ -76,6 +76,15 @@ void zc_init(const char *dir, int cols, int rows)
   }
   if (!z_ver[0]) strcpy(z_ver, "0");
   sprintf(z_cmd, "exec sh -c '%s' zterm %s %d %d", script, z_ver, cols, rows);
+  if (usercmd && *usercmd) {   /* リモートで動かすコマンド ($4)。' は '\'' に */
+    char *q = z_cmd + strlen(z_cmd), *end = z_cmd + sizeof z_cmd - 8;
+    *q++ = ' '; *q++ = '\'';
+    for (; *usercmd && q < end; usercmd++) {
+      if (*usercmd == '\'') { *q++ = '\''; *q++ = '\\'; *q++ = '\''; *q++ = '\''; }
+      else *q++ = *usercmd;
+    }
+    *q++ = '\''; *q = 0;
+  }
 }
 
 const char *zc_command(void) { return z_cmd; }
@@ -94,7 +103,7 @@ static void oput(const unsigned char *p, int n)
 /* "ZTERM NEED <arch> gz|raw": <dir>/<arch 小文字>.gz (raw なら拡張子なし) を開いて長さの行を積む */
 static void start_push(const char *arch, int gz)
 {
-  char path[200], name[64], hdr[24];
+  char path[280], name[64], hdr[24];
   int i;
   long sz = 0;
   for (i = 0; arch[i] && i < (int)sizeof name - 1; i++) name[i] = (arch[i] >= 'A' && arch[i] <= 'Z') ? arch[i] + 32 : arch[i];
@@ -106,7 +115,7 @@ static void start_push(const char *arch, int gz)
     if (push_fp) fclose(push_fp);
     push_fp = 0;
     oput((const unsigned char *)"0\n", 2);   /* スクリプトは FAIL nobinary で終わる */
-    sprintf(z_err, "no helper %s", path);
+    sprintf(z_err, "zterm: no helper %s", path);
     zlog(z_err);
     st = ZC_WAITGO;
     return;
@@ -115,7 +124,7 @@ static void start_push(const char *arch, int gz)
   oput((const unsigned char *)hdr, (int)strlen(hdr));
   push_left = sz;
   st = ZC_PUSH;
-  zlog(path);
+  { char m[340]; sprintf(m, "zterm: sending %s (%ld bytes)", path, sz); zlog(m); }
 }
 
 static void on_line(char *l)
@@ -129,7 +138,7 @@ static void on_line(char *l)
     if (g) { *g++ = 0; gz = strncmp(g, "raw", 3) != 0; }
     start_push(a, gz);
   } else if (!strncmp(l, "GO", 2)) { zlog("zterm: go"); st = ZC_RUN; }
-  else if (!strncmp(l, "FAIL", 4)) fail(l);
+  else if (!strncmp(l, "FAIL", 4)) { char m[200]; sprintf(m, "zterm: remote %.150s", l); fail(m); }
 }
 
 static void on_frame(void)

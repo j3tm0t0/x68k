@@ -60,7 +60,7 @@ fn parse_args() -> Opts {
     };
     let mut a = std::env::args().skip(1);
     while let Some(s) = a.next() {
-        let mut num = |a: &mut dyn Iterator<Item = String>| -> u64 {
+        let num = |a: &mut dyn Iterator<Item = String>| -> u64 {
             a.next().and_then(|v| v.parse().ok()).unwrap_or_else(|| usage())
         };
         match s.as_str() {
@@ -86,6 +86,16 @@ fn parse_args() -> Opts {
             }
             _ => usage(),
         }
+    }
+    // 起動スクリプト経由でも試験用の設定を渡せるように (ZTERM_STATS=1 / ZTERM_INTERVAL=ms / ZTERM_NOSCROLL=1)
+    if std::env::var_os("ZTERM_STATS").is_some() {
+        o.stats = true;
+    }
+    if let Some(v) = std::env::var("ZTERM_INTERVAL").ok().and_then(|v| v.parse().ok()) {
+        o.interval = v;
+    }
+    if std::env::var_os("ZTERM_NOSCROLL").is_some() {
+        o.noscroll = true;
     }
     o.cols = o.cols.clamp(2, 255);
     o.rows = o.rows.clamp(2, 255);
@@ -408,11 +418,20 @@ fn serve(o: &Opts) -> i32 {
     let mut last_full = Instant::now();
     let mut inflight: u32 = 0;
     let mut dirty = true;
+    // 書き途中の画面を送らない: pty が QUIET 静かになるか、最初の変化から MAXWAIT 経つまで待つ (mosh と同じ考え)
+    const QUIET: Duration = Duration::from_millis(8);
+    const MAXWAIT: Duration = Duration::from_millis(100);
+    let mut last_read = Instant::now();
+    let mut first_dirty = Instant::now();
+    let ready_at = |last_send: Instant, last_read: Instant, first_dirty: Instant| -> Duration {
+        let a = interval.saturating_sub(last_send.elapsed());
+        let b = QUIET.saturating_sub(last_read.elapsed()).min(MAXWAIT.saturating_sub(first_dirty.elapsed()));
+        a.max(b)
+    };
     let mut child_done = false;
     let mut inbuf: Vec<u8> = Vec::new();
     let mut rbuf = vec![0u8; 65536];
     let mut ptyout: Vec<u8> = Vec::new();
-    let mut stdin_eof = false;
     let (mut st_in, mut st_out) = (0u64, 0u64);
     let t0 = Instant::now();
 
@@ -422,8 +441,8 @@ fn serve(o: &Opts) -> i32 {
         let sync_hold = t.parser.callbacks().sync
             && t.parser.callbacks().sync_since.map_or(false, |s| s.elapsed() < Duration::from_millis(500));
         if dirty && inflight < o.inflight && !sync_hold {
-            let wait = interval.saturating_sub(last_send.elapsed());
-            timeout = wait.as_millis() as i32;
+            let wait = ready_at(last_send, last_read, first_dirty);
+            timeout = (wait.as_micros() as i32 + 999) / 1000;
         } else if sync_hold {
             timeout = 20;
         }
@@ -432,7 +451,7 @@ fn serve(o: &Opts) -> i32 {
             timeout = if timeout < 0 { w } else { timeout.min(w) };
         }
         let mut fds = [
-            libc::pollfd { fd: if stdin_eof { -1 } else { stdin_fd }, events: libc::POLLIN, revents: 0 },
+            libc::pollfd { fd: stdin_fd, events: libc::POLLIN, revents: 0 },
             libc::pollfd { fd: if child_done { -1 } else { mfd }, events: libc::POLLIN, revents: 0 },
         ];
         if child_done && !dirty {
@@ -451,6 +470,10 @@ fn serve(o: &Opts) -> i32 {
             let r = unsafe { libc::read(mfd, rbuf.as_mut_ptr() as *mut _, rbuf.len()) };
             if r > 0 {
                 st_in += r as u64;
+                if !dirty {
+                    first_dirty = Instant::now();
+                }
+                last_read = Instant::now();
                 t.feed(&rbuf[..r as usize]);
                 let rep = std::mem::take(&mut t.parser.callbacks_mut().reply);
                 if !rep.is_empty() {
@@ -466,7 +489,6 @@ fn serve(o: &Opts) -> i32 {
         if fds[0].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
             let r = unsafe { libc::read(stdin_fd, rbuf.as_mut_ptr() as *mut _, rbuf.len()) };
             if r <= 0 {
-                stdin_eof = true;
                 // Z が居なくなった: シェルに SIGHUP
                 unsafe { libc::kill(pid, libc::SIGHUP) };
                 break;
@@ -517,7 +539,9 @@ fn serve(o: &Opts) -> i32 {
         }
         let sync_hold = t.parser.callbacks().sync
             && t.parser.callbacks().sync_since.map_or(false, |s| s.elapsed() < Duration::from_millis(500));
-        if dirty && inflight < o.inflight && !sync_hold && last_send.elapsed() >= interval {
+        if dirty && inflight < o.inflight && !sync_hold
+            && (child_done || ready_at(last_send, last_read, first_dirty).is_zero())
+        {
             let bell = std::mem::take(&mut t.parser.callbacks_mut().bell);
             let m = t.snapshot();
             out.clear();

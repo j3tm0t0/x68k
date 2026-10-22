@@ -8,7 +8,7 @@
  *      キーは 'k' len バイト列 (vt_key が作った VT のバイト列そのまま)。
  *
  * 使い方 (ssh.x の x68k_shim.c / Mac の zthost.c):
- *   zc_init(dir, cols, rows);
+ *   zc_init(dir, cols, rows, usercmd);
  *   send_exec(zc_command());
  *   受信:  zc_input(buf, n);           (リモートの stdout)
  *   送信:  n = zc_output(buf, max);    (リモートの stdin へ。zc_pending() > 0 の間)
@@ -20,7 +20,7 @@
 
 enum { ZC_HANDSHAKE, ZC_PUSH, ZC_WAITGO, ZC_RUN, ZC_DONE, ZC_FAIL };
 
-void zc_init(const char *dir, int cols, int rows);
+void zc_init(const char *dir, int cols, int rows, const char *usercmd);   /* usercmd: リモートで動かすコマンド (NULL ならログインシェル) */
 const char *zc_command(void);
 void zc_input(const unsigned char *p, int n);
 int zc_output(unsigned char *p, int max);

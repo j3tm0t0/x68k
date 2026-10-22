@@ -10,6 +10,7 @@
  *   -k FILE   キー台本: 1 行 1 命令。"W 秒" 待つ / "K 文字列" 打鍵 (\r \n \e \t \xNN) / "S 名前" その時点の
  *             VRAM と文字を 名前.bin / 名前.txt に / "F" 再描画要求 / "Q" 標準入力を閉じる
  *   -D MS     1 フレーム描くごとに MS ミリ秒止まる (遅い Z の真似。ACK が遅れサーバがフレームをまとめる)
+ *   -c CMD    リモートでシェルの代わりに CMD を動かす (ssh.x -Z host CMD と同じ)
  *   -V        フレームごとに VRAM = 論理画面の描き直し か確かめる (差分描画の試験)
  */
 #include <stdio.h>
@@ -70,7 +71,7 @@ static int unesc(const char *s, unsigned char *o)
 
 int main(int argc, char **argv)
 {
-  const char *dist = "../dist", *vram = 0, *text = 0, *keys = 0;
+  const char *dist = "../dist", *vram = 0, *text = 0, *keys = 0, *ucmd = 0;
   int delay = 0, verify = 0, i, to[2], from[2], cols = 96, rows = 32, nbad = 0;
   pid_t pid;
   FILE *kf = 0;
@@ -87,6 +88,7 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[i], "-D") && i + 1 < argc) delay = atoi(argv[++i]);
     else if (!strcmp(argv[i], "-s") && i + 1 < argc) sscanf(argv[++i], "%dx%d", &cols, &rows);
     else if (!strcmp(argv[i], "-V")) verify = 1;
+    else if (!strcmp(argv[i], "-c") && i + 1 < argc) ucmd = argv[++i];
     else if (!strcmp(argv[i], "-q")) quiet = 1;
     else if (!strcmp(argv[i], "-g") && i + 1 < argc) {
       FILE *g = fopen(argv[++i], "rb");
@@ -95,7 +97,7 @@ int main(int argc, char **argv)
     } else { fprintf(stderr, "zthost: unknown option %s\n", argv[i]); return 2; }
   }
   if (i >= argc) { fprintf(stderr, "usage: zthost [opts] -- cmd args...\n"); return 2; }
-  zc_init(dist, cols, rows);
+  zc_init(dist, cols, rows, ucmd);
   zc_log(logline);
   ncmd = argc - i;
   cmd = (char **)calloc(ncmd + 2, sizeof *cmd);
