@@ -15,7 +15,7 @@ RCMD_X=${RCMD_X:-$OUT/rcmd.x}
 SSH_X=${SSH_X:-$HOME/Dropbox/src/github.com/j3tm0t0/x68k-ssh/net/ssh/dropbear/ssh.x}
 B="$OUT/boot"
 JAVA=java; [ -x /opt/homebrew/opt/openjdk/bin/java ] && JAVA=/opt/homebrew/opt/openjdk/bin/java
-TESTS=${*:-tistest rcmd ssh}
+TESTS=${*-tistest rcmd ssh}
 [ -f "$XEIJ/XEiJ.jar" ] || { echo "XEiJ が見つからない: $XEIJ (XEIJ=... で指定)"; exit 1; }
 make -s
 make -s -C tests
@@ -29,6 +29,7 @@ rm -rf "$B" "$OUT/tmp"; mkdir -p "$B/TMP" "$OUT/tmp"
 cp "$XEIJ/data/HUMAN.SYS" "$XEIJ/data/COMMAND.X" "$B/"
 cp tis.x "$B/TIS.X"
 cp tests/tistest.x "$B/TISTEST.X"; cp tests/tisrun.x "$B/TISRUN.X"
+for f in ${TIS_FILES:-}; do cp "$f" "$B/$(basename "$f" | tr a-z A-Z)"; done   # 調べもの用に足すファイル
 # PROCESS はスレッド (_OPEN_PR) と libsocket の poll の時計 (_TIME_PR) に要る
 printf 'FILES = 30\r\nBUFFERS = 20 1024\r\nLASTDRIVE = Z:\r\nPROCESS = 16 10 20\r\n' > "$B/CONFIG.SYS"
 {
@@ -41,17 +42,21 @@ printf 'FILES = 30\r\nBUFFERS = 20 1024\r\nLASTDRIVE = Z:\r\nPROCESS = 16 10 20\
         if [ -f "$RCMD_X" ]; then
           cp "$RCMD_X" "$B/RCMD.X"
           # rcmd.x をフォアグラウンドで、試験のクライアントを tisrun.x のスレッドで動かす
-          printf 'TISRUN.X rcmd RCMD.X -s A:\\COMMAND.X -d > RCMD.TXT\r\n'
+          printf 'TISRUN.X -o RCMDRES.TXT rcmd RCMD.X -s A:\\COMMAND.X -d > RCMD.TXT\r\n'
         else echo "rcmd.x が無いので rcmd の試験は飛ばす"; fi;;
       ssh)
         if [ -f "$SSH_X" ]; then
           cp "$SSH_X" "$B/SSH.X"
           # ssh.x を 127.0.0.1:22 へ。サーバ (偽のバナー) は tisrun.x のスレッド
-          printf 'TISRUN.X ssh SSH.X -y -y test@127.0.0.1 true > SSH.TXT\r\n'
+          printf 'TISRUN.X -o SSHRES.TXT -e SSHERR.TXT ssh SSH.X -y -y test@127.0.0.1 true > SSH.TXT\r\n'
         else echo "ssh.x が無いので ssh の試験は飛ばす"; fi;;
     esac
   done
-  printf 'TIS.X -s > STAT.TXT\r\n'
+  # TIS_LINES='行1;行2' で AUTOEXEC に任意の行を足す (調べもの用。出力は X1.TXT などに)
+  if [ -n "${TIS_LINES:-}" ]; then echo "$TIS_LINES" | tr ';' '\n' | while read -r l; do printf '%s\r\n' "$l"; done; fi
+  printf 'TIS.X -s > STAT.TXT\r\nTIS.X -t > TRACE.TXT\r\n'
+  # 常駐の解除と、解除後に libsocket が見つけられないこと
+  printf 'TIS.X -r > REMOVE.TXT\r\nTIS.X -s >> REMOVE.TXT\r\nTISTEST.X >> REMOVE.TXT\r\n'
   printf 'COPY CONFIG.SYS DONE.TXT\r\n'
 } > "$B/AUTOEXEC.BAT"
 
@@ -66,7 +71,7 @@ for t in $(seq 1 ${TIS_TIMEOUT:-600}); do
 done
 [ -f "$B/DONE.TXT" ] || { echo "時間切れ"; ls "$B"; exit 1; }
 kill $PID 2>/dev/null || true
-for f in TIS TISTEST RCMD SSH STAT; do
+for f in TIS TISTEST RCMD RCMDRES SSH SSHERR SSHRES X1 X2 X3 STAT REMOVE; do
   [ -f "$B/$f.TXT" ] || continue
   echo "== $f.TXT"
   iconv -f CP932 -t UTF-8 "$B/$f.TXT" 2>/dev/null | tr -d '\r' || tr -d '\r' < "$B/$f.TXT"

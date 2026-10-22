@@ -826,6 +826,20 @@ long ti_dispatch(long cmd, long *a)
   info.calls++;
   be->tick();
   r = dispatch(cmd, a, &ssp);
+  /* 記録: ソケットを引数に取る命令だけ。socklen / sockstate が 0 / 状態を返すだけのものは除く */
+  if (cmd >= _TI_socket && cmd <= _TI_sockstate && cmd != _TI_psocket) {
+    long fd = (cmd == _TI_socket) ? r : (cmd == _TI_close_s || cmd == _TI_sockstate || cmd == _TI_sockerr ||
+              cmd == _TI_usflush || cmd == _TI_sockkick || cmd == _TI_usesock || cmd == _TI_recvchar ||
+              cmd == _TI_rrecvchar) ? (long)a : a[0];
+    if (!((cmd == _TI_socklen && r == 0) || (cmd == _TI_sockstate && r != 0))) {
+      int k = info.tpos++ % TRACE;
+      info.trace[k].cmd = cmd;
+      info.trace[k].fd = fd;
+      info.trace[k].len = (cmd == _TI_read_s || cmd == _TI_write_s || cmd == _TI_recvfrom || cmd == _TI_sendto ||
+                           cmd == _TI_recvline || cmd == _TI_socklen || cmd == _TI_shutdown || cmd == _TI_sockmode) ? a[cmd == _TI_socklen || cmd == _TI_shutdown || cmd == _TI_sockmode ? 1 : 2] : 0;
+      info.trace[k].ret = r;
+    }
+  }
   leave(ssp);
   return r;
 }

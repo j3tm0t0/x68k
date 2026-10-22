@@ -93,6 +93,7 @@ extern const struct backend *be;
 
 /* tis.x -s / -r が常駐している側から読む (TIS_INFO 命令で先頭を得る) */
 #define TIS_INFO  0x7469
+#define TRACE     128
 struct tis_info {
   char tag[8];                          /* "TISINFO" */
   struct usock *usock;
@@ -100,6 +101,8 @@ struct tis_info {
   uint32_t nsock, bufsz, own_addr;
   const char *be_name;
   uint32_t calls, waits, conns, rbytes, wbytes;
+  uint32_t tpos;                        /* 呼び出しの記録 (tis.x -t で表示)。poll の空振りは数えない */
+  struct { uint8_t cmd, fd; uint16_t len; int32_t ret; } trace[TRACE];
 };
 extern struct tis_info info;
 

@@ -123,10 +123,40 @@ static int show(struct tis_info *in)
   return 0;
 }
 
+/* 命令番号 24 (_TI_socket) からの名前 */
+static const char *const cmdname[] = {
+  "socket", "bind", "listen", "accept", "connect", "read_s", "write_s", "recvfrom", "sendto", "close_s",
+  "socklen", "getsockname", "getpeername", "sockkick", "shutdown", "usesock", "recvline", "sendline",
+  "rrecvchar", "recvchar", "usflush", "seteol", "sockmode", "setflush", "psocket", "sockerr", "sockstate",
+};
+
+static int show_trace(struct tis_info *in)
+{
+  uint32_t n = in->tpos < TRACE ? in->tpos : TRACE, k;
+  for (k = in->tpos - n; k != in->tpos; k++) {
+    int e = k % TRACE, c = in->trace[e].cmd - 24;
+    putn(k);
+    _dos_putchar(' ');
+    pad(c >= 0 && c < (int)(sizeof cmdname / sizeof cmdname[0]) ? cmdname[c] : "?", 12);
+    putn(in->trace[e].fd);
+    _dos_print(" len ");
+    putn(in->trace[e].len);
+    _dos_print(" -> ");
+    if (in->trace[e].ret < 0) {
+      _dos_putchar('-');
+      putn(-in->trace[e].ret);
+    } else
+      putn(in->trace[e].ret);
+    _dos_print("\r\n");
+  }
+  return 0;
+}
+
 int tis_main(void)
 {
   const char *p = (const char *)cmd_line + 1;
   uint32_t own = 0, kb = 8;
+  int trace = 0;
   int status = 0, remove = 0, force = 0, tis = 0;
   struct dos_mep *m;
 
@@ -137,6 +167,9 @@ int tis_main(void)
     }
     if (p[0] == '-' && p[1] == 's') {
       status = 1;
+      p += 2;
+    } else if (p[0] == '-' && p[1] == 't') {
+      status = trace = 1;
       p += 2;
     } else if (p[0] == '-' && p[1] == 'r') {
       remove = 1;
@@ -176,6 +209,8 @@ int tis_main(void)
       return 1;
     }
     in = (struct tis_info *)call_ti((char *)m + 0x100 + 8, TIS_INFO, 0);
+    if (trace)
+      return show_trace(in);
     if (status)
       return show(in);
     for (i = 0; i < in->nsock; i++)

@@ -11,6 +11,7 @@ xip.x と同じ `_TI_*` 入口表を持つ。
 ```
 tis.x [-a a.b.c.d] [-b KB]   常駐する (-a: 自分の IP もループバック扱い、-b: ソケット 1 個の受信バッファ、既定 8KB)
 tis.x -s                     ソケット表を表示する
+tis.x -t                     直近 128 回の呼び出し (命令・fd・長さ・戻り値) を表示する (調べもの用)
 tis.x -r                     常駐を解く (開いているソケットがあれば断る。-rf で強制)
 ```
 
@@ -164,6 +165,44 @@ Pico 版の考え (次の段階):
 - `be.h`: API 層と backend の間の口
 - `tests/`: libsocket の試験プログラムと XEiJ の試験台 (xeij_test.sh)
 
-## 試験
+## 試験 (XEiJ、ネットワーク無し)
 
-(作成中)
+```
+tests/xeij_test.sh            # tistest rcmd ssh を全部。結果は $TIS_OUT/boot/*.TXT (既定 $TMPDIR/tistest)
+tests/xeij_test.sh tistest    # 1 つだけ
+```
+
+XEiJ (SUPER、10MHz 68000) をホストのディレクトリから起動し (CONFIG.SYS に `PROCESS = 16 10 20`)、
+AUTOEXEC.BAT が tis.x を常駐させて試験を動かす。2026-10-22 に全部通った:
+
+- **tistest.x** (46 項目、1 本のプログラムでノンブロッキングのソケットを交互に動かす。スレッド無し):
+  gethostbyname("localhost") / getservbyname、ノンブロッキング connect → EINPROGRESS → poll POLLOUT →
+  SO_ERROR 0、listen の poll POLLIN → accept、getsockname / getpeername、エコー、空のノンブロッキング read →
+  EAGAIN、20000 バイトの write → 8192 の部分書き込み、一杯で EAGAIN と POLLOUT 無し、SO_SOCKLENRECV、
+  1〜7 バイトの write 5000 回、**300KB を両方向に同時に (中身を照合、20 秒)**、stdin とソケットの poll
+  (300ms の時間切れ、ソケットだけ POLLIN)、shutdown(SHUT_WR) → 残りを読んで EOF・CLOSE WAIT・逆向きは使える、
+  相手の close → read 0・write EIO、**ブロッキング read が EOF で 0**、拒否 (EIO)、ループバック以外 (-1)、
+  ブロッキング connect → 0、閉じたポートへの bind し直し、使用中のポートへの bind は失敗、backlog 0 で
+  accept が listen ソケット自身を返す、UDP の sendto / recvfrom (区切りを保つ)、ソケットが残らない
+- **rcmd.x** (無修正。x68kcli/build/fix.hds の /USR/BIN/rcmd.x、ESP/X libnetwork でビルドされた少し前の版。
+  @put はある): `tisrun.x rcmd` がフォアグラウンドで rcmd.x を起動し、スレッドが 127.0.0.1:2323 のクライアントに
+  なる。echo (終わりの印まで)、**@put 300,000 バイト (115KB/s、中身を照合)**、exit → bye。
+  backlog 0・大文字の sockstate・ASCII モードの recvline・1 接続ごとの bind し直しがそのまま通る
+- **ssh.x** (無修正。x68k-ssh の dropbear 移植、09:26 版): `tisrun.x ssh` のスレッドが 127.0.0.1:22 の偽の
+  SSH サーバになり、バナーを送る。ssh.x の connect (ブロッキング)・バナー `SSH-2.0-dropbear_2022.83`・
+  KEXINIT (304 バイト) まで届く。サーバが切ったあと ssh.x は "Error closing fd 129, I/O error" で終わる
+  (dropbear が同じ fd を 2 回 close し、libsocket が 2 回目の失敗を EBADF ではなく EIO にするため。tis.x は
+  2 回目に -1 を返すだけ)
+- **常駐の解除**: `tis.x -r` のあと libsocket はスタックを見つけられず、tistest.x はきれいに失敗する
+
+スレッドの試験台 (tests/tisrun.c): `_OPEN_PR` でユーザーモードのスレッドを作り (眠った状態で作られるので
+`_SEND_PR` で起こす)、`_EXEC` で子 (rcmd.x / ssh.x) を動かす。子が `_CHANGE_PR` で譲るか、タイムスライスで
+スレッドが動く。スレッドはこのプログラムのメモリで動くので、子の終了後にスレッドの終わりを待ってから終わる。
+スレッドの中で malloc は使えない (子がすぐ後ろのメモリを取るので、ヒープを _SETBLOCK で伸ばせない)。
+
+XEiJ のホストファイルシステムで分かったこと (tis.x とは無関係、tests の作りに効く):
+
+- **dup2 で付け替えた標準出力に、子 (_EXEC) の出力が入らない**。rcmd.x の rcmd.out が空になり、
+  コマンドの出力を返す試験ができない (300KB の Z → 相手の向きは tistest.x で見ている)。
+  親のあとの printf も消えることがあるので、tisrun.x の結果は `-o` のファイルに書く
+- 子の標準エラー出力は `_dos_dup2` で付け替えれば取れる (`tisrun.x -e`、ssh.x のエラーはこれで読んだ)
