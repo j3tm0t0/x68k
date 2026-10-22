@@ -369,18 +369,17 @@ static void pl_inv2(volatile unsigned char *v, const unsigned char *g)
  * 「0 で塗る / 0xff で塗る / グリフ / 反転グリフ」の 4 通りしかないので、同じ書き方のプレーンをまとめて 1 回で書ける
  * (白地に黒の字ならグリフ 1 回 + 0 塗り 1 回。旧版は 4 プレーンを 1 枚ずつ)。IPLROM も画面消去に使っている機能だが、
  * 念のため vt_init で画面外のラインに書いて確かめ (sa_probe)、効かなければプレーンごとに書く。
- * R21 を触るのは flush の中だけ: 読み書き両方のある cursor_xor・TXRASCOPY (IOCS が R21 の下位を書く) の前に戻す。 */
+ * R21 を触るのは flush の中だけ: 読み書き両方のある cursor_xor・TXRASCOPY (IOCS が R21 の下位を書く) の前に 0 に戻す
+ * (R21 は読まない。実機で読めるか確かめていないので。起動時は 0 で、IOCS の TXRASCOPY は呼ぶたびに自分で設定する)。 */
 static int sa_ok;              /* 同時アクセスが使える (vt_init で確かめた) */
 static int sa_cur;             /* いま R21 に設定しているプレーン (0 = 同時アクセスを切ってある) */
-static unsigned short r21_save;
 static void sa_mask(int m)
 {
   if (sa_cur == m) return;
-  if (!sa_cur) r21_save = CRTC_R21;
   CRTC_R21 = (unsigned short)(0x100 | (m << 4));
   sa_cur = m;
 }
-static void sa_off(void) { if (sa_cur) { CRTC_R21 = r21_save; sa_cur = 0; } }
+static void sa_off(void) { if (sa_cur) { CRTC_R21 = 0; sa_cur = 0; } }
 /* 画面外のライン 1020 で同時アクセスを試す: プレーン 1-3 を選んでプレーン 0 の位置に書き、プレーン 0 は変わらず
  * 1-3 に入れば使える (バイトと 32bit の両方)。書いた所は元に戻す。スーパーバイザで呼ぶ。 */
 static int sa_probe(void)
@@ -454,31 +453,42 @@ static void blit(int col, int row, const cell_t *c, const cell_t *old)
   if (mi) PASS(mi, { if (wide) { pl_inv2(v, gp); pl_inv2(v + 1, gp + 1); } else pl_inv1(v, gp); });
 }
 
-/* 最頻の「下線なし・半角・罫線でない」セルを描く (blit と同じ絵。v0 はそのセルのプレーン 0・最上ラスタ)。
- * 行の先頭アドレスを flush が 1 回だけ計算し、グリフは ASCII なら CGROM を直接引く。 */
+/* 属性語の上位バイト (fg<<4|bg) -> プレーンの書き方。bit0-3 グリフ / bit4-7 0 塗り / bit8-11 0xff 塗り / bit12-15 反転グリフ。
+ * pm_old は「前の絵がそのプレーンで塗りつぶし」の印 (bit4-7 = 0 で塗ってある / bit8-11 = 0xff で塗ってある)。 */
+static unsigned short pm_new[256], pm_old[256];
+static void pm_build(void)
+{
+  int a;
+  for (a = 0; a < 256; a++) {
+    int fg = a >> 4, bg = a & 15;
+    pm_new[a] = (unsigned short)((fg & ~bg & 15) | ((~(fg | bg) & 15) << 4) | ((fg & bg) << 8) | ((~fg & bg & 15) << 12));
+    pm_old[a] = (unsigned short)(((~(fg | bg) & 15) << 4) | ((fg & bg) << 8));
+  }
+}
+
+/* 最頻の「下線なし・半角・罫線でない」セルを同時アクセスで描く (blit と同じ絵。v0 はそのセルのプレーン 0・最上ラスタ)。
+ * 行の先頭アドレスを flush が 1 回だけ計算し、グリフは ASCII なら CGROM を直接引き、書き方は表で決める。 */
 static void blit_plain(volatile unsigned char *v0, const cell_t *c, const cell_t *old)
 {
 #ifdef VT_PROF_NOBLIT
   (void)v0; (void)c; (void)old; PROF(0, 1); return;
 #endif
-  unsigned cp = c->cp;
-  unsigned a = AT_HI(c), fg = a >> 4, bg = a & 15, m0, m1, mg, mi;
+  unsigned cp = c->cp, a = AT_HI(c), m;
   const unsigned char *gp;
   PROF(0, 1);
-  if (cp == 0x20) { fg = bg; gp = CGROM16; }   /* 空白: 背景色で塗るだけ */
+  if (cp == 0x20) { a &= 15; a |= a << 4; gp = CGROM16; }   /* 空白: 背景色で塗るだけ (fg = bg とみなす) */
   else if (cp - 0x21 < 0x5e && cp != 0x5c && cp != 0x7e) gp = CGROM16 + (cp << 4);
   else gp = glyph_of(c);
-  m1 = fg & bg; m0 = ~(fg | bg) & 15; mg = fg & ~bg; mi = ~fg & bg & 15;
+  m = pm_new[a];
   if (!(AT_LO(old) & (F_EMOJI | F_WIDECONT))) {   /* 前も同じ値の塗りつぶしなら書かない */
-    unsigned oa = AT_HI(old), ofg = oa >> 4, obg = oa & 15;
-    if (BLANKCELL(old)) ofg = obg;
-    m1 &= ~(ofg & obg);
-    m0 &= ofg | obg;
+    unsigned oa = AT_HI(old);
+    if (BLANKCELL(old)) { oa &= 15; oa |= oa << 4; }
+    m &= ~pm_old[oa];
   }
-  if (mg) PASS(mg, pl_copy1(v, gp));
-  if (m0) PASS(m0, pl_fill(v, 0));
-  if (m1) PASS(m1, pl_fill(v, 0xff));
-  if (mi) PASS(mi, pl_inv1(v, gp));
+  if (m & 0x000f) { volatile unsigned char *v = v0; sa_mask(m & 15); pl_copy1(v, gp); }
+  if (m & 0x00f0) { volatile unsigned char *v = v0; sa_mask((m >> 4) & 15); pl_fill(v, 0); }
+  if (m & 0x0f00) { volatile unsigned char *v = v0; sa_mask((m >> 8) & 15); pl_fill(v, 0xff); }
+  if (m & 0xf000) { volatile unsigned char *v = v0; sa_mask(m >> 12); pl_inv1(v, gp); }
 }
 
 /* カーソルセルを反転する (XOR なので同じ呼び出しで消える) */
@@ -657,7 +667,7 @@ static NOINLINE void flush(void)
       volatile unsigned char *rv = TVRAM + (unsigned long)r * CH * VBYTES;
       for (i = 0; i < nd; i++) {
         c = diff[i];
-        if (AT_LO(&lrow[c]) & (F_UNDERLINE | F_SPECIAL | F_WIDE | F_WIDECONT | F_EMOJI)) blit(c, r, &lrow[c], &drow[c]);
+        if (!sa_ok || (AT_LO(&lrow[c]) & (F_UNDERLINE | F_SPECIAL | F_WIDE | F_WIDECONT | F_EMOJI))) blit(c, r, &lrow[c], &drow[c]);
         else blit_plain(rv + c, &lrow[c], &drow[c]);
         drow[c] = lrow[c];
       }
@@ -1407,7 +1417,7 @@ void vt_init(int cols, int rows)
   if (cols > MAXCOLS) cols = MAXCOLS;
   if (rows > MAXROWS) rows = MAXROWS;
   COLS = cols; ROWS = rows;
-  if (!sg_ready) sg_build();
+  if (!sg_ready) { sg_build(); pm_build(); }
   cx = cy = 0; top = 0; bot = ROWS - 1; pend_wrap = 0;
   c_fg = 7; c_bg = 0; a_bold = a_uline = a_reverse = 0; attr_update();
   decckm = 0; decawm = 1; cur_vis = 1; alt_active = 0; cur = rows_main;
