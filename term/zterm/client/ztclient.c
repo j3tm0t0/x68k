@@ -16,7 +16,7 @@ typedef struct {
   int z_cols, z_rows;
   char line[160];
   int line_len;
-  unsigned char fbuf[FRAME_MAX + 3];
+  unsigned char *fbuf;      /* フレームを溜める (FRAME_MAX + 3 バイト。入れ物の直後、内蔵は fbuf0。32 KB を .data に置かないため) */
   int flen;                 /* fbuf に溜めたバイト数 (ヘッダ 3 バイト込み) */
   int got_hello;
   unsigned char obuf[2048];
@@ -28,7 +28,8 @@ typedef struct {
   int z_echo;               /* 予測エコー (サーバに ECHOACK を頼む) */
   unsigned long z_kseq;     /* 送ったキーのバイト数 (サーバの ECHOACK と同じ数え方) */
 } zc_ctx;
-static zc_ctx zc0 = { .st = ZC_FAIL, .z_exit = -1, .z_echo = 1 }, *zcx = &zc0;
+static unsigned char fbuf0[FRAME_MAX + 3];
+static zc_ctx zc0 = { .st = ZC_FAIL, .fbuf = fbuf0, .z_exit = -1, .z_echo = 1 }, *zcx = &zc0;
 #define st (zcx->st)
 #define z_dir (zcx->z_dir)
 #define z_ver (zcx->z_ver)
@@ -51,12 +52,12 @@ static zc_ctx zc0 = { .st = ZC_FAIL, .z_exit = -1, .z_echo = 1 }, *zcx = &zc0;
 #define z_exit (zcx->z_exit)
 #define z_echo (zcx->z_echo)
 #define z_kseq (zcx->z_kseq)
-int zc_ctx_size(void) { return (int)sizeof(zc_ctx); }
+int zc_ctx_size(void) { return (int)sizeof(zc_ctx) + FRAME_MAX + 3; }
 /* 以後の zc_* を ctx (zc_ctx_size バイト) の状態で動かす。NULL なら内蔵の状態。fresh=1 なら ctx を初期状態にする */
 void zc_ctx_use(void *ctx, int fresh)
 {
   zcx = ctx ? (zc_ctx *)ctx : &zc0;
-  if (fresh) { memset(zcx, 0, sizeof *zcx); st = ZC_FAIL; z_exit = -1; z_echo = 1; }
+  if (fresh) { memset(zcx, 0, sizeof *zcx); st = ZC_FAIL; z_exit = -1; z_echo = 1; fbuf = ctx ? (unsigned char *)(zcx + 1) : fbuf0; }
 }
 void zc_echo(int on) { z_echo = on; ztd_echo(on); }
 static void (*logfn)(const char *);

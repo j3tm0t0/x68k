@@ -23,8 +23,15 @@ static int _dos_super(int x) { (void)x; return 0; }
 static void _dos_breakck(int x) { (void)x; }
 static void _iocs_b_curon(void) {}
 static void _iocs_b_curoff(void) {}
+#ifdef VT_HOSTKEYS   /* キーは試験が渡す (net/ssh/dropbear/tests/vcshim.c) */
+int vt_host_keysns(void);
+int vt_host_keyinp(void);
+#define _iocs_b_keysns vt_host_keysns
+#define _iocs_b_keyinp vt_host_keyinp
+#else
 static int _iocs_b_keysns(void) { return 0; }
 static int _iocs_b_keyinp(void) { return 0; }
+#endif
 #ifdef VT_SIM_TXRAS
 void _iocs_txrascpy(int d1, int d2, int d3);   /* 68000 シミュレータでの計測用: シミュレータが TXRASCOPY を演じる */
 #endif
