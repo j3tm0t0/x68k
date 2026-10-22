@@ -34,6 +34,7 @@ USB キーボード (0012) を入れるときは `cmake -DHID_KEYBOARD=ON ..` (�
 | `src/virtual_disk.c` | ID 6 の読み書きを netpipe に回す |
 | `src/connect.c` | Wi-Fi の省電力を切る (応答が 50〜300ms 遅れて TCP が遅くなるため) |
 | `src/accel.c` / `accel_ops.c` / `accel_proto.h` / `monocypher/` | 0011: 暗号アクセラレータ (X25519 / Ed25519 を Z の代わりに計算する。[../accel](../accel)) |
+| `src/msclog.c` / `hidkbd.c` | 0013: 起動時の調査用の MSC ログ (`-DMSC_LOG=ON`、UDP 6870) と、6869 の `status` |
 | `src/hidkbd.c` / `hidkbd_cmd.c` / `usb_descriptors.c` / `test/hidkbd/` | 0012: USB キーボード (HID) を MSC の後ろに足す (`-DHID_KEYBOARD=ON`)。UDP 6869 で [picokbd](../../harness/picokbd) と同じコマンドを受ける |
 
 - **UDP モード** (`slipd.x -z`): SLIP を UDP 6868 で `config.txt` の SMB サーバ (Raspberry Pi) に送る。
@@ -51,7 +52,30 @@ USB キーボード (0012) を入れるときは `cmake -DHID_KEYBOARD=ON ..` (�
 - 6869 の口は Wi-Fi がつながったら開く (Z が固まっていてもリセットできる)。実行中に来たコマンドには `err busy`、Z が HID を 1 秒読みに来なければ `err usb`
 - 知らないキー名があれば何も押さずに `err key` (picokbd は手前まで押していた)
 - 解釈部はホストで試験できる: `make -C test/hidkbd`
+- `x68key status` (0013) で Pico の状態を 1 行で返す。キーは押さない。キーの実行中も、USB タスクが SMB の接続を待っている間も答える:
+  `ok stat=5 wifi=up ip=192.168.1.118 rssi=-55 smb=mounted hds0=open remote0=ok uptime=812s usb=mounted reads=1234 writes=56 npd=789 accel=ready/3 hid=ok heap=60000`
+  (stat は sysstatus、reads/writes は MSC のセクタ数、npd は netpipe の交換回数、accel は状態/計算した数、heap は空き)
 - 古い picokbd を挿したまま `x68key` を既定 (ブロードキャスト) で使うと、両方が打って文字が二重になる
+
+## MSC ログ (0013、調査用)
+
+電源投入時にときどき「ディスクから起動できません」になる件の調査用。`cmake -DHID_KEYBOARD=ON -DMSC_LOG=ON ..`
+(受け手は `-DMSC_LOG_HOST=a.b.c.d`、既定 192.168.1.108) で、Z からの USB MSC の命令を 1 件 1 行の UDP (6870) で送る。
+Wi-Fi がつながる前の分もリング (128 件) に残して後で送る。USB の mount のあとと 2 秒以上途切れたあとの 300 件だけ。
+ID 6 の netpipe / scsiremote の帯は数だけ (`skip=`)。受け手:
+
+```sh
+python3 -uc 'import socket,time;s=socket.socket(2,2);s.bind(("",6870));[print(time.strftime("%T"),s.recv(512).decode()) for _ in iter(int,1)]' | tee -a /tmp/msclog.txt
+```
+
+行の形 (時刻は Pico の起動からの ms):
+
+- `seq 開始 所要 R|W <USB の LBA> n=<セクタ数> <場所> [err] [head=<先頭 8 バイト>] [tur=N] [skip=N]`。場所は仮想 FAT の中
+  (bpb fat root x68z pscsi log config imgdir) か `id<SCSI ID>:<HDS の LBA>`。起動セクタは `id0:0x0` (`head=5836385343534931` = "X68SCSI1")
+- `seq 時刻 C op=<SCSI 命令>` (TEST UNIT READY は数えるだけ)、`M <出来事>` (sysstatus、SMB、HDS を開いた、vd_sync の待ち)、`U mount|umount`
+
+分かっていること (コードから): 読み込みの失敗は Z にはエラーではなく 0 埋めで返る。最初の HDS (と image ディレクトリ) の読み込みは、
+起動時の接続 (繰り直し込み) が終わるまで USB タスクごと止まる (vd_sync)。
 
 ## 注意
 

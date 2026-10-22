@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # x68key <コマンド...> : picokbd (X68000 Z に挿した Pico W キーボード) にキー操作を送る
 #   x68key key esc / x68key combo ctrl f11 del / x68key type 'ver' / x68key key enter
+#   x68key status : netpipe の Pico (ファーム 0013 以降) の状態を 1 行で表示する (キーは押さない)
 #   宛先は PICOKBD (既定は LAN のブロードキャスト 192.168.1.255)、UDP 6869。終わると "ok" を表示する
 import os, socket, sys
 host = os.environ.get("PICOKBD", "192.168.1.255")
