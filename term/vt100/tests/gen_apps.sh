@@ -9,7 +9,8 @@
 #   app_gitlog   git log --graph --color (このリポジトリの履歴、作者名は出さない書式)
 #   app_emoji    絵文字と全角/半角の境界
 # 記録には個人情報 (ユーザ名・ホスト名・ホームのパス・メール) が混ざるので、同じ長さの語に置き換える (scrub.py)。
-# 使い方: tests/gen_apps.sh [名前...]   (既定は全部。claude は API を呼ぶので明示したときだけ: tests/gen_apps.sh app_claude)
+#   app_claude_stream  Claude Code に 80 行の応答を流させる (応答中の描き直し)
+# 使い方: tests/gen_apps.sh [名前...]   (既定は全部。API を呼ぶ app_claude / app_claude_stream は明示したときだけ)
 set -euo pipefail
 cd "$(dirname "$0")"
 PY="$PWD/venv/bin/python -W ignore"
@@ -21,7 +22,7 @@ unset TMUX TMUX_PANE
 export COLUMNS=$COLS LINES=$ROWS
 TARGETS=("$@")
 sel() {   # 引数なしなら app_claude (API を呼ぶ) 以外の全部
-  if [ ${#TARGETS[@]} -eq 0 ]; then [ "$1" != app_claude ]; return; fi
+  if [ ${#TARGETS[@]} -eq 0 ]; then [ "$1" != app_claude ] && [ "$1" != app_claude_stream ]; return; fi
   local x; for x in "${TARGETS[@]}"; do [ "$x" = "$1" ] && return 0; done; return 1
 }
 sizes_add() { awk -v n="$1" '$1 != n' fixtures/sizes.txt > "$W/sizes" 2>/dev/null || true; echo "$1 $COLS $ROWS" >> "$W/sizes"; sort "$W/sizes" > fixtures/sizes.txt; }
@@ -126,6 +127,30 @@ EOF
 # 終わり (/exit) で代替画面を抜けるので、pyte と比べられるよう最後の ?1049l から後を落とす (応答の出た画面が残る)
 $PY -I -c 'import sys; p=sys.argv[1]; d=open(p,"rb").read(); i=d.rfind(b"\x1b[?1049l"); open(p,"wb").write(d[:i] if i>0 else d)' fixtures/app_claude.rec
 sizes_add app_claude
+fi
+
+if sel app_claude_stream; then
+# 長めの応答 (1〜80 の番号付きの行) を流させる。応答の途中で画面全体を描き直す様子が入る
+for v in $(env | sed -n 's/^\(CLAUDE[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
+CW2=$(mktemp -d /tmp/vtfx.XXXX)
+cat > "$W/stream.script" <<'EOF'
+wait 5000
+until 1500
+key down
+wait 500
+send \r
+wait 5000
+until 1500
+send Without using any tools, output the lines "line 1: 日本語の行" through "line 80: 日本語の行", one per line, nothing else.
+wait 800
+send \r
+wait 40000
+until 4000
+EOF
+( cd "$CW2" && $REC "$OLDPWD/fixtures/app_claude_stream.rec" $COLS $ROWS xterm "$W/stream.script" -- \
+    claude --disallowedTools "Bash Edit Write NotebookEdit WebFetch WebSearch" ) || true
+rm -rf "$CW2"
+sizes_add app_claude_stream
 fi
 
 # ---- vim (日本語) ----

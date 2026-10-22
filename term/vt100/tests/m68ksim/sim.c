@@ -1,11 +1,11 @@
-/* 68000 の命令サイクル数で vt_write の時間を見積もる (Musashi。ウェイトは数えない)。
+/* 68000 の命令サイクル数で vt_write の時間を見積もる (Musashi。テキスト VRAM のウェイトと TXRASCOPY の待ちを足す)。
  * usage: sim BIN NMFILE CGROM FIXTURE CHUNK COLS ROWS */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "m68k.h"
 static unsigned char mem[0x1000000];
-static unsigned vram_at, pal_at;         /* vt_host_vram / vt_host_pal のアドレス */
+static unsigned vram_at = 0xffffffffu, pal_at;   /* vt_host_vram / vt_host_pal のアドレス */
 static unsigned long long extra;          /* TXRASCOPY の待ち (CPU は IOCS 内で H-sync を待って止まる) */
 static long ntxras;
 #define RASTER_CYC 318                    /* 1 ラスタ (4 ライン) = 水平 1 周期 31.5kHz ≒ 31.8us = 318 クロック @10MHz */
@@ -23,11 +23,15 @@ static void txras(void)
   extra += (unsigned long long)n * RASTER_CYC + 2000;
   ntxras++;
 }
-unsigned int m68k_read_memory_8(unsigned int a) { return mem[a & 0xffffff]; }
-unsigned int m68k_read_memory_16(unsigned int a) { a &= 0xffffff; return (mem[a] << 8) | mem[a + 1]; }
+/* テキスト VRAM (vt_host_vram の 512KB) への 1 バスサイクルごとのウェイト。XEiJ の X68000 (10MHz) 設定は 2 クロック */
+#define TVRAM_WAIT 2
+static unsigned long long vwait;
+#define VW(a) do { if ((unsigned)((a) - vram_at) < 0x80000u) vwait += TVRAM_WAIT; } while (0)
+unsigned int m68k_read_memory_8(unsigned int a) { a &= 0xffffff; VW(a); return mem[a]; }
+unsigned int m68k_read_memory_16(unsigned int a) { a &= 0xffffff; VW(a); return (mem[a] << 8) | mem[a + 1]; }
 unsigned int m68k_read_memory_32(unsigned int a) { return (m68k_read_memory_16(a) << 16) | m68k_read_memory_16(a + 2); }
-void m68k_write_memory_8(unsigned int a, unsigned int v) { mem[a & 0xffffff] = v; }
-void m68k_write_memory_16(unsigned int a, unsigned int v) { a &= 0xffffff; mem[a] = v >> 8; mem[a + 1] = v; }
+void m68k_write_memory_8(unsigned int a, unsigned int v) { a &= 0xffffff; VW(a); mem[a] = v; }
+void m68k_write_memory_16(unsigned int a, unsigned int v) { a &= 0xffffff; VW(a); mem[a] = v >> 8; mem[a + 1] = v; }
 void m68k_write_memory_32(unsigned int a, unsigned int v) { m68k_write_memory_16(a, v >> 16); m68k_write_memory_16(a + 2, v); if ((a & 0xffffff) == 0x7fffd0 && v == 1) txras(); }
 unsigned int m68k_read_disassembler_16(unsigned int a) { return m68k_read_memory_16(a); }
 unsigned int m68k_read_disassembler_32(unsigned int a) { return m68k_read_memory_32(a); }
@@ -57,7 +61,7 @@ int main(int argc, char **argv)
   for (;;) {
     cyc += m68k_execute(prof ? 200 : 100000);
     if (prof && cyc0) { unsigned pc = m68k_get_reg(NULL, M68K_REG_PC); int i, k = -1; for (i = 0; i < nf && fa[i] <= pc; i++) k = i; if (k >= 0) hits[k]++; }
-    if (get32(0x7fffe0) == 1 && !cyc0) { cyc0 = cyc; extra = 0; ntxras = 0; }
+    if (get32(0x7fffe0) == 1 && !cyc0) { cyc0 = cyc; extra = 0; ntxras = 0; vwait = 0; }
     if (get32(0x7fffe0) == 2) break;
     if (cyc > 100000000000ULL) { fprintf(stderr, "runaway\n"); return 1; }
   }
@@ -70,8 +74,8 @@ int main(int argc, char **argv)
     for (;;) { int b = -1; for (i = 0; i < nf; i++) if (hits[i] && (b < 0 || hits[i] > hits[b])) b = i; if (b < 0 || hits[b] * 100 < tot) break; printf("  %5.1f%%  %s\n", 100.0 * hits[b] / tot, fn[b]); hits[b] = 0; } }
   }
   {
-    double s = (double)(cyc - cyc0 + extra) / 10e6;
-    printf("%6ld bytes %10llu cyc (+txras %ld: %llu)  %7.3f s  %6.0f B/s\n", fsz, cyc - cyc0, ntxras, extra, s, fsz / s);
+    double s = (double)(cyc - cyc0 + extra + vwait) / 10e6;
+    printf("%6ld bytes %10llu cyc (+txras %ld: %llu, +vram wait %llu)  %7.3f s  %6.0f B/s\n", fsz, cyc - cyc0, ntxras, extra, vwait, s, fsz / s);
   }
   return 0;
 }

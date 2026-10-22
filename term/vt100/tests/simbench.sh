@@ -3,7 +3,8 @@
 #   vt100.c を VT_HOSTTEST (VRAM はメモリ上の配列) + VT_SIM_TXRAS で 68000 向けに素のバイナリにし、
 #   Musashi (68000 エミュレータ、MIT) で各フィクスチャを vt_write に流したクロック数を 10MHz で割る。
 #   TXRASCOPY はシミュレータが演じ、1 ラスタ = 水平 1 周期 (318 クロック) + 呼び出し 2000 クロックを足す
-#   (IPLROM の _TXRASCPY はラスタごとに H-sync を待つ)。VRAM のウェイトは数えないので実機より速めに出る。
+#   (IPLROM の _TXRASCPY はラスタごとに H-sync を待つ)。テキスト VRAM へのアクセスは 1 バスサイクル 2 クロックの
+#   ウェイトを足す (XEiJ の X68000 10MHz の設定値)。メインメモリのウェイトやリフレッシュは数えない。
 #   ついでに 68000 版の最終 VRAM がホスト版 (vthost -v) と同じかも確かめる (ビッグエンディアン・int 幅の違いの検出)。
 # 使い方: tests/simbench.sh [-c CHUNK] [-p] [REV...]
 #   REV を並べると git のその版 (term/vt100) も同じ条件で測って横に並べる (作業ツリーは "work")。
@@ -53,7 +54,7 @@ PY
   build "$d" "r_$rev"; VERS+=("r_$rev")
 done
 make -s vthost 2>/dev/null
-LIST=${VT_BENCH_LIST:-app_claude app_claude_trust app_tmux app_vimjp app_top app_lessu8 app_gitlog vim top jp_less}
+LIST=${VT_BENCH_LIST:-app_claude_stream app_claude app_claude_trust app_tmux app_vimjp app_top app_lessu8 app_gitlog vim top jp_less}
 printf "%-17s %7s" fixture bytes; for v in "${VERS[@]}"; do printf " %10s" "${v#r_}"; done; echo "   (bytes/s, 10MHz 68000, -c $CHUNK)"
 bad=0
 for n in $LIST; do

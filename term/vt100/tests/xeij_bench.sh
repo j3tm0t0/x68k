@@ -22,7 +22,7 @@ cp "$XEIJ/data/HUMAN.SYS" "$XEIJ/data/COMMAND.X" "$B/"
 cp vtbench.x "$B/VTBENCH.X"; cp vtbnob.x "$B/VTBNOB.X"
 printf 'FILES = 30\r\nBUFFERS = 20 1024\r\nLASTDRIVE = Z:\r\n' > "$B/CONFIG.SYS"
 size_of() { s=$(awk -v n="$1" '$1 == n { print $2 "x" $3 }' tests/fixtures/sizes.txt); echo "${s:-80x24}"; }
-LIST=${VT_BENCH_LIST:-app_claude app_claude_trust app_tmux app_vimjp app_top app_lessu8 app_gitlog vim top jp_less}
+LIST=${VT_BENCH_LIST:-app_claude_stream app_claude app_claude_trust app_tmux app_vimjp app_top app_lessu8 app_gitlog vim top jp_less}
 {
   printf 'ECHO OFF\r\n'
   i=0

@@ -71,7 +71,14 @@ typedef struct {
   unsigned char fg;     /* 0..15 パレット番号 (bold / reverse 解決済み) */
   unsigned char bg;     /* 0..15 */
   unsigned char flags;  /* F_UNDERLINE | F_SPECIAL | F_WIDE | F_WIDECONT */
+  unsigned char pad;    /* 常に 0 (セルを 16bit x 3 で比べるため明示しておく) */
 } cell_t;
+/* セルが完全に同じか (cp / fg+bg / flags+pad を 16bit ずつ。flush の走査が最頻なので速く)。
+ * may_alias で cell_t を 16bit 列として読む (厳密な別名規則での最適化に崩されないように) */
+typedef unsigned short __attribute__((may_alias)) cell_u16;
+#define CELLEQ(a, b) (((const cell_u16 *)(a))[0] == ((const cell_u16 *)(b))[0] && \
+                      ((const cell_u16 *)(a))[1] == ((const cell_u16 *)(b))[1] && \
+                      ((const cell_u16 *)(a))[2] == ((const cell_u16 *)(b))[2])
 #define F_UNDERLINE 0x01
 #define F_SPECIAL   0x02   /* cp を DEC 罫線グリフ表で描く */
 #define F_WIDE      0x04   /* 全角の左セル (16 ドット幅で描く) */
@@ -492,31 +499,34 @@ static void row_fill(int row, int bg)
 
 static void flush(void)
 {
-  int r, c, s;
+  int r, c, s, i;
+  static unsigned char diff[MAXCOLS];
   PROF(4, 1);
   s = sup_enter();
   if (csr_shown) { cursor_xor(csr_x, csr_y); csr_shown = 0; }   /* 先にカーソルを消す */
   for (r = 0; r < ROWS; r++) {
     cell_t *lrow = cur[r], *drow = drawn[r];
-    int ndiff = 0, blank = 1, bg0;
+    int nd = 0;
     if (!rdirty[r]) continue;
     rdirty[r] = 0;
-    bg0 = lrow[0].bg;
+    /* 1 回目: 描き直しの要るセルを拾う (同じなら飛ばす。空白で前景色だけ違うものは控えだけ直す) */
     for (c = 0; c < COLS; c++) {
-      if (!same_look(&lrow[c], &drow[c])) ndiff++;
-      if (!BLANKCELL(&lrow[c]) || lrow[c].bg != bg0) blank = 0;
+      if (CELLEQ(&lrow[c], &drow[c])) continue;
+      if (same_look(&lrow[c], &drow[c])) drow[c] = lrow[c];
+      else diff[nd++] = (unsigned char)c;
     }
-    if (ndiff == 0) { for (c = 0; c < COLS; c++) drow[c] = lrow[c]; continue; }
-    if (blank && ndiff > 8) {   /* 空白だけの行で描き直しが多い: 行ごと塗る */
-      row_fill(r, bg0);
-      PROF(7, 1);
-      for (c = 0; c < COLS; c++) drow[c] = lrow[c];
-      continue;
+    if (nd == 0) continue;
+    if (nd > 8) {   /* 空白だけの行 (消去・スクロールで空いた行) で描き直しが多い: 行ごと塗る */
+      int bg0 = lrow[0].bg, blank = 1;
+      for (c = 0; c < COLS; c++) if (!BLANKCELL(&lrow[c]) || lrow[c].bg != bg0) { blank = 0; break; }
+      if (blank) {
+        row_fill(r, bg0);
+        PROF(7, 1);
+        for (c = 0; c < COLS; c++) drow[c] = lrow[c];
+        continue;
+      }
     }
-    for (c = 0; c < COLS; c++) {
-      if (!same_look(&lrow[c], &drow[c])) blit(c, r, &lrow[c]);
-      drow[c] = lrow[c];
-    }
+    for (i = 0; i < nd; i++) { c = diff[i]; blit(c, r, &lrow[c]); drow[c] = lrow[c]; }
   }
   if (cur_vis) { cursor_xor(cx, cy); csr_shown = 1; csr_x = cx; csr_y = cy; }
   sup_leave(s);

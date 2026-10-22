@@ -1,5 +1,6 @@
 app_claude 96 32
 app_claude_help 96 32
+app_claude_stream 96 32
 app_claude_trust 96 32
 app_emoji 96 32
 app_gitlog 96 32
