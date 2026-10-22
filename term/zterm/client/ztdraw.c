@@ -75,6 +75,21 @@ static long pr_ms(void) { return (long)_iocs_ontime().sec * 10; }   /* 1/100 秒
 #else
 #define PRDBG(...) do { } while (0)
 #endif
+/* 行 r の予測込みで最後の空白でない桁 (無ければ -1) */
+static unsigned short pr_cp_at(int r, int c);
+static int pr_last(int r)
+{
+  int c;
+  for (c = COLS - 1; c >= 0; c--) if (pr_cp_at(r, c) != 0x20) return c;
+  return -1;
+}
+/* 桁 c0..c1 に全角・絵文字・DEC 罫線が無いか (ずらす予測は半角の字だけ) */
+static int pr_plain(int r, int c0, int c1)
+{
+  int c;
+  for (c = c0; c <= c1 + 1 && c < COLS; c++) if (cur[r][c].at & (F_WIDE | F_WIDECONT | F_EMOJI | F_SPECIAL)) return 0;
+  return 1;
+}
 /* (r,c) の予測込みの字 (後の予測が優先) */
 static unsigned short pr_cp_at(int r, int c)
 {
@@ -86,6 +101,7 @@ static int pr_ctx(void) { return (srv_vis ? 0 : 1) | ((zd_mode & 2) ? 2 : 0); }
 
 void ztd_echo(int on) { pr_want = on; }
 void ztd_echo_stats(long *hit, long *miss) { *hit = pr_nhit; *miss = pr_nmiss; }
+int ztd_echo_shown(void) { int i, k = 0; for (i = 0; i < pr_n; i++) k += pr[i].shown; return k; }   /* いま描いている予測の数 */
 
 /* 予測を重ねる / 外す (論理画面のセルと書き換え範囲だけ。描くのは flush) */
 static void pr_show(void)
@@ -179,19 +195,29 @@ void ztd_predict(const unsigned char *k, int n, unsigned long seq)
     unsigned char b = k[i];
     if (pr_hold) break;
     if (b >= 0x20 && b < 0x7f) {
-      if (x >= COLS - 1 || !pr_add(y, x, b, seq)) { pr_hold = 1; break; }   /* 右端 (折り返し) は予測しない */
+      int e = pr_last(y), c;
+      if (x >= COLS - 1) { pr_hold = 1; break; }   /* 右端 (折り返し) は予測しない */
+      if (e >= x) {   /* 行の途中: 右の字を 1 つずつずらす (挿入。readline も Claude Code の入力欄も挿入) */
+        if (e + 1 >= COLS || !pr_plain(y, x, e)) { pr_hold = 1; break; }
+        for (c = e; c >= x; c--) pr_add(y, c + 1, pr_cp_at(y, c), seq);
+      }
+      if (!pr_add(y, x, b, seq)) { pr_hold = 1; break; }
       x++;
     } else if (b == 0x7f) {
-      if (pr_n > 0 && pr[pr_n - 1].r == y && pr[pr_n - 1].c == x - 1 && pr[pr_n - 1].cp != 0x20) {   /* 自分の予測を消す */
+      if (pr_n > 0 && pr[pr_n - 1].r == y && pr[pr_n - 1].c == x - 1 && pr[pr_n - 1].cp != 0x20 && pr_last(y) < x) {   /* 行末の自分の予測を消す */
         pred_t *q = &pr[pr_n - 1];
         if (q->base.cp == 0x20) pr_n--;                       /* 元が空白なら予測ごと無くす */
         else { q->cp = 0x20; q->seq = seq; q->t = pr_ms(); }  /* 元に字があった (BS の後に打ち直した) なら空白の予測に戻す */
         x--;
       }
       else {
-        int c, blank = 1;
-        for (c = x; c < COLS; c++) if (pr_cp_at(y, c) != 0x20) { blank = 0; break; }   /* 行末でだけ (途中なら詰める動きになる) */
-        if (x <= 0 || !blank || !pr_add(y, x - 1, 0x20, seq)) { pr_hold = 1; break; }
+        int e = pr_last(y), c;
+        if (x <= 0 || x - 1 > e + 1) { pr_hold = 1; break; }
+        if (e >= x) {   /* 行の途中: 右の字を詰める */
+          if (!pr_plain(y, x - 1, e)) { pr_hold = 1; break; }
+          for (c = x - 1; c < e; c++) pr_add(y, c, pr_cp_at(y, c + 1), seq);
+          pr_add(y, e, 0x20, seq);
+        } else if (!pr_add(y, x - 1, 0x20, seq)) { pr_hold = 1; break; }
         x--;
       }
     } else if (b == 0x1b && i + 2 < n && (k[i + 1] == '[' || k[i + 1] == 'O') && (k[i + 2] == 'C' || k[i + 2] == 'D')) {

@@ -76,31 +76,42 @@ int main(void)
   expect("4 right past the text: not predicted", 0, 2, "ab", "..", 4);
   f_begin(); f_cursor(4, 0); f_ack(15); f_end();
 
+  /* 行の途中への挿入と BS (右の字がずれる) */
+  keys("\x1b[D");                                   /* "ab|" -> "a|b" */
+  keys("Q");
+  expect("4b insert mid-line shifts the rest", 0, 2, "aQb", ".__", 4);
+  keys("\x7f");
+  expect("4b BS mid-line pulls the rest back", 0, 2, "ab ", "._.", 3);
+  f_begin(); f_cursor(3, 0); f_ack(20); f_end();     /* サーバ: "ab" のまま、カーソル 3 */
+  expect("4b server agrees", 0, 2, "ab", "..", 3);
+  keys("\x1b[C");
+  f_begin(); f_cursor(4, 0); f_ack(23); f_end();
+
   /* パスワード: エコーしない */
   keys("\r");
-  f_begin(); f_text(1, 0, "pw: "); f_cursor(4, 1); f_ack(16); f_end();
+  f_begin(); f_text(1, 0, "pw: "); f_cursor(4, 1); f_ack(24); f_end();
   keys("s");
   expect("5 after Enter: shadow only", 1, 4, " ", ".", 4);
-  f_begin(); f_ack(17); f_end();
+  f_begin(); f_ack(25); f_end();
   keys("ecret");
   expect("5 no echo -> never shown", 1, 4, "     ", ".....", 4);
-  f_begin(); f_ack(22); f_end();
+  f_begin(); f_ack(30); f_end();
   expect("5 still nothing", 1, 4, "     ", ".....", 4);
 
   /* 信用のある行で、エコーしない字 (外れ) -> 取り消し */
   keys("\r");
-  f_begin(); f_text(2, 0, "$ "); f_cursor(2, 2); f_ack(23); f_end();
+  f_begin(); f_text(2, 0, "$ "); f_cursor(2, 2); f_ack(31); f_end();
   keys("q");
-  f_begin(); f_text(2, 2, "q"); f_cursor(3, 2); f_ack(24); f_end();
+  f_begin(); f_text(2, 2, "q"); f_cursor(3, 2); f_ack(32); f_end();
   keys("w");
   expect("6 trusted again on a new echoing line", 2, 2, "qw", "._", 4);
-  f_begin(); f_text(2, 2, "Z"); f_cursor(3, 2); f_ack(25); f_end();
+  f_begin(); f_text(2, 2, "Z"); f_cursor(3, 2); f_ack(33); f_end();
   expect("6 mismatch -> rolled back to the server", 2, 2, "Z ", "..", 3);
   keys("e");
   expect("6 after a miss: shadow", 2, 3, " ", ".", 3);
 
   /* スクロールで予測を捨てる */
-  f_begin(); f_text(2, 3, "e"); f_cursor(4, 2); f_ack(26); f_end();
+  f_begin(); f_text(2, 3, "e"); f_cursor(4, 2); f_ack(34); f_end();
   keys("rt");
   expect("7 trusted", 2, 3, "ert", ".__", -1);
   f_begin(); f_byte(0x08); f_byte(0); f_byte(4); f_byte(1); f_cursor(4, 1); f_end();

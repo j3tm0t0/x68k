@@ -68,6 +68,8 @@ ZTERMC="${ZTERMC:-$HERE/../../../term/zterm/client}"
 if [ "$ZTERM" = "1" ]; then
   [ -f "$ZTERMC/ztclient.c" ] || { echo "build: ZTERM=1 だが $ZTERMC が無い (term/zterm/client)" >&2; exit 1; }
   EXTRA_DEF="$EXTRA_DEF -DX68K_ZTERM=1"
+  # ZTSNAP=1: 予測エコーを 3 つ描いたとき VRAM を B:/ztsnap.bin に書く試験用の版
+  [ "${ZTSNAP:-0}" = "1" ] && EXTRA_DEF="$EXTRA_DEF -DX68K_ZT_SNAP"
 fi
 
 if [ "$CHACHA68K" = "1" ]; then

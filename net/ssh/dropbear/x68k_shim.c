@@ -236,11 +236,42 @@ static void zt_log(const char *m)
   if (!vt_active) { _iocs_b_print(m); _iocs_b_print("\r\n"); }
 #endif
 }
+#ifdef X68K_ZT_SNAP
+/* 試験用 (ZTSNAP=1): 予測を 3 つ以上描いた最初のときに、テキスト VRAM (4 プレーン x 512 ライン) とパレットを
+   B:/ztsnap.bin に書く (term/vt100/tests/vram2png.py の形)。打鍵の途中の Z の画面を見るため (rcmd の memdump は
+   ssh.x の実行中は使えない)。書く間 (数秒) は止まる。 */
+static void zt_snap(void)
+{
+  static int done;
+  static unsigned char line[128];
+  FILE *f;
+  int p, y, i, s;
+  if (done || ztd_echo_shown() < 3) return;
+  done = 1;
+  f = fopen("B:/ztsnap.bin", "wb");
+  if (!f) return;
+  for (p = 0; p < 4; p++)
+    for (y = 0; y < 512; y++) {
+      s = _dos_super(0);
+      for (i = 0; i < 128; i++) line[i] = TVRAM_BASE[(unsigned long)p * TVRAM_PLANE + (unsigned long)y * 128 + i];
+      if (s >= 0) _dos_super(s);
+      fwrite(line, 1, 128, f);
+    }
+  s = _dos_super(0);
+  for (i = 0; i < 16; i++) { unsigned short w = ((volatile unsigned short *)0xE82200UL)[i]; line[i * 2] = (unsigned char)(w >> 8); line[i * 2 + 1] = (unsigned char)w; }
+  if (s >= 0) _dos_super(s);
+  fwrite(line, 1, 32, f);
+  fclose(f);
+}
+#endif
 static void zt_keys_fill(void)
 {
   unsigned char t[64];
   int k = vt_key(t, (int)sizeof t);
   if (k > 0) zc_keys(t, k);
+#ifdef X68K_ZT_SNAP
+  if (k > 0) zt_snap();
+#endif
 }
 static int zt_ready(void) { return zc_pending() > 0; }
 
@@ -313,7 +344,11 @@ int x68k_zterm_closed(void)
   if (!zt_mode) return 0;
   zt_mode = 0;
   if (zc_started()) {
+    long h, m;
+    char b[64];
     x68k_tty_cleanup();
+    ztd_echo_stats(&h, &m);
+    if (h || m) { sprintf(b, "zterm: local echo %ld hit / %ld miss\r\n", h, m); _iocs_b_print(b); }
     return 0;
   }
   _iocs_b_print("zterm: ");

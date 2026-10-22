@@ -43,6 +43,7 @@ void ztd_cursor(int *x, int *y, int *vis);
 void ztd_predict(const unsigned char *k, int n, unsigned long seq);   /* 予測エコー: 送るキーの結果を先に描く */
 void ztd_echo(int on);                                                /* 予測エコーの有効/無効 (既定 有効) */
 void ztd_echo_stats(long *hit, long *miss);
+int ztd_echo_shown(void);
 void zc_echo(int on);
 
 #endif /* ZTCLIENT_H */
