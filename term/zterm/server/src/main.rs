@@ -276,12 +276,12 @@ fn replay(o: &Opts) {
         }
         let bell = std::mem::take(&mut t.parser.callbacks_mut().bell);
         let m = t.snapshot();
-        if enc.frame(&t.grid, m, bell, &mut out) {
+        if enc.frame(&t.grid, m, bell, None, &mut out) {
             frames += 1;
         }
     }
     let m = t.snapshot();
-    if enc.frame(&t.grid, m, false, &mut out) {
+    if enc.frame(&t.grid, m, false, None, &mut out) {
         frames += 1;
     }
     frame_raw(&[OP_BYE, 0], &mut out);
@@ -428,6 +428,14 @@ fn serve(o: &Opts) -> i32 {
         let b = QUIET.saturating_sub(last_read.elapsed()).min(MAXWAIT.saturating_sub(first_dirty.elapsed()));
         a.max(b)
     };
+    // 予測エコー (Z が 'e' を送ってきたら): キーを pty に書いた時刻を覚え、ECHO_DELAY 経ったものを ECHOACK で知らせる。
+    // Z はそれより前のキーについては「まだ画面に出ていなくてもよい」、それ以降は「出ていなければ予測が外れた」と判断する。
+    const ECHO_DELAY: Duration = Duration::from_millis(100);
+    let mut echo_on = false;
+    let mut keys_total: u32 = 0;
+    let mut key_times: std::collections::VecDeque<(Instant, u32)> = std::collections::VecDeque::new();
+    let mut ack_now: u32 = 0; // ECHO_DELAY を過ぎたキーのバイト数
+    let mut ack_sent: Option<u32> = None;
     let mut child_done = false;
     let mut inbuf: Vec<u8> = Vec::new();
     let mut rbuf = vec![0u8; 65536];
@@ -438,6 +446,16 @@ fn serve(o: &Opts) -> i32 {
     loop {
         // いつ起きるか: 送りたい変化があって、ACK 待ちでなければ次の送信時刻まで
         let mut timeout: i32 = -1;
+        while let Some(&(kt, n)) = key_times.front() {
+            if kt.elapsed() < ECHO_DELAY {
+                break;
+            }
+            ack_now = n;
+            key_times.pop_front();
+        }
+        if echo_on && ack_sent != Some(ack_now) {
+            dirty = true;
+        }
         let sync_hold = t.parser.callbacks().sync
             && t.parser.callbacks().sync_since.map_or(false, |s| s.elapsed() < Duration::from_millis(500));
         if dirty && inflight < o.inflight && !sync_hold {
@@ -445,6 +463,10 @@ fn serve(o: &Opts) -> i32 {
             timeout = (wait.as_micros() as i32 + 999) / 1000;
         } else if sync_hold {
             timeout = 20;
+        }
+        if let Some(&(kt, _)) = key_times.front() {
+            let w = (ECHO_DELAY.saturating_sub(kt.elapsed()).as_micros() as i32 + 999) / 1000;
+            timeout = if timeout < 0 { w } else { timeout.min(w) };
         }
         if o.refresh > 0 {
             let w = Duration::from_secs(o.refresh).saturating_sub(last_full.elapsed()).as_millis() as i32;
@@ -506,6 +528,10 @@ fn serve(o: &Opts) -> i32 {
                         ptyout.clear();
                         keys_to_pty(body, t.parser.screen().application_cursor(), &mut ptyout);
                         write_all(mfd, &ptyout);
+                        keys_total = keys_total.wrapping_add(body.len() as u32);
+                        if echo_on {
+                            key_times.push_back((Instant::now(), keys_total));
+                        }
                     }
                     C_ACK => inflight = inflight.saturating_sub(1),
                     C_RESIZE if len >= 2 => {
@@ -523,6 +549,11 @@ fn serve(o: &Opts) -> i32 {
                         enc.invalidate();
                         dirty = true;
                     }
+                    C_ECHO => {
+                        echo_on = true;
+                        ack_now = keys_total;
+                        dirty = true; // すぐ ECHOACK を送って対応していることを知らせる
+                    }
                     C_QUIT => {
                         unsafe { libc::kill(pid, libc::SIGHUP) };
                     }
@@ -537,6 +568,16 @@ fn serve(o: &Opts) -> i32 {
             dirty = true;
             last_full = Instant::now();
         }
+        while let Some(&(kt, n)) = key_times.front() {
+            if kt.elapsed() < ECHO_DELAY {
+                break;
+            }
+            ack_now = n;
+            key_times.pop_front();
+        }
+        if echo_on && ack_sent != Some(ack_now) {
+            dirty = true;
+        }
         let sync_hold = t.parser.callbacks().sync
             && t.parser.callbacks().sync_since.map_or(false, |s| s.elapsed() < Duration::from_millis(500));
         if dirty && inflight < o.inflight && !sync_hold
@@ -545,7 +586,11 @@ fn serve(o: &Opts) -> i32 {
             let bell = std::mem::take(&mut t.parser.callbacks_mut().bell);
             let m = t.snapshot();
             out.clear();
-            if enc.frame(&t.grid, m, bell, &mut out) {
+            let echo = if echo_on && ack_sent != Some(ack_now) { Some(ack_now) } else { None };
+            if enc.frame(&t.grid, m, bell, echo, &mut out) {
+                if echo.is_some() {
+                    ack_sent = echo;
+                }
                 if !write_all(stdout_fd, &out) {
                     break;
                 }

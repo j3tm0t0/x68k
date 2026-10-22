@@ -23,6 +23,9 @@ static FILE *push_fp;
 static long push_left;
 static long s_in, s_frames, s_push;
 static int z_exit = -1;
+static int z_echo = 1;          /* 予測エコー (サーバに ECHOACK を頼む) */
+static unsigned long z_kseq;    /* 送ったキーのバイト数 (サーバの ECHOACK と同じ数え方) */
+void zc_echo(int on) { z_echo = on; ztd_echo(on); }
 static void (*logfn)(const char *);
 
 static void zlog(const char *m) { if (logfn) logfn(m); }
@@ -62,7 +65,7 @@ void zc_init(const char *dir, int cols, int rows, const char *usercmd)
   char path[240];
   int i;
   st = ZC_HANDSHAKE; line_len = 0; flen = 0; got_hello = 0; olen = 0; push_fp = 0; push_left = 0;
-  s_in = s_frames = s_push = 0; z_exit = -1; z_err[0] = 0;
+  s_in = s_frames = s_push = 0; z_exit = -1; z_err[0] = 0; z_kseq = 0;
   strncpy(z_dir, dir, sizeof z_dir - 1); z_dir[sizeof z_dir - 1] = 0;
   z_cols = cols; z_rows = rows;
   /* 版は <dir>/VERSION の 1 行目 (ヘルパを作り直したら dist.sh が書き換える) */
@@ -150,6 +153,7 @@ static void on_frame(void)
     if (flen < 4 || fbuf[3] != 0x01) { fail("zterm: no hello"); return; }
     got_hello = 1;
     zlog("zterm: hello");
+    if (z_echo) { static const unsigned char e[2] = { 'e', 0 }; oput(e, 2); }
   }
   r = ztd_frame(fbuf + 3, flen - 3);
   s_frames++;
@@ -217,6 +221,8 @@ void zc_keys(const unsigned char *p, int n)
     unsigned char h[2];
     int k = n > 255 ? 255 : n;
     if (olen + 2 + k > (int)sizeof obuf) return;
+    z_kseq += (unsigned long)k;
+    ztd_predict(p, k, z_kseq);
     h[0] = 'k'; h[1] = (unsigned char)k;
     oput(h, 2); oput(p, k);
     p += k; n -= k;

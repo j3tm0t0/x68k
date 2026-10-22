@@ -226,6 +226,7 @@ int x68k_chan_read(int fd, void *p, unsigned int n)
    (cli-chansession.c の cli_closechansess から x68k_zterm_closed)。 */
 #include "ztclient.h"
 static int zt_want;                   /* -Z が付いていた */
+static int zt_echo = 1;               /* 予測エコー (-oZtermEcho=no で切る) */
 /* 位相の印 (cached / helper のパス / pushed / go / エラー)。画面を占有する前だけ IOCS で直接出す
    (チャネルが閉じる頃には dropbear が fd 2 を閉じていることがあるので stderr は使わない) */
 static void zt_log(const char *m)
@@ -253,6 +254,8 @@ int x68k_zterm_args(int *argc, char **argv)
     const char *a = argv[i];
     if (i > 0 && !host) {
       if (!strcmp(a, "-Z")) { zt_want = 1; continue; }
+      if (!strcmp(a, "-oZtermEcho=no")) { zt_echo = 0; continue; }    /* 予測エコーを使わない */
+      if (!strcmp(a, "-oZtermEcho=yes")) { zt_echo = 1; continue; }
       if (a[0] == '-' && a[1] && !a[2] && strchr(valopt, a[1]) && i + 1 < *argc) { argv[j++] = argv[i++]; a = argv[i]; }
       else if (a[0] != '-') host = 1;
     }
@@ -271,6 +274,7 @@ const char *x68k_zterm_command(const char *usercmd)
   if (!zt_want) return 0;
   vt_default_size(&c, &r);
   zc_init(dir ? dir : "B:/zterm", c, r, usercmd);
+  zc_echo(zt_echo);
   zc_log(zt_log);
   zt_mode = 1;
   return zc_command();

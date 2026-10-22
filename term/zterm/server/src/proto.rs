@@ -24,6 +24,7 @@ pub const OP_BELL: u8 = 0x0b;
 pub const OP_CLEAR: u8 = 0x0c; // bg: 画面全体を空白 (7,bg) に
 pub const OP_BYE: u8 = 0x0d; // code: シェルが終わった
 pub const OP_SIZE: u8 = 0x0e; // cols rows: 画面の寸法が変わった (CLEAR 相当)
+pub const OP_ECHOACK: u8 = 0x0f; // n(u32): Z から受けたキーの先頭 n バイトは、pty に書いてから ECHO_DELAY 以上経った後の画面 (Z の予測エコーの照合用)
 
 // Z -> サーバ: type(u8) len(u8) 本体
 pub const C_KEYS: u8 = b'k';
@@ -31,6 +32,7 @@ pub const C_ACK: u8 = b'a';
 pub const C_RESIZE: u8 = b'r';
 pub const C_REFRESH: u8 = b'f';
 pub const C_QUIT: u8 = b'q';
+pub const C_ECHO: u8 = b'e'; // 以後のフレームに ECHOACK を入れて (予測エコーを使う)
 
 #[derive(Default, Clone, Copy, PartialEq)]
 pub struct Meta {
@@ -170,12 +172,17 @@ impl Encoder {
     }
 
     /// 新しい画面との差分を 1 フレームにする。変化が無ければ false (out は触らない)
-    pub fn frame(&mut self, new: &[ZCell], meta: Meta, bell: bool, out: &mut Vec<u8>) -> bool {
+    pub fn frame(&mut self, new: &[ZCell], meta: Meta, bell: bool, echo: Option<u32>, out: &mut Vec<u8>) -> bool {
         let (cols, rows) = (self.cols, self.rows);
         let mut body = Vec::with_capacity(1024);
         let mut w = W { o: &mut body, r: 0, c: 0, col: 0x70, fl: 0 };
         if bell {
             w.o.push(OP_BELL);
+        }
+        if let Some(n) = echo {
+            // 頭に置く (Z は画面を置いた後で照合するので、位置はどこでもよい)
+            w.o.push(OP_ECHOACK);
+            w.o.extend_from_slice(&n.to_be_bytes());
         }
         // まずスクロール (流れる文字は「ずらして新しい行だけ」)。それでも大半が変わる (画面消去・切り替え・1 画面以上流れた) なら
         // 全面を空白にしてから差分を取る (帯域の節約。Z の描画量は同じ)

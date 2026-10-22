@@ -11,6 +11,8 @@
  *             VRAM と文字を 名前.bin / 名前.txt に / "F" 再描画要求 / "Q" 標準入力を閉じる
  *   -D MS     1 フレーム描くごとに MS ミリ秒止まる (遅い Z の真似。ACK が遅れサーバがフレームをまとめる)
  *   -c CMD    リモートでシェルの代わりに CMD を動かす (ssh.x -Z host CMD と同じ)
+ *   -L MS     受信を MS ミリ秒遅らせて渡す (遠い / 遅い回線の真似。予測エコーの試験)
+ *   -E        予測エコーを使わない (ssh.x -oZtermEcho=no)
  *   -V        フレームごとに VRAM = 論理画面の描き直し か確かめる (差分描画の試験)
  */
 #include <stdio.h>
@@ -46,7 +48,10 @@ static void dump(const char *vram, const char *text)
       fclose(f);
     }
   }
-  if (text) { FILE *f = fopen(text, "w"); if (f) { vt_dump_text(f, c, r); fclose(f); } }
+  if (text) {
+    FILE *f = fopen(text, "w");
+    if (f) { int x, y, v; vt_dump_text(f, c, r); ztd_cursor(&x, &y, &v); fprintf(f, "cursor %d %d %s mode %d\n", x, y, v ? "visible" : "hidden", ztd_mode()); fclose(f); }
+  }
 }
 
 static int unesc(const char *s, unsigned char *o)
@@ -69,6 +74,19 @@ static int unesc(const char *s, unsigned char *o)
   return n;
 }
 
+/* リモートの出力を ztclient に渡す (フレームごとに -V の確認と -D の止まり) */
+static void feed(const unsigned char *buf, int n, int verify, int delay, int *nbad)
+{
+  long f0, f1;
+  zc_stats(0, &f0, 0);
+  zc_input(buf, n);
+  zc_stats(0, &f1, 0);
+  if (f1 != f0) {
+    if (verify && zc_started() && !vt_host_verify()) { (*nbad)++; if (*nbad < 5) logline("VERIFY FAILED"); }
+    if (delay) usleep(delay * 1000 * (f1 - f0));
+  }
+}
+
 int main(int argc, char **argv)
 {
   const char *dist = "../dist", *vram = 0, *text = 0, *keys = 0, *ucmd = 0;
@@ -78,7 +96,12 @@ int main(int argc, char **argv)
   double t0, kwait = 0;
   long kbytes = 0;
   char **cmd;
-  int ncmd, in_open = 1;
+  int ncmd, in_open = 1, noecho = 0, lat = 0;
+  static unsigned char dq[1 << 20];
+  static double dq_t[4096];
+  static int dq_seglen[4096];
+  long dq_len = 0;
+  int dq_nseg = 0;
   for (i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "--")) { i++; break; }
     if (!strcmp(argv[i], "-d") && i + 1 < argc) dist = argv[++i];
@@ -90,6 +113,8 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[i], "-V")) verify = 1;
     else if (!strcmp(argv[i], "-c") && i + 1 < argc) ucmd = argv[++i];
     else if (!strcmp(argv[i], "-q")) quiet = 1;
+    else if (!strcmp(argv[i], "-E")) noecho = 1;
+    else if (!strcmp(argv[i], "-L") && i + 1 < argc) lat = atoi(argv[++i]);
     else if (!strcmp(argv[i], "-g") && i + 1 < argc) {
       FILE *g = fopen(argv[++i], "rb");
       if (!g || fread(vt_host_cgrom, 1, 0xC0000, g) != 0xC0000) { fprintf(stderr, "cannot read CGROM %s\n", argv[i]); return 1; }
@@ -98,6 +123,7 @@ int main(int argc, char **argv)
   }
   if (i >= argc) { fprintf(stderr, "usage: zthost [opts] -- cmd args...\n"); return 2; }
   zc_init(dist, cols, rows, ucmd);
+  if (noecho) zc_echo(0);
   zc_log(logline);
   ncmd = argc - i;
   cmd = (char **)calloc(ncmd + 2, sizeof *cmd);
@@ -122,7 +148,8 @@ int main(int argc, char **argv)
     int s = zc_state();
     if (s == ZC_DONE || s == ZC_FAIL) break;
     /* キー台本 */
-    while (kf && now() >= kwait) {
+    if (kf && !zc_started()) kwait = now();   /* 台本の時間は画面が始まってから数える (それまでの打鍵は捨てられる) */
+    while (kf && zc_started() && now() >= kwait) {
       char l[512];
       if (!fgets(l, sizeof l, kf)) { fclose(kf); kf = 0; break; }
       l[strcspn(l, "\n")] = 0;
@@ -134,20 +161,27 @@ int main(int argc, char **argv)
     }
     pf[0].fd = from[0]; pf[0].events = POLLIN;
     if (in_open && zc_pending() > 0) { pf[1].fd = to[1]; pf[1].events = POLLOUT; np = 2; }
+    if (lat > 0 && dq_nseg > 0) {   /* 溜めた受信の渡す時刻までに起きる */
+      double w = lat / 1000.0 - (now() - dq_t[0]);
+      if (w < 0) w = 0;
+      if (w * 1000 < tmo) tmo = (int)(w * 1000) + 1;
+    }
     if (poll(pf, np, tmo) < 0) break;
     if (pf[0].revents & (POLLIN | POLLHUP)) {
       n = (int)read(from[0], buf, sizeof buf);
-      if (n <= 0) { logline("remote closed"); break; }
-      {
-        long f0, f1;
-        zc_stats(0, &f0, 0);
-        zc_input(buf, n);
-        zc_stats(0, &f1, 0);
-        if (f1 != f0) {
-          if (verify && zc_started() && !vt_host_verify()) { nbad++; if (nbad < 5) logline("VERIFY FAILED"); }
-          if (delay) usleep(delay * 1000 * (f1 - f0));
-        }
+      if (n <= 0) {   /* 溜めてある分を渡してから終わる */
+        while (dq_nseg > 0) { feed(dq, dq_seglen[0], verify, delay, &nbad); memmove(dq, dq + dq_seglen[0], dq_len - dq_seglen[0]); dq_len -= dq_seglen[0]; memmove(dq_seglen, dq_seglen + 1, (dq_nseg - 1) * sizeof dq_seglen[0]); memmove(dq_t, dq_t + 1, (dq_nseg - 1) * sizeof dq_t[0]); dq_nseg--; }
+        logline("remote closed"); break;
       }
+      if (lat > 0) {   /* 遅延の真似: 受けた時刻を付けて溜め、lat ms 後に渡す */
+        if (dq_len + n <= (long)sizeof dq && dq_nseg < 4096) { memcpy(dq + dq_len, buf, n); dq_t[dq_nseg] = now(); dq_seglen[dq_nseg++] = n; dq_len += n; }
+      } else feed(buf, n, verify, delay, &nbad);
+    }
+    while (lat > 0 && dq_nseg > 0 && now() - dq_t[0] >= lat / 1000.0) {   /* 時刻の来た塊を渡す */
+      int k = dq_seglen[0];
+      memcpy(buf, dq, k); memmove(dq, dq + k, dq_len - k); dq_len -= k;
+      memmove(dq_t, dq_t + 1, (dq_nseg - 1) * sizeof dq_t[0]); memmove(dq_seglen, dq_seglen + 1, (dq_nseg - 1) * sizeof dq_seglen[0]); dq_nseg--;
+      feed(buf, k, verify, delay, &nbad);
     }
     if (np == 2 && (pf[1].revents & POLLOUT)) {
       n = zc_output(buf, 16384);
@@ -158,6 +192,9 @@ int main(int argc, char **argv)
     long in, fr, pu;
     double el = now() - t0;
     zc_stats(&in, &fr, &pu);
+    long eh, em;
+    ztd_echo_stats(&eh, &em);
+    fprintf(stderr, "zthost: echo hit %ld miss %ld\n", eh, em);
     fprintf(stderr, "zthost: state=%d err='%s' exit=%d  %.1fs  recv %ld bytes (%.0f B/s)  frames %ld  pushed %ld  keys %ld  verify-fail %d\n",
             zc_state(), zc_error(), zc_exit_code(), el, in, in / (el > 0 ? el : 1), fr, pu, kbytes, nbad);
   }

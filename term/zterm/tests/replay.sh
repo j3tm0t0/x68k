@@ -2,7 +2,7 @@
 # zterm サーバの画面変換が term/vt100 (vt100.c) と同じ結果になるかを、記録済みフィクスチャで確かめる。
 # 各 .rec をサーバの --replay と vthost に食わせ、最終画面の文字と属性 (fg,bg,flags) を比べる。
 # さらにサーバが出したフレーム列を Z 側の描画 (ztdraw.c、ztreplay -V) に通した画面がサーバの画面と同じか確かめる。
-#   usage: tests/replay.sh            (要: cargo build --release、term/vt100 の make vthost、client の make ztreplay)
+#   usage: tests/replay.sh            (要: cargo build --release、term/vt100 の make vthost、client の make ztreplay ztpredtest)
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 FX="$HERE/../../vt100/tests/fixtures"
@@ -33,5 +33,7 @@ for f in "$FX"/*.rec; do
   else fail=$((fail+1)); echo "FAIL $b (vt100.c と一致 $vt / 往復 $ok)"; fi
 done
 rm -rf "$T"
+# 予測エコーの筋書き試験
+if "$HERE/../client/ztpredtest" > /dev/null; then pass=$((pass+1)); echo "PASS ztpredtest (予測エコー)"; else fail=$((fail+1)); echo "FAIL ztpredtest"; "$HERE/../client/ztpredtest" | grep -A1 FAIL; fi
 echo "pass $pass / known $known / fail $fail"
 [ $fail = 0 ]
