@@ -25,6 +25,7 @@
 #define OP_BYE    0x0d
 #define OP_SIZE   0x0e
 #define OP_ECHOACK 0x0f
+#define OP_EMOJI16 0x10
 
 static int zd_bye = -1, zd_mode;
 
@@ -298,11 +299,12 @@ int ztd_frame(const unsigned char *p, int n)
         NEED(2);
         at = AT(p[0] >> 4, p[0] & 15, p[1] & (F_UNDERLINE | F_SPECIAL)); p += 2;
         break;
-      case OP_WIDE: case OP_EMOJI: {
+      case OP_WIDE: case OP_EMOJI: case OP_EMOJI16: {
         unsigned short cp;
-        unsigned short f = (unsigned short)(b == OP_EMOJI ? (F_WIDE | F_EMOJI) : F_WIDE);
-        if (b == OP_EMOJI) { NEED(1); cp = p[0]; p += 1; if (cp >= EMOJITAB_N) cp = 0; }
+        unsigned short f = (unsigned short)(b == OP_WIDE ? F_WIDE : (F_WIDE | F_EMOJI));
+        if (b == OP_EMOJI) { NEED(1); cp = p[0]; p += 1; }
         else { NEED(2); cp = (unsigned short)((p[0] << 8) | p[1]); p += 2; }
+        if (b != OP_WIDE && cp >= EMOJITAB_N) cp = 0;
         if (r < ROWS && c + 1 < COLS) {
           row[c].cp = cp; row[c].at = (unsigned short)((at & ~F_SPECIAL) | f);
           row[c + 1].cp = 0x20; row[c + 1].at = (unsigned short)((at & ~F_SPECIAL) | F_WIDECONT);

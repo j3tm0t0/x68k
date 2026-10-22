@@ -24,6 +24,7 @@ pub const OP_BELL: u8 = 0x0b;
 pub const OP_CLEAR: u8 = 0x0c; // bg: 画面全体を空白 (7,bg) に
 pub const OP_BYE: u8 = 0x0d; // code: シェルが終わった
 pub const OP_SIZE: u8 = 0x0e; // cols rows: 画面の寸法が変わった (CLEAR 相当)
+pub const OP_EMOJI16: u8 = 0x10; // idx(u16): 番号が 256 以上の絵文字 (OP_EMOJI と同じ)
 pub const OP_ECHOACK: u8 = 0x0f; // n(u32): Z から受けたキーの先頭 n バイトは、pty に書いてから ECHO_DELAY 以上経った後の画面 (Z の予測エコーの照合用)
 
 // Z -> サーバ: type(u8) len(u8) 本体
@@ -263,7 +264,11 @@ impl Encoder {
                     }
                     w.attr(cell.col, cell.fl);
                     if cell.fl & F_EMOJI != 0 {
-                        w.o.extend_from_slice(&[OP_EMOJI, cell.cp as u8]);
+                        if cell.cp < 256 {
+                            w.o.extend_from_slice(&[OP_EMOJI, cell.cp as u8]);
+                        } else {
+                            w.o.extend_from_slice(&[OP_EMOJI16, (cell.cp >> 8) as u8, cell.cp as u8]);
+                        }
                     } else if cell.fl & F_WIDE != 0 {
                         w.o.extend_from_slice(&[OP_WIDE, (cell.cp >> 8) as u8, cell.cp as u8]);
                     } else if (0x20..0x7f).contains(&cell.cp) {
