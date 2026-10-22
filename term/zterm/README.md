@@ -180,6 +180,11 @@ musl-gcc は要らない)。`rustup target add aarch64-unknown-linux-musl x86_64
   マウス (不要)。スクロールバックは持たない。
 - 漢字・絵文字・罫線の「描ける字」は term/vt100 と同じ (表に無い全角は `??`)。
 - キーは vt_key のまま (Z 側で VT のバイト列にする)。画面サイズは 96x32 固定 (RESIZE の通信路はある)。
+- ヘルパの転送中 (と GO の前) に打ったキーは捨てる。
+- シェルの終わりは pty の read が EIO/0 になることで知る。バックグラウンドのジョブが pty を握っていると `exit` の後も
+  続く (waitpid(WNOHANG) を見るのは今後)。
+- DECRQM で ?2026 (同期更新) に対応と答えるので Claude Code は BSU/ESU を使う。ESU が来ないまま死んだときのため
+  同期中の保留は最長 500 ms。
 
 ## 実機 (X68000 Z) での手順 (未実施のチェックリスト)
 
@@ -206,7 +211,11 @@ B:/home/.ssh/known_hosts    既存 (-y を付けない)
    `-t` (VT100 直) と比べる。Pi 側で `ZTERM_STATS=1` を付けるには起動スクリプトを経ないで試すしかないので、
    帯域は Mac の zthost で測った値を参考にする。
 7. フォールバック: B:/zterm の .gz の名前を一時的に変える → `zterm: no helper ... -- falling back to -t` の後、同じ接続で
-   VT100 のシェルになるか (dropbear の closehandler の中でセッションを開き直す。**実機で一度も通していない**)。
+   VT100 のシェルになるか (dropbear の closehandler の中でセッションを開き直す。**実機で一度も通していない**。
+   新しいチャネルは OPEN_CONFIRMATION まで transwindow が 0 で、send_msg_channel_data は maxlen == 0 で何もしないので
+   先走ってキーを送ることはない)。
+11. 切断: 描画中に Pi の sshd を止める / LAN を抜く → dropbear_exit の経路でも画面が戻るか (cli_tty_cleanup の頭で
+    x68k_tty_cleanup を呼ぶ。zterm は pty を要求しないので raw モードの確認より前に置いた)。
 8. 壊れた転送: 転送の途中で ssh を切る → 次の接続で `.tmp` が残っても再送されるか。
 9. `-Z host cmd` (例 `-Z host top`) が sh -c で動き、終わると戻るか。
 10. 異常系: リモートの zterm を `pkill zterm` → BYE が来ずにチャネルが閉じる → 画面を戻して終わるか。

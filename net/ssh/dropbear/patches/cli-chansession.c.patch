@@ -31,18 +31,19 @@
  	if (tcgetattr(STDIN_FILENO, &tio) == -1) {
  		dropbear_exit("Failed to set raw TTY mode");
  	}
-@@ -146,6 +163,10 @@
- 	} else {
- 		cli_ses.tty_raw_mode = 0; 
- 	}
+@@ -136,6 +153,11 @@
+ 
+ 	TRACE(("enter cli_tty_cleanup"))
+ 
 +#if DROPBEAR_X68K
-+	/* コンソールを戻す (パレット・カーソル)。画面の内容は残す */
++	/* コンソールを戻す (パレット・カーソル)。画面の内容は残す。raw モードの確認より前に呼ぶ:
++	   zterm (-Z) は pty を要求しないので raw モードにならないが、画面は占有している (切断で終わる場合も戻す) */
 +	{ extern void x68k_tty_cleanup(void); x68k_tty_cleanup(); }
 +#endif
- 
- 	TRACE(("leave cli_tty_cleanup"))
- }
-@@ -282,10 +303,19 @@
+ 	if (cli_ses.tty_raw_mode == 0) {
+ 		TRACE(("leave cli_tty_cleanup: not in raw mode"))
+ 		return;
+@@ -282,10 +304,19 @@
  	buf_putbyte(ses.writepayload, 0);
  
  	/* Get the terminal */
@@ -62,7 +63,7 @@
  	buf_putstring(ses.writepayload, term, strlen(term));
  
  	/* Window size */
-@@ -297,15 +327,21 @@
+@@ -297,15 +328,21 @@
  	encrypt_packet();
  
  	/* Set up a window-change handler */
