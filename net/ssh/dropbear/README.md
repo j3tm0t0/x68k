@@ -17,9 +17,14 @@ dropbear の `dbclient` を X68000 (Human68k) 用にクロスビルドして `ss
 ./build.sh              # ssh.x を作る (素の curve25519。遅い。既定の出力は ./ssh.x)
 FAST=1 ./build.sh       # 68000 高速体演算を組み込む (XEiJ 計測で scalarmult 118s->10s。Z 実機の内訳は ../PROGRESS.md)
 FAST=1 FAST_C=1 ./build.sh   # asm 無しの C 版だけ (22s)。mul68k.s 不要
+FAST=1 CHACHA68K=0 ./build.sh  # 通信路の暗号を libtomcrypt のままにする (CHACHA68K の既定は FAST と同じ)
+FAST=1 CHACHA68K_C=1 ./build.sh  # chacha68k の C 版だけ (asm 無し)
 ./build.sh /path/ssh.x  # 出力先を指定
 DEBUG=1 FAST=1 ./build.sh /path/dbg.x   # 位相ごとの印 (経過秒付き) をテキスト画面に出す版
 ```
+
+`CHACHA68K=1` は `net/ssh/chacha68k/` (68000 向けの ChaCha20 / Poly1305、`chachapoly.patch`) を組み込む。
+XEiJ SUPER で chacha20-poly1305 が 4.0 KB/s → 22 KB/s (16 KB のパケット)。結果は libtomcrypt と同じ。
 
 `VTKEEP=1` は終了時に VT100 の画面をプレーン 0,1 に潰さない試験用の版 (VRAM ダンプで色を見る)。
 
@@ -61,7 +66,7 @@ sshd (例 ~/sshtest の :2222) が要る。
 
 - `__wrap_write` (リンクに `-Wl,--wrap=write`): **ソケットへの write は 1 回 4096 バイトまで**。xip はノンブロッキングの
   ソケットに 4096 を超えて write すると、全部送ったのに -1 (libsocket が EAGAIN にする) を返す。dropbear は同じパケットを
-  送り直すので sshd は "Bad packet length" で切る。`net/ssh/sendtest.c` + `sendsink.py` で実機確認 (2026-10-22): 4096 は
+  送り直すので sshd は "Bad packet length" で切る。branch zterm の `net/ssh/sendtest.c` + `sendsink.py` で実機確認 (2026-10-22): 4096 は
   300 KB まで正確 (受信を混ぜても)、4097 / 8192 / 32768 は毎回この重複。ブロッキングなら 8192 も正常。それまで Z は打鍵しか
   送らなかったので表に出なかった (ssh.x -Z のヘルパ転送で発覚)。
 
