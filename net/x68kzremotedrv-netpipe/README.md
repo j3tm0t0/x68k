@@ -34,6 +34,7 @@ USB キーボード (0012) を入れるときは `cmake -DHID_KEYBOARD=ON ..` (�
 | `src/virtual_disk.c` | ID 6 の読み書きを netpipe に回す |
 | `src/connect.c` | Wi-Fi の省電力を切る (応答が 50〜300ms 遅れて TCP が遅くなるため) |
 | `src/accel.c` / `accel_ops.c` / `accel_proto.h` / `monocypher/` | 0011: 暗号アクセラレータ (X25519 / Ed25519 を Z の代わりに計算する。[../accel](../accel)) |
+| `driver/bootwait.S` | 0018: 描く前に CRTC R21/R23 を 0 に戻し、書き直す行を同じ幅で埋める (設定画面から戻ると文字が重なった) |
 | `driver/bootwait.S` / `src/connect.c` | 0017: 9 行のバナー、経過秒は Pico の時計で数える、「次の再接続まで N 秒」 |
 | `driver/bootwait.S` / `src/virtual_disk.c` | 0016: 待ち画面に X68000 Z のバナーと動き、[S] で設定画面 (接続中でも使える) |
 | `src/bootwait.c` / `driver/bootwait1.S` / `driver/bootwait.S` / `test/bootwait/waiter_test.py` | 0015: BOOTWAIT_SCREEN (既定オン)。HDS の先頭 16KB をフラッシュに控え、開けるまで Z の画面に接続待ちを出す |
@@ -122,6 +123,8 @@ python3 -uc 'import socket,time;s=socket.socket(2,2);s.bind(("",6870));[print(ti
   - S か F1: 設定画面 (hdsboot の F1 と同じ settingui.bin を ID 6 の LBA 0x100 から読む)。0016 から、Pico が接続中でも使える
     (設定画面の命令は接続を待たず、接続タスクが Wi-Fi に繋ぎにいっている間は NOT READY で待たせる。変えた設定は次の繰り直しで使われる)。
     設定で HDS を変えたら Z の電源を入れ直す (画面にも出す。変えた HDS が開くと「HDS が変わりました」になる)
+- 0018: 設定画面 (IOCS の TXBOX など) から戻ると、書き直す行に前の文字が混ざって見えた (テキストの同時アクセス R21 と
+  ビットマスク R23 が残っていた)。待ち IPL は始めと毎回の表示の前に R21/R23 に 0 を書き (読まない)、行を 88 桁まで空白で埋める
 - 0017: バナーを枠付きの 9 行に。経過秒は Z の IOCS _ONTIME ではなく応答の Pico の起動からの時間で数える
   (実機で秒が減って見えた)。_ONTIME は問い合わせの間隔と番地にだけ使い、差の絶対値で 0.5 秒を測る。
   応答に次の再接続までの時間を載せ、「(次の再接続まで N 秒)」/「(接続を試しています)」を出す
