@@ -195,6 +195,10 @@ musl-gcc は要らない)。`rustup target add aarch64-unknown-linux-musl x86_64
 - 直した版: 転送 (sending → pushed → go → hello → top → 正常終了) と 2 回目のキャッシュ (cached → go → hello) が通った。
   ACCEL なし 1 回・ACCEL あり 3 回の転送のうち、ACCEL ありの最初の 1 回だけ転送の終わり近くで sshd が
   "message authentication code incorrect" を出して切った (再現せず。原因未確定)。
+- macOS も通った (ACCEL、`top -l 3 -s 1 -n 8`): macmini-pro (Darwin x86_64、ログインシェル zsh) は転送 212 KB 2 分 51 秒 +
+  キャッシュ 20 秒、motombp16 (Darwin arm64) は転送 201 KB 2 分 45 秒 + キャッシュ 22 秒。起動スクリプト (/bin/sh・head -c・
+  gzip -dc・uname -s = Darwin) と Darwin の pty はそのまま動いた。終了後の Z のテキスト VRAM (プレーン 0) に top の出力が
+  正しく残っていることも memdump で確認。
 - **時間**: 転送 257 KB に約 3 分 (ACCEL ありで接続から終了まで 3 分 20 秒)、キャッシュありは ACCEL で 19 秒、なしで 78 秒。
   律速は Z の chacha20-poly1305 で **約 1.5 KB/s** (net/ssh/crypttest。TCP の送信だけなら 4096 ずつで 9〜11 KB/s)。
   受信も同じ速さでしか復号できないので、素の VT の Claude Code (4.4 KB/s) は Z では実時間に復号しきれない。zterm の
