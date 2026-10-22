@@ -10,8 +10,13 @@
  *         を送信リングに積んですぐ戻る。npd.x が ETD 命令 19 でまとめて取り出す。
  *   受信: npd.x が Pico から受けたパケットを ETD 命令 16 で渡してくるので、見出しを付けて xip.x の受信ハンドラを呼ぶ。
  * ARP は捨てる (xip.x は相手に ARP を引かない)。自分の MAC = 02:00:00:00:00:02、相手 = 02:00:00:00:00:01。
+ *
+ * 暗号アクセラレータ (net/accel): ssh.x などの要求 (X25519 / Ed25519) を 1 つ預かり (ETD 命令 20)、npd.x が送信
+ * レコードの後ろに制御レコードとして載せ (ETD 19)、Pico の応答を受け取る (ETD 23)。要求側は ETD 21 で結果を取る。
+ * 要求も結果もここ (常駐) のバッファに写すので、要求側が途中で終了しても解放されたメモリには書かない。
  */
 #include <stdint.h>
+#include "../accel/accel_proto.h"
 
 #define ETH_HLEN  14
 #define TXSIZE    8192       /* 送信リング (2 の累乗) */
@@ -39,6 +44,17 @@ static uint8_t accepting;
 
 /* 統計 (etd_get_statistics) */
 static uint32_t st_rx, st_tx, st_drop;
+
+/* 暗号アクセラレータの要求 (同時に 1 つ) */
+#define ACC_IDLE    0                    /* 空 */
+#define ACC_QUEUED  1                    /* 要求あり (まだ送っていない) */
+#define ACC_SENT    2                    /* 送った (応答待ち) */
+#define ACC_DONE    3                    /* 応答あり (要求側が取るのを待つ) */
+static uint8_t acc_state;
+static uint16_t acc_id, acc_nextid, acc_reqlen, acc_reslen;
+static uint8_t acc_req[ACCEL_REQ_MAX];
+static uint8_t acc_res[ACCEL_RES_MAX];
+static uint32_t st_acc_req, st_acc_res, st_acc_stale;
 
 #define TX_PUT(c) (txbuf[h] = (c), h = (h + 1) & (TXSIZE - 1))
 
@@ -147,8 +163,76 @@ long etd_dispatch(long cmd, long *a)
       }
     }
     tx_tail = t;
+    /* 暗号アクセラレータの要求があれば、制御レコード [長さ 2][ACCEL_MARK ...][詰め物] として後ろに載せる */
+    if (acc_state == ACC_QUEUED) {
+      long rl = 2 + ((acc_reqlen + 1) & ~1);
+      if (n + rl <= max) {
+        d[n++] = acc_reqlen >> 8;
+        d[n++] = acc_reqlen;
+        for (i = 0; i < acc_reqlen; i++)
+          d[n++] = acc_req[i];
+        if (acc_reqlen & 1)
+          d[n++] = 0;
+        acc_state = ACC_SENT;
+      }
+    }
     return n;
   }
+  case 20: {                               /* (accel) 要求を預かる: a[0] = 要求 (ACCEL_MARK から), a[1] = 長さ。
+                                              id (+2) はここで振る。戻り値 = id (> 0)、預かれなければ -1 (別の要求が進行中) / -2 (長さ) */
+    const uint8_t *p = (const uint8_t *)a[0];
+    long len = a[1];
+    if (acc_state != ACC_IDLE)
+      return -1;
+    if (len < ACCEL_REQ_HDR || len > ACCEL_REQ_MAX || p[0] != ACCEL_MARK)
+      return -2;
+    for (i = 0; i < len; i++)
+      acc_req[i] = p[i];
+    if (++acc_nextid == 0)
+      acc_nextid = 1;
+    acc_id = acc_nextid;
+    accel_put16(acc_req + 2, acc_id);
+    acc_reqlen = len;
+    acc_state = ACC_QUEUED;
+    st_acc_req++;
+    return acc_id;
+  }
+  case 21: {                               /* (accel) 結果を取る: a[0] = 書く先, a[1] = 最大バイト数。
+                                              戻り値 = 応答の長さ (> 0、取ったら空になる) / 0 (まだ) / -1 (要求が無い) / -3 (入らない) */
+    uint8_t *d = (uint8_t *)a[0];
+    if (acc_state == ACC_IDLE)
+      return -1;
+    if (acc_state != ACC_DONE)
+      return 0;
+    if (acc_reslen > a[1])
+      return -3;
+    for (i = 0; i < acc_reslen; i++)
+      d[i] = acc_res[i];
+    acc_state = ACC_IDLE;
+    return acc_reslen;
+  }
+  case 22:                                 /* (accel) 要求を取り消す (遅れて届いた応答は捨てる) */
+    acc_state = ACC_IDLE;
+    return 0;
+  case 23: {                               /* (accel, npd.x から) Pico の応答: a[0] = 長さ, a[1] = 応答 (ACCEL_MARK から)。
+                                              戻り値 = 1 受け取った / 0 捨てた (id が違う、待っていない) */
+    const uint8_t *p = (const uint8_t *)a[1];
+    long len = a[0];
+    if (len < ACCEL_RES_HDR || len > ACCEL_RES_MAX || acc_state != ACC_SENT || accel_get16(p + 2) != acc_id) {
+      st_acc_stale++;
+      return 0;
+    }
+    for (i = 0; i < len; i++)
+      acc_res[i] = p[i];
+    acc_reslen = len;
+    acc_state = ACC_DONE;
+    st_acc_res++;
+    return 1;
+  }
+  case 24:                                 /* (accel) 統計: state, req, res, stale */
+    ((uint32_t *)a)[0] = acc_state; ((uint32_t *)a)[1] = st_acc_req;
+    ((uint32_t *)a)[2] = st_acc_res; ((uint32_t *)a)[3] = st_acc_stale;
+    return 0;
   default:
     return -1;
   }
@@ -170,7 +254,7 @@ long dev_interrupt(struct req_header *req)
     char *b;
     for (b = &__bss_start; b < &_end; b++)
       *b = 0;
-    dos_print("\r\nnetpipe driver for ESP/X (/dev/ep0) npd.sys 1.0\r\n");
+    dos_print("\r\nnetpipe driver for ESP/X (/dev/ep0) npd.sys 1.1 (accel)\r\n");
     req->addr = &_end;
     return 0;
   }

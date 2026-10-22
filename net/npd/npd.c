@@ -6,6 +6,8 @@
  * Pico は Z の IP アドレスを Wi-Fi の LAN で名乗り (代理 ARP)、Z 宛ての IPv4 を渡し、Z からのものを LAN に出す。
  *   受信: 応答のレコードを 1 個ずつ npd.sys に渡す (ETD 命令 16)。npd.sys が見出しを付けて xip.x の受信ハンドラを呼ぶ。
  *   送信: npd.sys の送信リングからレコードをまとめて取り出す (ETD 命令 19)。
+ *   中身の先頭が ACCEL_MARK (0xA5) のレコードは暗号アクセラレータ (net/accel) の要求 / 応答。要求は npd.sys が
+ *   ETD 命令 19 の出力の後ろに載せ、応答は ETD 命令 23 で npd.sys に渡す (Pico が X25519 / Ed25519 を計算する)。
  *
  *   npd.x [-iN] a.b.c.d : 常駐してスレッド "npd" を作る (2 回目以降は受信の受け入れを再開するだけ)。a.b.c.d は Z の
  *                         IP アドレス。xip.x の設定 (ifconfig / inetdconf) が済んでから起動する
@@ -19,6 +21,7 @@
 #include <x68k/dos.h>
 #include <x68k/iocs.h>
 #include <stdint.h>
+#include "../accel/accel_proto.h"
 
 extern long call_etd(void *entry, long cmd, void *arg);
 extern char *mem_ptr;
@@ -232,7 +235,14 @@ static void rec_in(uint8_t *s, int n)
     uint8_t *ip = s + 16;
     if (rl > n)
       break;
-    if (len >= 20 && (ip[0] >> 4) == 4 && (ip[0] & 15) >= 5 && ((ip[2] << 8) | ip[3]) == len) {
+    if (len >= ACCEL_RES_HDR && ip[0] == ACCEL_MARK) {
+      /* 暗号アクセラレータの応答 (IPv4 のバージョン nibble と重ならない) */
+      long arg[2];
+      arg[0] = len;
+      arg[1] = (long)ip;
+      tap('A', ip, len);
+      call_etd(etd, 23, arg);
+    } else if (len >= 20 && (ip[0] >> 4) == 4 && (ip[0] & 15) >= 5 && ((ip[2] << 8) | ip[3]) == len) {
       long arg[2];
       if (ip[1]) {
         /* xip.x は TOS (DSCP) が 0 でない TCP のデータに RST を返して捨てる (KA9Q NOS 由来)。OpenSSH の sshd は
