@@ -5,6 +5,8 @@
  *   verify : ed25519 verify だけ Pico に任せる (公開情報しか渡さない。安全性は変わらない)
  *   kex    : + X25519 の鍵生成と共有秘密 (Pico がセッション鍵を知る)
  *   all    : + ed25519 sign (署名鍵の seed を Pico に渡す)
+ * 末尾に +log (例 -oAccel=all+log) か環境変数 ACCEL_LOG=1 で、Pico の caps と 1 回ごとの所要時間を stderr に出す。
+ * 既定では出さない (使えない・失敗して Z で計算し直すときの警告だけは出す)。
  * 最初の呼び出しで npd.sys を探して Pico に PING し、使えなければ (古いファーム、npd.x 無し) 以後は自前で計算する。
  * Pico が返した caps に無い段階は使わない。
  */
@@ -21,9 +23,18 @@
 
 static int mode = -1;                   /* -1: まだ決めていない (環境変数を見る) */
 static int opened;                      /* 0 まだ / 1 使える / -1 使えない */
+static int logging;                     /* 1: caps と所要時間を出す */
 
 static int parse(const char *m)
 {
+  static char buf[16];
+  const char *plus = m ? strchr(m, '+') : NULL;
+  if (plus) {
+    unsigned n = (unsigned)(plus - m);
+    if (!strcmp(plus + 1, "log")) logging = 1;
+    if (n >= sizeof buf) n = sizeof buf - 1;
+    memcpy(buf, m, n); buf[n] = 0; m = buf;
+  }
   if (!m || !*m || !strcmp(m, "none") || !strcmp(m, "no") || !strcmp(m, "off") || !strcmp(m, "0")) return MODE_NONE;
   if (!strcmp(m, "verify")) return MODE_VERIFY;
   if (!strcmp(m, "kex")) return MODE_KEX;
@@ -42,6 +53,8 @@ static int usable(int cap)
 {
   if (mode < 0)
     mode = parse(getenv("ACCEL"));
+  if (getenv("ACCEL_LOG") && strcmp(getenv("ACCEL_LOG"), "0"))
+    logging = 1;
   if (!(mode & cap))
     return 0;
   if (opened == 0) {
@@ -51,7 +64,8 @@ static int usable(int cap)
               caps == -1 ? "npd.sys not loaded" : "no answer from the Pico (old firmware or npd.x not running)");
       opened = -1;
     } else {
-      fprintf(stderr, "accel: Pico caps=%s%s%s\n", caps & ACCEL_CAP_VERIFY ? "verify " : "",
+      if (logging)
+        fprintf(stderr, "accel: Pico caps=%s%s%s\n", caps & ACCEL_CAP_VERIFY ? "verify " : "",
               caps & ACCEL_CAP_X25519 ? "x25519 " : "", caps & ACCEL_CAP_SIGN ? "sign" : "");
       mode &= caps;
       opened = 1;
@@ -64,7 +78,7 @@ static void note(const char *what, int r)
 {
   if (r < 0)
     fprintf(stderr, "accel: %s failed on the Pico (status %d), computing on the X68000\n", what, accel_last_status());
-  else
+  else if (logging)
     fprintf(stderr, "accel: %s on the Pico in %lu us (round trip %u.%02u s)\n", what,
             (unsigned long)accel_last_usec(), accel_last_ticks() / 100, accel_last_ticks() % 100);
 }

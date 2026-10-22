@@ -99,7 +99,7 @@
  #endif
  			"\tPort\n"
 +#if X68K_ACCEL
-+			"\tAccel - none|verify|kex|all (X25519/Ed25519 on the Pico W)\n"
++			"\tAccel - none|verify|kex|all[+log] (X25519/Ed25519 on the Pico W)\n"
 +#endif
  		);
  		exit(EXIT_SUCCESS);

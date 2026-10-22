@@ -3,7 +3,7 @@
 X68000 Z の `ssh.x` (dropbear、[../ssh](../ssh)) は 68000 10MHz で、ハンドシェイク 65 秒のうち 59 秒が
 Curve25519 / Ed25519 (keygen 5.6 / shared 19.6 / hostkey verify 26.7 / sign 7.2 秒、crypto68k 組み込み後)。
 Z のネットワークを運んでいる Pico W (RP2040、x68kzremotedrv の netpipe) にその計算を頼む。
-**既定はオフ** (Z 単体で計算)。`ssh.x -oAccel=verify|kex|all` か環境変数 `ACCEL=...` で段階を選んで有効にする。
+**既定はオフ** (Z 単体で計算)。`ssh.x -oAccel=verify|kex|all` か環境変数 `ACCEL=...` で段階を選んで有効にする。末尾に `+log` (`-oAccel=all+log`) か `ACCEL_LOG=1` で、Pico の caps と 1 回ごとの所要時間を stderr に出す (既定では出さない)。
 
 | 段階 | 任せる演算 | Pico に渡るもの | 信頼の変化 |
 |---|---|---|---|
@@ -67,7 +67,7 @@ ssh.x ──accel.c──> npd.sys (ETD 20/21/22) ──ETD 19──> npd.x ─�
     Pico に任せられなければ (-1) 元の関数に落ちる。`curve25519.c` (crypto68k のパッチが入る) には触らない。
     ssh ブランチの `patches/*.patch` と重ならないことを dry-run で確認済み。
   - `x68k_accel.c` / `x68k_accel.h`: つなぎ。段階の選択 (`-oAccel=` > 環境変数 `ACCEL` > none)、初回に `accel_open()`、
-    caps に無い段階は使わない、経過を stderr に 1 行出す (`accel: ed25519 verify on the Pico in 180000 us (round trip 0.25 s)`)。
+    caps に無い段階は使わない、`+log` のときだけ経過を stderr に 1 行出す (`accel: ed25519 verify on the Pico in 180000 us (round trip 0.25 s)`)。使えない・失敗して Z で計算し直すときの警告は常に出す。
   - `build-snippet.sh`: `build.sh` に挿す 2 か所 (`ACCEL=1 FAST=1 ./build.sh` で組み込む。組み込んでも既定は使わない)。
     scratchpad に複製した dropbear で `ACCEL=1 FAST=1` のビルドが通り、ssh.x (326KB) に `accel_open` 等がリンクされることを確認した。
 
@@ -124,4 +124,4 @@ Z 側の 59 秒に対して 100 倍以上速い。Monocypher の公式ページ�
    (古いファーム / npd.x が動いていない)。`sst.x` に ETD 24 は無いので、必要なら ETD 24 で req/res/stale を見る道具を足す。
 4. **ssh**: ssh ブランチの `build.sh` に `dropbear/build-snippet.sh` の 2 か所を挿し、`ACCEL=1 FAST=1 ./build.sh` →
    `b:ssh.x -oAccel=verify -y -y -i b:\id_x68k moto@192.168.1.108 uname -a` (65 → 約 38 秒)、次に `-oAccel=kex` (約 13 秒)、
-   `-oAccel=all` (約 6 秒)。stderr の `accel:` 行に Pico の時間が出る。
+   `-oAccel=all` (約 6 秒)。`-oAccel=all+log` なら stderr の `accel:` 行に Pico の時間が出る。実機の実測は verify 43 秒、kex 19 秒、all 12 秒 (2026-10-22、TCP の往復と 326KB の読み込みを含む)。
