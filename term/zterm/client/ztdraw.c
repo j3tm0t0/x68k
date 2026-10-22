@@ -46,7 +46,7 @@ void ztd_cursor(int *x, int *y, int *vis) { *x = cx; *y = cy; *vis = cur_vis; }
  * 全画面アプリでは当たらないので描かれない。場面 (ctx) は「カーソル非表示か」「代替画面か」の 4 通りで別々に信用を持つ。
  * Enter・Tab・Ctrl・他のエスケープの後は、それまでの予測が決まるまで新しい予測をしない。 */
 #define PR_MAX 64
-typedef struct { unsigned char r, c, shown, same; unsigned short cp; cell_t base; unsigned long seq; long t; unsigned epoch; } pred_t;
+typedef struct { unsigned char r, c, shown, drawn, same; unsigned short cp; cell_t base, base0; unsigned long seq, rowh; long t; unsigned epoch; } pred_t;
 static pred_t pr[PR_MAX];
 static int pr_n;                 /* 未確定の予測の数 */
 static int pr_on;                /* サーバが ECHOACK を送ってくる (予測してよい) */
@@ -75,6 +75,14 @@ static long pr_ms(void) { return (long)_iocs_ontime().sec * 10; }   /* 1/100 秒
 #else
 #define PRDBG(...) do { } while (0)
 #endif
+/* 行 r のサーバの中身の要約 (予測を外した状態で取る) */
+static unsigned long pr_rowhash(int r)
+{
+  unsigned long h = 2166136261UL;
+  int c;
+  for (c = 0; c < COLS; c++) { h = (h ^ cur[r][c].cp) * 16777619UL; h = (h ^ cur[r][c].at) * 16777619UL; }
+  return h;
+}
 /* 行 r の予測込みで最後の空白でない桁 (無ければ -1) */
 static unsigned short pr_cp_at(int r, int c);
 static int pr_last(int r)
@@ -109,7 +117,8 @@ static void pr_show(void)
   int i, t = pr_trust[pr_ctx()];
   for (i = 0; i < pr_n; i++) {
     pred_t *q = &pr[i];
-    q->shown = (unsigned char)t;
+    q->shown = (unsigned char)t;   /* 利用者に見えている (影でない) */
+    q->drawn = (unsigned char)t;   /* いま cur に重ねてある */
     if (!t) continue;
     cur[q->r][q->c].cp = q->cp;
     cur[q->r][q->c].at = (unsigned short)((q->base.at & 0xff00) | F_UNDERLINE);   /* 色はそのセルのまま、下線で未確認 */
@@ -123,7 +132,7 @@ static void pr_hide(void)
 {
   int i;
   for (i = pr_n - 1; i >= 0; i--)   /* 後ろから (同じセルに重ねた予測があっても最初の元に戻る) */
-    if (pr[i].shown) { cur[pr[i].r][pr[i].c] = pr[i].base; touch_span(pr[i].r, pr[i].c, pr[i].c); pr[i].shown = 0; }
+    if (pr[i].drawn) { cur[pr[i].r][pr[i].c] = pr[i].base; touch_span(pr[i].r, pr[i].c, pr[i].c); pr[i].drawn = 0; }
   cx = srv_cx; cy = srv_cy; cur_vis = srv_vis;
 }
 
@@ -133,16 +142,23 @@ static void pr_reconcile(int reset)
   int i, j, miss = 0, ctx = pr_ctx();
   long now = pr_ms();
   if (reset) { pr_n = 0; pr_curset = 0; pr_hold = 0; }
+  static unsigned char hitrow[MAXROWS];
+  for (i = 0; i < MAXROWS; i++) hitrow[i] = 0;
   for (i = j = 0; i < pr_n; i++) {
     pred_t *q = &pr[i];
     cell_t *s = &cur[q->r][q->c];
     q->base = *s;
+    if (hitrow[q->r]) q->rowh = pr_rowhash(q->r);   /* 同じ行の前の予測が当たった: 行の変化はそれで説明がつく */
     if (s->cp == q->cp && !(s->at & (F_WIDECONT | F_WIDE | F_EMOJI))) {   /* 当たり */
       if (!q->same && q->epoch == pr_epoch) pr_trust[ctx] = 1;
       pr_nhit++;
+      hitrow[q->r] = 1;
+      PRDBG("hit (%d,%d) %04x srv cursor %d,%d ack %lu seq %lu\n", q->r, q->c, q->cp, srv_cx, srv_cy, pr_ack, q->seq);
       continue;
     }
-    if ((long)(pr_ack - q->seq) >= 0 || now - q->t > PR_TIMEOUT || now < q->t) {   /* 外れ */
+    /* 外れ: キーが届いた (ack) のに、その行が予測と違う形に変わった / 時間切れ。届いたのに行が予測した時のまま
+       (アプリの描き直しが 100ms より遅い) は時間切れまで待つ */
+    if (((long)(pr_ack - q->seq) >= 0 && pr_rowhash(q->r) != q->rowh) || now - q->t > PR_TIMEOUT || now < q->t) {
       PRDBG("miss (%d,%d) want %04x got %04x ack %lu seq %lu age %ld\n", q->r, q->c, q->cp, s->cp, pr_ack, q->seq, now - q->t);
       miss = 1; break;
     }
@@ -153,10 +169,10 @@ static void pr_reconcile(int reset)
     pr_trust[ctx] = 0; pr_nmiss++;
   } else {
     pr_n = j;
-    if ((long)(pr_ack - pr_lastseq) >= 0) {
-      /* キーが全部届いて画面に反映された: 残った予測は無いはず。カーソルの予測も照合する */
+    if (pr_n == 0 && (long)(pr_ack - pr_lastseq) >= 0) {
+      /* キーが全部届いて、予測した字も全部画面に出た: カーソルの予測も照合する */
       if (pr_curset && (pr_cx != srv_cx || pr_cy != srv_cy)) { PRDBG("cursor miss pred %d,%d srv %d,%d\n", pr_cx, pr_cy, srv_cx, srv_cy); pr_trust[ctx] = 0; pr_nmiss++; }
-      pr_n = 0; pr_curset = 0; pr_hold = 0;
+      pr_curset = 0; pr_hold = 0;
     }
   }
   pr_show();
@@ -174,7 +190,7 @@ static int pr_add(int r, int c, unsigned short cp, unsigned long seq)
   s = &cur[r][c];
   if (s->at & (F_WIDE | F_WIDECONT | F_EMOJI)) return 0;   /* 全角の上には予測しない */
   pr[pr_n].r = (unsigned char)r; pr[pr_n].c = (unsigned char)c; pr[pr_n].cp = cp;
-  pr[pr_n].base = *s; pr[pr_n].seq = seq; pr[pr_n].t = pr_ms(); pr[pr_n].shown = 0; pr[pr_n].epoch = pr_epoch;
+  pr[pr_n].base = pr[pr_n].base0 = *s; pr[pr_n].rowh = pr_rowhash(r); pr[pr_n].seq = seq; pr[pr_n].t = pr_ms(); pr[pr_n].shown = 0; pr[pr_n].drawn = 0; pr[pr_n].epoch = pr_epoch;
   pr[pr_n].same = (unsigned char)(s->cp == cp);   /* 元から同じ字: 当たっても信用の証拠にしない */
   pr_n++;
   return 1;
@@ -230,6 +246,7 @@ void ztd_predict(const unsigned char *k, int n, unsigned long seq)
       for (t = 0; t < 4; t++) pr_trust[t] = 0;
       pr_epoch++;
       pr_hold = 1;
+      { int j2, i2; for (i2 = j2 = 0; i2 < pr_n; i2++) if (pr[i2].shown) pr[j2++] = pr[i2]; pr_n = j2; }   /* 描いていない影の予測は捨てる (もう信用の材料にならない) */
       break;
     }
   }

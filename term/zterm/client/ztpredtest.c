@@ -117,6 +117,17 @@ int main(void)
   f_begin(); f_byte(0x08); f_byte(0); f_byte(4); f_byte(1); f_cursor(4, 1); f_end();
   expect("7 scroll drops predictions", 1, 3, "e ", "..", 4);
 
+  /* 遅いアプリ: キーは届いた (ack) が描き直しはまだ -> 消さずに待ち、後で出たら当たり */
+  f_begin(); f_text(3, 0, "> "); f_cursor(2, 3); f_end();
+  keys("m");
+  f_begin(); f_text(3, 2, "m"); f_cursor(3, 3); f_ack(37); f_end();
+  keys("no");
+  expect("8 trusted on the slow line", 3, 2, "mno", ".__", 5);
+  f_begin(); f_ack(39); f_end();
+  expect("8 acked but not redrawn yet: kept", 3, 2, "mno", ".__", 5);
+  f_begin(); f_text(3, 3, "no"); f_cursor(5, 3); f_end();
+  expect("8 redrawn later: confirmed", 3, 2, "mno", "...", 5);
+
   ztd_echo_stats(&hit, &miss);
   printf("hits %ld misses %ld\n", hit, miss);
   printf("%s\n", fails ? "FAILED" : "ALL PASS");
