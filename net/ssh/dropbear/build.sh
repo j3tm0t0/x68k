@@ -14,6 +14,10 @@ CROSS=m68k-xelf-
 # FAST=1 で 68000 向け高速体演算 (net/ssh/crypto68k, vt100 agent 作) を組み込む。
 # XEiJ 計測で scalarmult 118s -> 10s (~12x)。Z 実機ではハンドシェイク全体 65s (../PROGRESS.md)。FAST_C=1 なら asm 無し (22s)。CRYPTO68K で場所を指定可。
 FAST="${FAST:-0}"
+# CHACHA68K=1 で 68000 向けの ChaCha20 / Poly1305 (net/ssh/chacha68k) を組み込む (既定は FAST と同じ)。
+# Musashi 計測で 16KB のパケット 2384 -> 646 クロック/バイト。CHACHA68K_C=1 なら asm 無し。
+CHACHA68K="${CHACHA68K:-$FAST}"
+CHACHA68KDIR="${CHACHA68KDIR:-$HERE/../chacha68k}"
 # DEBUG=1 で位相ごとの印 (x68dbg、経過秒付き) をテキスト画面に出す版を作る。
 DEBUG="${DEBUG:-0}"
 CRYPTO68K="${CRYPTO68K:-$HERE/../crypto68k}"
@@ -42,6 +46,13 @@ if [ "$FAST" = "1" ]; then
   fi
   EXTRA_DEF="$EXTRA_DEF -DFAST_FIELD"
   [ "${FAST_C:-0}" != "1" ] && EXTRA_DEF="$EXTRA_DEF -DUSE_ASM"   # mul68k.o は make clean 後に組む
+fi
+
+if [ "$CHACHA68K" = "1" ]; then
+  [ -f "$CHACHA68KDIR/cp68k.c" ] || { echo "build: CHACHA68K=1 だが $CHACHA68KDIR が無い" >&2; exit 1; }
+  cp "$CHACHA68KDIR/cp68k.h" "$CHACHA68KDIR/cp68k.c" "$SRC/"
+  patch -d "$SRC" -p1 < "$CHACHA68KDIR/chachapoly.patch"
+  EXTRA_DEF="$EXTRA_DEF -DCHACHA68K"
 fi
 
 # パッチ (冪等: 既に当たっていれば skip)
@@ -80,6 +91,19 @@ ${CROSS}gcc -m68000 -O2 -fomit-frame-pointer -Wno-array-bounds -I"$VT100" -c "$V
 EXTRA_OBJ="$SRC/vt100.o"
 # FAST の asm 乗算も make clean 後に組む
 case "$EXTRA_DEF" in *USE_ASM*) ${CROSS}as -m68000 "$CRYPTO68K/mul68k.s" -o "$SRC/mul68k.o"; EXTRA_OBJ="$EXTRA_OBJ $SRC/mul68k.o";; esac
+
+# chacha68k も make clean 後に組む (asm は CHACHA68K_C=1 で外す)
+if [ "$CHACHA68K" = "1" ]; then
+  CPDEF=""
+  if [ "${CHACHA68K_C:-0}" != "1" ]; then
+    CPDEF="-DCP68K_ASM"
+    ${CROSS}as -m68000 "$CHACHA68KDIR/chacha68k.s" -o "$SRC/chacha68k.o"
+    ${CROSS}as -m68000 "$CHACHA68KDIR/poly68k.s" -o "$SRC/poly68k.o"
+    EXTRA_OBJ="$EXTRA_OBJ $SRC/chacha68k.o $SRC/poly68k.o"
+  fi
+  ${CROSS}gcc -m68000 -O2 -fomit-frame-pointer $CPDEF -c cp68k.c -o cp68k.o
+  EXTRA_OBJ="$EXTRA_OBJ $SRC/cp68k.o"
+fi
 
 # 先に dry-run でリンク行を取っておく (ビルド後だと "up to date" で出ない)
 # -Wl,--wrap=write: ソケットへの write を 4096 バイトずつに切る (xip の不具合よけ、x68k_shim.c の __wrap_write)
