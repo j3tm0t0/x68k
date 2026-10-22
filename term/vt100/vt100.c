@@ -494,7 +494,7 @@ static void blit_plain(volatile unsigned char *v0, const cell_t *c, const cell_t
   if (m & 0xf000) { volatile unsigned char *v = v0; sa_mask(m >> 12); pl_inv1(v, gp); }
 }
 
-#if defined(__mc68000__) && !defined(VT_PROF_NOBLIT)
+#if defined(__mc68000__) && !defined(VT_PROF_NOBLIT) && !defined(VT_NO_ASM)   /* -DVT_NO_ASM で C だけに */
 /* blit_plain の 68000 手書き版 (同時アクセスが使えるときだけ)。C だとセルごとの判定・表引き・レジスタの出し入れに
  * グリフの 16 バイト転送の倍以上かかっていた。行の差分セル diff[0..nd-1] を前から描き、drawn も写す。
  * ASCII 以外・下線・全角・罫線・\・~ のセルに来たらそこで止め、処理した数を返す (そのセルは C の blit が描く)。
@@ -726,14 +726,14 @@ static NOINLINE void flush(void)
     if (hi >= COLS) hi = COLS - 1;
     lrow = cur[r]; drow = drawn[r];
     /* 1 回目: 書き換え範囲で描き直しの要るセルを拾う (同じなら飛ばす。空白で前景色だけ違うものは控えだけ直す) */
-#ifdef __mc68000__
+#if defined(__mc68000__) && !defined(VT_NO_ASM)
     {   /* 同じセルを飛ばすのは cmpm.l / dbne の 2 命令のループで (C の比較ループの半分以下のクロック) */
       const cell_u32 *l = (const cell_u32 *)&lrow[lo], *d = (const cell_u32 *)&drow[lo];
       short cnt = (short)(hi - lo);   /* dbne の回数 (残りのセル数 - 1) */
       for (;;) {
         unsigned char ne;
         __asm__ volatile ("1:\tcmpm.l\t(%0)+,(%1)+\n\tdbne\t%2,1b\n\tsne\t%3"
-                          : "+a"(l), "+a"(d), "+d"(cnt), "=d"(ne) : : "cc");
+                          : "+a"(l), "+a"(d), "+d"(cnt), "=d"(ne) : : "cc", "memory");
         if (!ne) break;   /* 最後まで同じ */
         c = (int)((const cell_t *)l - lrow) - 1;   /* 食い違ったセル (両方とも 1 つ先まで進んでいる) */
         if (same_look(&lrow[c], &drow[c])) drow[c] = lrow[c];
@@ -1566,7 +1566,11 @@ void vt_init(int cols, int rows)
   for (c = 0; c < MAXCOLS; c++) tabstop[c] = (c % 8 == 0) ? 1 : 0;
   s = sup_enter();
   sa_cur = 0;
+#ifdef VT_NO_SA
+  sa_ok = 0;              /* -DVT_NO_SA: 同時アクセスを使わない (プレーンごとに書く) */
+#else
   sa_ok = sa_probe();
+#endif
   palette_setup();
   _iocs_b_curoff();           /* BIOS のカーソルは使わない (自前で描く) */
   for (r = 0; r < ROWS; r++)
