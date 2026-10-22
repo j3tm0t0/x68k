@@ -34,6 +34,7 @@ USB キーボード (0012) を入れるときは `cmake -DHID_KEYBOARD=ON ..` (�
 | `src/virtual_disk.c` | ID 6 の読み書きを netpipe に回す |
 | `src/connect.c` | Wi-Fi の省電力を切る (応答が 50〜300ms 遅れて TCP が遅くなるため) |
 | `src/accel.c` / `accel_ops.c` / `accel_proto.h` / `monocypher/` | 0011: 暗号アクセラレータ (X25519 / Ed25519 を Z の代わりに計算する。[../accel](../accel)) |
+| `driver/bootwait.S` / `driver/mkbootwait.py` / `driver/bootwait_gen.S` | 0019: 待ち画面の作り直し (三角形の X の紋章をテキスト VRAM に、枠・色・そろえた欄、◆ が走る行、反転の案内) |
 | `driver/bootwait.S` | 0018: 描く前に CRTC R21/R23 を 0 に戻し、書き直す行を同じ幅で埋める (設定画面から戻ると文字が重なった) |
 | `driver/bootwait.S` / `src/connect.c` | 0017: 9 行のバナー、経過秒は Pico の時計で数える、「次の再接続まで N 秒」 |
 | `driver/bootwait.S` / `src/virtual_disk.c` | 0016: 待ち画面に X68000 Z のバナーと動き、[S] で設定画面 (接続中でも使える) |
@@ -123,6 +124,12 @@ python3 -uc 'import socket,time;s=socket.socket(2,2);s.bind(("",6870));[print(ti
   - S か F1: 設定画面 (hdsboot の F1 と同じ settingui.bin を ID 6 の LBA 0x100 から読む)。0016 から、Pico が接続中でも使える
     (設定画面の命令は接続を待たず、接続タスクが Wi-Fi に繋ぎにいっている間は NOT READY で待たせる。変えた設定は次の繰り直しで使われる)。
     設定で HDS を変えたら Z の電源を入れ直す (画面にも出す。変えた HDS が開くと「HDS が変わりました」になる)
+- 0019: 画面を作り直した。紋章 (中心で向き合う 4 つの三角形の X と斜体の "X68000 Z"、自前の幾何学的な絵) はテキスト VRAM の
+  プレーン 2・3 に直接描く (プレーン 0・1 は IOCS の文字)。罫線の枠、Wi-Fi / SMB / HDS / 経過の欄 (● つながった / ○ 待ち / × 開けない)、
+  `[Pico W] ━━◆━━ [X68000 Z]`、下に反転の案内、カーソルは消す。テキストパレットは始めに控えて書き換え、本物の IPL・設定画面に渡す前に
+  プレーン 2・3 の消去、パレット、色、カーソルを元に戻す。文字列・配置・紋章は `driver/mkbootwait.py` (PIL) が作る `bootwait_gen.S`
+  (git に入れてあるのでビルドに PIL は要らない)。後半は 12KB になり、ID 6 の LBA 0x80-0x9f (32 セクタ) に置く。
+  `make -C test/bootwait` が IOCS の画面・テキスト VRAM・パレットを真似て確かめ、`waiter_preview.png` (下見) を作る
 - 0018: 設定画面 (IOCS の TXBOX など) から戻ると、書き直す行に前の文字が混ざって見えた (テキストの同時アクセス R21 と
   ビットマスク R23 が残っていた)。待ち IPL は始めと毎回の表示の前に R21/R23 に 0 を書き (読まない)、行を 88 桁まで空白で埋める
 - 0017: バナーを枠付きの 9 行に。経過秒は Z の IOCS _ONTIME ではなく応答の Pico の起動からの時間で数える
