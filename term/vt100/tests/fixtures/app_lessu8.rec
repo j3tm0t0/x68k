@@ -1,0 +1,157 @@
+[?1049h[32;1H[?1h=┌───────┬───────┐
+│ 日本語 │ ascii │
+├───────┼───────┤
+│ 全角ｶﾅ │ ±≤≥→← │
+└───────┴───────┘
+• bullet · middot … ellipsis — dash “quotes” ‘single’
+✓ check ✗ cross ⏺ record ⎿ corner ✻ star ❯ prompt
+café naïve é combining
+Ω≈ç√∫˜µ≤≥÷ ¡™£¢∞§¶•ªº
+한국어 中文 русский ελληνικά
+line 001 日本
+line 002 日本日本
+line 003 日本日本日本
+line 004 日本日本日本日本
+line 005 日本日本日本日本日本
+line 006 日本日本日本日本日本日本
+line 007 
+line 008 日本
+line 009 日本日本
+line 010 日本日本日本
+line 011 日本日本日本日本
+line 012 日本日本日本日本日本
+line 013 日本日本日本日本日本日本
+line 014 
+line 015 日本
+line 016 日本日本
+line 017 日本日本日本
+line 018 日本日本日本日本
+line 019 日本日本日本日本日本
+line 020 日本日本日本日本日本日本
+line 021 
+[7m/tmp/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/u8.txt[27m[K[Kline 022 日本
+:[K[Kline 023 日本日本
+line 024 日本日本日本
+line 025 日本日本日本日本
+line 026 日本日本日本日本日本
+line 027 日本日本日本日本日本日本
+line 028 
+line 029 日本
+line 030 日本日本
+line 031 日本日本日本
+line 032 日本日本日本日本
+line 033 日本日本日本日本日本
+line 034 日本日本日本日本日本日本
+line 035 
+line 036 日本
+line 037 日本日本
+line 038 日本日本日本
+line 039 日本日本日本日本
+line 040 日本日本日本日本日本
+line 041 日本日本日本日本日本日本
+line 042 
+line 043 日本
+line 044 日本日本
+line 045 日本日本日本
+line 046 日本日本日本日本
+line 047 日本日本日本日本日本
+line 048 日本日本日本日本日本日本
+line 049 
+line 050 日本
+line 051 日本日本
+line 052 日本日本日本
+line 053 日本日本日本日本
+:[K[K[HMline 022 日本
+[HMline 021 
+[HMline 020 日本日本日本日本日本日本
+[HMline 019 日本日本日本日本日本
+[HMline 018 日本日本日本日本
+[HMline 017 日本日本日本
+[HMline 016 日本日本
+[HMline 015 日本
+[HMline 014 
+[HMline 013 日本日本日本日本日本日本
+[HMline 012 日本日本日本日本日本
+[HMline 011 日本日本日本日本
+[HMline 010 日本日本日本
+[HMline 009 日本日本
+[HMline 008 日本
+[HMline 007 
+[HMline 006 日本日本日本日本日本日本
+[HMline 005 日本日本日本日本日本
+[HMline 004 日本日本日本日本
+[HMline 003 日本日本日本
+[HMline 002 日本日本
+[HMline 001 日本
+[HM한국어 中文 русский ελληνικά
+[HMΩ≈ç√∫˜µ≤≥÷ ¡™£¢∞§¶•ªº
+[HMcafé naïve é combining
+[HM✓ check ✗ cross ⏺ record ⎿ corner ✻ star ❯ prompt
+[HM• bullet · middot … ellipsis — dash “quotes” ‘single’
+[HM└───────┴───────┘
+[HM│ 全角ｶﾅ │ ±≤≥→← │
+[HM├───────┼───────┤
+[HM│ 日本語 │ ascii │
+[32;1H[K:[K[K/[K日日[K本本[K[1;1H[K│ 日本語 │ ascii │
+[2;1H[K├───────┼───────┤
+[3;1H[K│ 全角ｶﾅ │ ±≤≥→← │
+[4;1H[K└───────┴───────┘
+[5;1H[K• bullet · middot … ellipsis — dash “quotes” ‘single’
+[6;1H[K✓ check ✗ cross ⏺ record ⎿ corner ✻ star ❯ prompt
+[7;1H[Kcafé naïve é combining
+[8;1H[KΩ≈ç√∫˜µ≤≥÷ ¡™£¢∞§¶•ªº
+[9;1H[K한국어 中文 русский ελληνικά
+[10;1H[Kline 001 日本
+[11;1H[Kline 002 日本日本
+[12;1H[Kline 003 日本日本日本
+[13;1H[Kline 004 日本日本日本日本
+[14;1H[Kline 005 日本日本日本日本日本
+[15;1H[Kline 006 日本日本日本日本日本日本
+[16;1H[Kline 007 
+[17;1H[Kline 008 日本
+[18;1H[Kline 009 日本日本
+[19;1H[Kline 010 日本日本日本
+[20;1H[Kline 011 日本日本日本日本
+[21;1H[Kline 012 日本日本日本日本日本
+[22;1H[Kline 013 日本日本日本日本日本日本
+[23;1H[Kline 014 
+[24;1H[Kline 015 日本
+[25;1H[Kline 016 日本日本
+[26;1H[Kline 017 日本日本日本
+[27;1H[Kline 018 日本日本日本日本
+[28;1H[Kline 019 日本日本日本日本日本
+[29;1H[Kline 020 日本日本日本日本日本日本
+[30;1H[Kline 021 
+[31;1H[Kline 022 日本
+[32;1H[1;1H[K│ [7m日本[27m語 │ ascii │
+[2;1H[K├───────┼───────┤
+[3;1H[K│ 全角ｶﾅ │ ±≤≥→← │
+[4;1H[K└───────┴───────┘
+[5;1H[K• bullet · middot … ellipsis — dash “quotes” ‘single’
+[6;1H[K✓ check ✗ cross ⏺ record ⎿ corner ✻ star ❯ prompt
+[7;1H[Kcafé naïve é combining
+[8;1H[KΩ≈ç√∫˜µ≤≥÷ ¡™£¢∞§¶•ªº
+[9;1H[K한국어 中文 русский ελληνικά
+[10;1H[Kline 001 [7m日本[27m
+[11;1H[Kline 002 [7m日本日本[27m
+[12;1H[Kline 003 [7m日本日本日本[27m
+[13;1H[Kline 004 [7m日本日本日本日本[27m
+[14;1H[Kline 005 [7m日本日本日本日本日本[27m
+[15;1H[Kline 006 [7m日本日本日本日本日本日本[27m
+[16;1H[Kline 007 
+[17;1H[Kline 008 [7m日本[27m
+[18;1H[Kline 009 [7m日本日本[27m
+[19;1H[Kline 010 [7m日本日本日本[27m
+[20;1H[Kline 011 [7m日本日本日本日本[27m
+[21;1H[Kline 012 [7m日本日本日本日本日本[27m
+[22;1H[Kline 013 [7m日本日本日本日本日本日本[27m
+[23;1H[Kline 014 
+[24;1H[Kline 015 [7m日本[27m
+[25;1H[Kline 016 [7m日本日本[27m
+[26;1H[Kline 017 [7m日本日本日本[27m
+[27;1H[Kline 018 [7m日本日本日本日本[27m
+[28;1H[Kline 019 [7m日本日本日本日本日本[27m
+[29;1H[Kline 020 [7m日本日本日本日本日本日本[27m
+[30;1H[Kline 021 
+[31;1H[Kline 022 [7m日本[27m
+[32;1H[K:[K

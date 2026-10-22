@@ -1,0 +1,11 @@
+cd "/var/folders/rw/t743fpzn353ctxv7b7nf8tyh0000gn/T/tmp.sfKBFrzPVo"
+
+The default interactive shell is now zsh.
+To update your account to use zsh, please run `chsh -s /bin/zsh`.
+For more details, please visit https://support.apple.com/kb/HT208050.
+bash-3.2$ cd "/var/folders/rw/t743fpzn353ctxv7b7nf8tyh0000gn/T/tmp.sfKBFrzPVo"
+bash-3.2$ export PS1='user@x68k\$ '
+user@x68k$ clear
+[H[Juser@x68k$ gls --color=always -F
+afile.txt  [0m[01;36malink[0m@  bfile.c  [01;34mdir1[0m/  [01;34mdir2[0m/  long.txt  ls.script  [01;32mzscript.sh[0m*
+user@x68k$ 

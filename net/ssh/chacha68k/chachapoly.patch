@@ -1,0 +1,67 @@
+--- a/chachapoly.c
++++ b/chachapoly.c
+@@ -27,6 +27,12 @@
+ #include "algo.h"
+ #include "dbutil.h"
+ #include "chachapoly.h"
++#ifdef CHACHA68K
++/* 68000 向けの ChaCha20 / Poly1305 (net/ssh/chacha68k)。鍵の展開 (chacha_setup / chacha_ivctr64) は
++   libtomcrypt のまま使い、鍵ストリームと MAC だけ差し替える。結果は libtomcrypt と同じ。 */
++#include "cp68k.h"
++static const unsigned char cp68k_zero[32];
++#endif
+ 
+ #if DROPBEAR_CHACHA20POLY1305
+ 
+@@ -82,8 +88,27 @@
+ 		return CRYPT_ERROR;
+ 	}
+ 
++#ifdef CHACHA68K
+ 	STORE64H((uint64_t)seq, seqbuf);
+ 	chacha_ivctr64(&state->chacha, seqbuf, sizeof(seqbuf), 0);
++	chacha68k_xor((uint32_t *)state->chacha.input, cp68k_zero, key, sizeof(key));
++	if (direction == LTC_DECRYPT) {
++		poly68k_mac(tag, in, len, key);
++		if (constant_time_memcmp(in + len, tag, taglen) != 0) {
++			return CRYPT_ERROR;
++		}
++	}
++	chacha_ivctr64(&state->header, seqbuf, sizeof(seqbuf), 0);
++	chacha68k_xor((uint32_t *)state->header.input, in, out, 4);
++	chacha_ivctr64(&state->chacha, seqbuf, sizeof(seqbuf), 1);
++	chacha68k_xor((uint32_t *)state->chacha.input, in + 4, out + 4, len - 4);
++	if (direction == LTC_ENCRYPT) {
++		poly68k_mac(out + len, out, len, key);
++	}
++	(void)poly; (void)err;
++#else
++	STORE64H((uint64_t)seq, seqbuf);
++	chacha_ivctr64(&state->chacha, seqbuf, sizeof(seqbuf), 0);
+ 	if ((err = chacha_keystream(&state->chacha, key, sizeof(key))) != CRYPT_OK) {
+ 		return err;
+ 	}
+@@ -112,6 +137,8 @@
+ 		poly1305_done(&poly, out + len, &taglen);
+ 	}
+ 
++#endif
++
+ 	TRACE2(("leave dropbear_chachapoly_crypt"))
+ 	return CRYPT_OK;
+ }
+@@ -130,9 +157,14 @@
+ 
+ 	STORE64H((uint64_t)seq, seqbuf);
+ 	chacha_ivctr64(&state->header, seqbuf, sizeof(seqbuf), 0);
++#ifdef CHACHA68K
++	chacha68k_xor((uint32_t *)state->header.input, in, buf, sizeof(buf));
++	(void)err;
++#else
+ 	if ((err = chacha_crypt(&state->header, in, sizeof(buf), buf)) != CRYPT_OK) {
+ 		return err;
+ 	}
++#endif
+ 
+ 	LOAD32H(*outlen, buf);
+ 

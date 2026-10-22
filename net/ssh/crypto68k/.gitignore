@@ -1,0 +1,5 @@
+*.o
+*.x
+*.x.elf*
+*.bin
+tests/venv/

@@ -1,0 +1,87 @@
+--- dropbear-2022.83/cli-chansession.c
++++ x68k/cli-chansession.c
+@@ -84,6 +84,19 @@
+ 
+ /* If the main session goes, we close it up */
+ static void cli_closechansess(const struct Channel *UNUSED(channel)) {
++#if DROPBEAR_X68K && X68K_ZTERM
++	/* zterm のチャネルが閉じた。始まらずに終わった (ヘルパが無い・動かない) なら、同じ接続で
++	   -t の対話セッションを開き直す (ハンドシェイクのやり直しは数十秒かかるので) */
++	{
++		extern int x68k_zterm_closed(void);
++		if (x68k_zterm_closed()) {
++			cli_opts.wantpty = 1;
++			cli_opts.cmd = NULL;
++			cli_send_chansess_request();
++			return;
++		}
++	}
++#endif
+ 	cli_tty_cleanup(); /* Restore tty modes etc */
+ 
+ 	/* This channel hasn't gone yet, so we have > 1 */
+@@ -105,6 +118,10 @@
+ 		return;
+ 	}
+ 
++#if DROPBEAR_X68K
++	/* 画面を VT100 エミュレータ (term/vt100) に切り替える。以後 vt_fini まで DOS コンソールに触らない */
++	{ extern void x68k_tty_setup(void); x68k_tty_setup(); }
++#endif
+ 	if (tcgetattr(STDIN_FILENO, &tio) == -1) {
+ 		dropbear_exit("Failed to set raw TTY mode");
+ 	}
+@@ -136,6 +153,11 @@
+ 
+ 	TRACE(("enter cli_tty_cleanup"))
+ 
++#if DROPBEAR_X68K
++	/* コンソールを戻す (パレット・カーソル)。画面の内容は残す。raw モードの確認より前に呼ぶ:
++	   zterm (-Z) は pty を要求しないので raw モードにならないが、画面は占有している (切断で終わる場合も戻す) */
++	{ extern void x68k_tty_cleanup(void); x68k_tty_cleanup(); }
++#endif
+ 	if (cli_ses.tty_raw_mode == 0) {
+ 		TRACE(("leave cli_tty_cleanup: not in raw mode"))
+ 		return;
+@@ -282,10 +304,19 @@
+ 	buf_putbyte(ses.writepayload, 0);
+ 
+ 	/* Get the terminal */
++#if DROPBEAR_X68K
++	/* Human68k の TERM (x68000) はローカルのコンソールの話なので使わない。term/vt100 は xterm サブセット
++	   (色・代替画面・DECCKM) なので xterm を名乗る。環境変数 SSHTERM があればそれを送る */
++	term = getenv("SSHTERM");
++	if (term == NULL) {
++		term = "xterm";
++	}
++#else
+ 	term = getenv("TERM");
+ 	if (term == NULL) {
+ 		term = "vt100"; /* Seems a safe default */
+ 	}
++#endif
+ 	buf_putstring(ses.writepayload, term, strlen(term));
+ 
+ 	/* Window size */
+@@ -297,15 +328,21 @@
+ 	encrypt_packet();
+ 
+ 	/* Set up a window-change handler */
++#if DROPBEAR_X68K
++	/* Human68k にシグナルは無い (画面サイズも変わらない)。newlib の signal() は通るが失敗しても無視 */
++	(void)signal(SIGWINCH, sigwinch_handler);
++#else
+ 	if (signal(SIGWINCH, sigwinch_handler) == SIG_ERR) {
+ 		dropbear_exit("Signal error");
+ 	}
++#endif
+ 	TRACE(("leave send_chansess_pty_req"))
+ }
+ 
+ static void send_chansess_shell_req(const struct Channel *channel) {
+ 
+ 	char* reqtype = NULL;
++	x68dbg("exec-request");
+ 
+ 	TRACE(("enter send_chansess_shell_req"))
+ 

@@ -1,0 +1,45 @@
+--- dropbear-2022.83/dbutil.c
++++ x68k/dbutil.c
+@@ -488,7 +488,12 @@
+ 	int maxlen;
+ 	int ret = DROPBEAR_FAILURE;
+ 
++#if DROPBEAR_X68K
++	/* x68k: elf2x68k の newlib は既定テキストモードで 0x0d/0x1a を落とす。鍵は二進で読む */
++	fd = open(filename, O_RDONLY | O_BINARY);
++#else
+ 	fd = open(filename, O_RDONLY);
++#endif
+ 
+ 	if (fd < 0) {
+ 		goto out;
+@@ -584,6 +589,13 @@
+ 	}
+ #endif
+ 
++#if DROPBEAR_X68K
++	/* x68k: 標準入出力 (ソケット以外) は fcntl 不可。非ブロッキングにしなくても
++	   select シムが「読めない / 常に書ける」扱いにするので問題ない */
++	if (fd < X68K_SOCKFD_MIN) {
++		return;
++	}
++#endif
+ 	if (fcntl(fd, F_SETFL, O_NONBLOCK) < 0) {
+ 		if (errno == ENODEV) {
+ 			/* Some devices (like /dev/null redirected in)
+@@ -599,6 +611,7 @@
+ }
+ 
+ void disallow_core() {
++#if !DROPBEAR_X68K
+ 	struct rlimit lim = {0};
+ 	if (getrlimit(RLIMIT_CORE, &lim) < 0) {
+ 		TRACE(("getrlimit(RLIMIT_CORE) failed"));
+@@ -607,6 +620,7 @@
+ 	if (setrlimit(RLIMIT_CORE, &lim) < 0) {
+ 		TRACE(("setrlimit(RLIMIT_CORE) failed"));
+ 	}
++#endif
+ }
+ 
+ /* Returns DROPBEAR_SUCCESS or DROPBEAR_FAILURE, with the result in *val */

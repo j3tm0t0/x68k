@@ -1,0 +1,5 @@
+dist/
+server/target/
+client/zthost
+client/ztreplay
+client/ztpredtest

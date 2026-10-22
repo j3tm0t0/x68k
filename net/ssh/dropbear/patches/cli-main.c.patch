@@ -1,0 +1,51 @@
+--- dropbear-2022.83/cli-main.c
++++ x68k/cli-main.c
+@@ -52,12 +52,29 @@
+ 	_dropbear_exit = cli_dropbear_exit;
+ 	_dropbear_log = cli_dropbear_log;
+ 
++	x68dbg("main");
+ 	disallow_core();
+ 
+ 	seedrandom();
+ 	crypto_init();
+ 
++#if DROPBEAR_X68K && X68K_ZTERM
++	/* -Z: zterm (リモートで端末を模擬し、変わったセルだけ受け取る。term/zterm) で話す。-Z は getopts の前に抜く */
++	{ extern int x68k_zterm_args(int *argc, char **argv); x68k_zterm_args(&argc, argv); }
++#endif
+ 	cli_getopts(argc, argv);
++#if DROPBEAR_X68K && X68K_ZTERM
++	{
++		extern const char *x68k_zterm_command(const char *usercmd);
++		const char *zc = x68k_zterm_command(cli_opts.cmd);
++		if (zc) {
++			/* 1 本の exec チャネルで起動スクリプト -> ヘルパ転送 -> zterm。pty は要求しない (二進の通信路) */
++			cli_opts.cmd = (char *)zc;
++			cli_opts.wantpty = 0;
++		}
++	}
++#endif
++	x68dbg("getopts-done");
+ 
+ #ifndef DISABLE_SYSLOG
+ 	if (opts.usingsyslog) {
+@@ -88,10 +105,18 @@
+ 	} else
+ #endif
+ 	{
++#if DROPBEAR_X68K
++		/* xip は非ブロッキング connect が不可。同期 connect して接続済み fd を渡す */
++		extern int x68k_connect(const char*, const char*);
++		sock_in = sock_out = x68k_connect(cli_opts.remotehost, cli_opts.remoteport);
++		if (sock_in < 0) dropbear_exit("x68k connect failed");
++		progress = NULL;
++#else
+ 		progress = connect_remote(cli_opts.remotehost, cli_opts.remoteport,
+ 			cli_connected, &ses, cli_opts.bind_address, cli_opts.bind_port,
+ 			DROPBEAR_PRIO_LOWDELAY);
+ 		sock_in = sock_out = -1;
++#endif
+ 	}
+ 
+ 	cli_session(sock_in, sock_out, progress, proxy_cmd_pid);

@@ -1,0 +1,18 @@
+[package]
+name = "zterm"
+version = "0.1.0"
+edition = "2021"
+description = "X68000 Z 用リモート端末ヘルパ: pty で端末を模擬し、変わったセルだけを送る"
+license = "MIT"
+build = "build.rs"
+
+[dependencies]
+vt100 = "0.18"
+libc = "0.2"
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

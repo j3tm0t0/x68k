@@ -1,0 +1,87 @@
+--- a/curve25519.c	2026-10-22 03:34:16
++++ b/curve25519.c	2026-10-22 04:20:05
+@@ -165,8 +165,15 @@
+   FOR(i,16) o[i]=a[i]-b[i];
+ }
+ 
++#if defined(FAST_FIELD)
++#include "field_fast.h"
++#endif
+ sv M(gf o,const gf a,const gf b)
+ {
++#if defined(FAST_FIELD)
++  M_fast(o,a,b);
++  return;
++#endif
+   i64 i,j,t[31];
+   FOR(i,31) t[i]=0;
+   FOR(i,16) FOR(j,16) t[i+j]+=a[i]*b[j];
+@@ -178,11 +185,19 @@
+ 
+ sv S(gf o,const gf a)
+ {
++#if defined(FAST_FIELD)
++  S_fast(o,a);
++  return;
++#endif
+   M(o,a,a);
+ }
+ 
+ sv inv25519(gf o,const gf i)
+ {
++#if defined(FAST_FIELD)
++  inv_fast(o,i);
++  return;
++#endif
+   gf c;
+   int a;
+   FOR(a,16) c[a]=i[a];
+@@ -196,6 +211,10 @@
+ #if DROPBEAR_ED25519 && DROPBEAR_SIGNKEY_VERIFY
+ sv pow2523(gf o,const gf i)
+ {
++#if defined(FAST_FIELD)
++  pow2523_fast(o,i);
++  return;
++#endif
+   gf c;
+   int a;
+   FOR(a,16) c[a]=i[a];
+@@ -216,6 +235,15 @@
+   FOR(i,31) z[i]=n[i];
+   z[31]=(n[31]&127)|64;
+   z[0]&=248;
++#if defined(FAST_FIELD)
++  { int kgi, kgbase = (p[0]==9); gf kgP[4],kgn,kgd;
++    for(kgi=1;kgi<32;kgi++) kgbase &= (p[kgi]==0);
++    if (kgbase) {                 /* keygen: [z]*9 を Edwards comb + Montgomery 写像で */
++      scalarbase_fast(kgP, z);
++      A(kgn,kgP[2],kgP[1]); Z(kgd,kgP[2],kgP[1]); inv25519(kgd,kgd); M(kgn,kgn,kgd);
++      pack25519(q,kgn); return;
++    } }
++#endif
+   unpack25519(x,p);
+   FOR(i,16) {
+     b[i]=x[i];
+@@ -313,6 +341,10 @@
+ 
+ sv scalarmult(gf p[4],gf q[4],const u8 *s)
+ {
++#if defined(FAST_FIELD)
++  scalarmult_fast(p,q,s);
++  return;
++#endif
+   int i;
+   set25519(p[0],gf0);
+   set25519(p[1],gf1);
+@@ -329,6 +361,10 @@
+ 
+ sv scalarbase(gf p[4],const u8 *s)
+ {
++#if defined(FAST_FIELD)
++  scalarbase_fast(p,s);
++  return;
++#endif
+   gf q[4];
+   set25519(q[0],X);
+   set25519(q[1],Y);

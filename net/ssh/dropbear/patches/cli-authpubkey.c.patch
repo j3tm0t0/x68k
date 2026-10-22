@@ -1,0 +1,12 @@
+--- dropbear-2022.83/cli-authpubkey.c
++++ x68k/cli-authpubkey.c
+@@ -174,7 +174,9 @@
+ 		sigbuf = buf_new(4 + ses.session_id->len + ses.writepayload->len);
+ 		buf_putbufstring(sigbuf, ses.session_id);
+ 		buf_putbytes(sigbuf, ses.writepayload->data, ses.writepayload->len);
++		x68dbg("sign-start");
+ 		cli_buf_put_sign(ses.writepayload, key, sigtype, sigbuf);
++		x68dbg("sign-done");
+ 		buf_free(sigbuf); /* Nothing confidential in the buffer */
+ 		cli_ses.is_trivial_auth = 0;
+ 	}
