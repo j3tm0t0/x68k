@@ -502,23 +502,24 @@ poly68k_blocks_asm:
 	
 	.globl	poly68k_table_asm
 poly68k_table_asm:
-	movem.l	%d2-%d7/%a2-%a4,-(%sp)
-	move.l	40(%sp),%a0
-	move.l	44(%sp),%a1
+	movem.l	%d2-%d7/%a2-%a5,-(%sp)
+	move.l	44(%sp),%a0
+	move.l	48(%sp),%a1
 	movem.l	(%a1),%d4-%d7
 	move.l	16(%a1),%a3
+	move.l	%a0,%a1
+	lea	32767(%a0),%a5
+	addq.l	#1,%a5
 	moveq	#0,%d0
 	moveq	#0,%d1
 	moveq	#0,%d2
 	moveq	#0,%d3
 	suba.l	%a2,%a2
 	suba.l	%a4,%a4
-	lea	8192(%a0),%a1
 .Lt_loop:
 	move.l	%a2,4(%a0)
 	movem.l	%d0-%d3,8(%a0)
 	move.l	%a4,24(%a0)
-	lea	32(%a0),%a0
 	add.l	%d4,%d3
 	addx.l	%d5,%d2
 	addx.l	%d6,%d1
@@ -527,28 +528,50 @@ poly68k_table_asm:
 	addq.l	#1,%a2
 1:
 	adda.l	%a3,%a2
+	lea	256(%a0),%a0
+	cmpa.l	%a5,%a0
+	bne.s	2f
+	suba.l	#65536,%a0
+2:
 	cmpa.l	%a1,%a0
 	bne.s	.Lt_loop
-	movem.l	(%sp)+,%d2-%d7/%a2-%a4
+	movem.l	(%sp)+,%d2-%d7/%a2-%a5
 	rts
 	
 	.globl	poly68k_blocks_tab
 poly68k_blocks_tab:
 	movem.l	%d2-%d7/%a2-%a6,-(%sp)
-	lea	-44(%sp),%sp
-	move.l	92(%sp),%a1
-	move.l	96(%sp),%a6
-	move.l	100(%sp),%d0
+	lea	-60(%sp),%sp
+	move.l	108(%sp),%a1
+	move.l	112(%sp),%a6
+	move.l	116(%sp),%d0
 	beq	.Lb_ret0
-	move.l	%d0,36(%sp)
-	move.w	106(%sp),40(%sp)
-	move.w	18(%a1),32(%sp)
+	move.l	%d0,54(%sp)
+	move.w	122(%sp),58(%sp)
+	move.w	18(%a1),50(%sp)
+	lea	16(%sp),%a0
+	clr.w	(%a0)+
+	clr.w	(%a0)+
+	clr.w	(%a0)+
+	clr.w	(%a0)+
+	clr.w	(%a0)+
+	clr.w	(%a0)+
+	clr.w	(%a0)+
+	clr.w	(%a0)+
+	clr.w	(%a0)+
+	clr.w	(%a0)+
+	clr.w	(%a0)+
+	clr.w	(%a0)+
+	clr.w	(%a0)+
+	clr.w	(%a0)+
+	clr.w	(%a0)+
+	clr.w	(%a0)+
+	clr.w	(%a0)+
 	move.l	0(%a1),%d4
 	move.l	4(%a1),%d0
 	move.l	8(%a1),%d1
 	move.l	12(%a1),%d2
-	move.l	108(%sp),%a0
-	lea	8192(%a0),%a1
+	move.l	124(%sp),%a0
 .Lb_loop:
 	move.l	(%a6)+,%d3
 	rol.w	#8,%d3
@@ -570,19 +593,21 @@ poly68k_blocks_tab:
 	swap	%d3
 	rol.w	#8,%d3
 	addx.l	%d3,%d2
-	move.w	32(%sp),%d5
-	move.w	40(%sp),%d6
+	move.w	50(%sp),%d5
+	move.w	58(%sp),%d6
 	addx.w	%d6,%d5
-	move.w	%d5,32(%sp)
-	movem.l	%d0-%d2/%d4,16(%sp)
+	move.w	%d5,50(%sp)
+	move.b	%d5,48(%sp)
+	movep.l	%d4,16(%sp)
+	movep.l	%d0,24(%sp)
+	movep.l	%d1,32(%sp)
+	movep.l	%d2,40(%sp)
 	moveq	#0,%d0
 	moveq	#0,%d1
 	moveq	#0,%d2
 	moveq	#0,%d3
 	moveq	#0,%d4
-	moveq	#0,%d5
-	move.b	31(%sp),%d5
-	lsl.w	#5,%d5
+	move.w	22(%sp),%d5
 	lea	24(%a0,%d5.w),%a5
 	add.l	-(%a5),%d0
 	move.l	-(%a5),%d6
@@ -593,10 +618,8 @@ poly68k_blocks_tab:
 	addx.l	%d6,%d3
 	move.l	-(%a5),%d6
 	addx.l	%d6,%d4
-	moveq	#0,%d5
-	move.b	30(%sp),%d5
-	lsl.w	#5,%d5
-	lea	24(%a1,%d5.w),%a5
+	move.w	20(%sp),%d5
+	lea	56(%a0,%d5.w),%a5
 	add.l	-(%a5),%d0
 	move.l	-(%a5),%d6
 	addx.l	%d6,%d1
@@ -606,9 +629,7 @@ poly68k_blocks_tab:
 	addx.l	%d6,%d3
 	move.l	-(%a5),%d6
 	addx.l	%d6,%d4
-	moveq	#0,%d5
-	move.b	29(%sp),%d5
-	lsl.w	#5,%d5
+	move.w	18(%sp),%d5
 	lea	26(%a0,%d5.w),%a5
 	add.l	-(%a5),%d0
 	move.l	-(%a5),%d6
@@ -619,10 +640,8 @@ poly68k_blocks_tab:
 	addx.l	%d6,%d3
 	move.l	-(%a5),%d6
 	addx.l	%d6,%d4
-	moveq	#0,%d5
-	move.b	28(%sp),%d5
-	lsl.w	#5,%d5
-	lea	26(%a1,%d5.w),%a5
+	move.w	16(%sp),%d5
+	lea	58(%a0,%d5.w),%a5
 	add.l	-(%a5),%d0
 	move.l	-(%a5),%d6
 	addx.l	%d6,%d1
@@ -634,9 +653,7 @@ poly68k_blocks_tab:
 	addx.l	%d6,%d4
 	move.l	%d0,0(%sp)
 	moveq	#0,%d0
-	moveq	#0,%d5
-	move.b	19(%sp),%d5
-	lsl.w	#5,%d5
+	move.w	30(%sp),%d5
 	lea	24(%a0,%d5.w),%a5
 	add.l	-(%a5),%d1
 	move.l	-(%a5),%d6
@@ -647,10 +664,8 @@ poly68k_blocks_tab:
 	addx.l	%d6,%d4
 	move.l	-(%a5),%d6
 	addx.l	%d6,%d0
-	moveq	#0,%d5
-	move.b	18(%sp),%d5
-	lsl.w	#5,%d5
-	lea	24(%a1,%d5.w),%a5
+	move.w	28(%sp),%d5
+	lea	56(%a0,%d5.w),%a5
 	add.l	-(%a5),%d1
 	move.l	-(%a5),%d6
 	addx.l	%d6,%d2
@@ -660,9 +675,7 @@ poly68k_blocks_tab:
 	addx.l	%d6,%d4
 	move.l	-(%a5),%d6
 	addx.l	%d6,%d0
-	moveq	#0,%d5
-	move.b	17(%sp),%d5
-	lsl.w	#5,%d5
+	move.w	26(%sp),%d5
 	lea	26(%a0,%d5.w),%a5
 	add.l	-(%a5),%d1
 	move.l	-(%a5),%d6
@@ -673,10 +686,8 @@ poly68k_blocks_tab:
 	addx.l	%d6,%d4
 	move.l	-(%a5),%d6
 	addx.l	%d6,%d0
-	moveq	#0,%d5
-	move.b	16(%sp),%d5
-	lsl.w	#5,%d5
-	lea	26(%a1,%d5.w),%a5
+	move.w	24(%sp),%d5
+	lea	58(%a0,%d5.w),%a5
 	add.l	-(%a5),%d1
 	move.l	-(%a5),%d6
 	addx.l	%d6,%d2
@@ -688,9 +699,7 @@ poly68k_blocks_tab:
 	addx.l	%d6,%d0
 	move.l	%d1,4(%sp)
 	moveq	#0,%d1
-	moveq	#0,%d5
-	move.b	23(%sp),%d5
-	lsl.w	#5,%d5
+	move.w	38(%sp),%d5
 	lea	24(%a0,%d5.w),%a5
 	add.l	-(%a5),%d2
 	move.l	-(%a5),%d6
@@ -701,10 +710,8 @@ poly68k_blocks_tab:
 	addx.l	%d6,%d0
 	move.l	-(%a5),%d6
 	addx.l	%d6,%d1
-	moveq	#0,%d5
-	move.b	22(%sp),%d5
-	lsl.w	#5,%d5
-	lea	24(%a1,%d5.w),%a5
+	move.w	36(%sp),%d5
+	lea	56(%a0,%d5.w),%a5
 	add.l	-(%a5),%d2
 	move.l	-(%a5),%d6
 	addx.l	%d6,%d3
@@ -714,9 +721,7 @@ poly68k_blocks_tab:
 	addx.l	%d6,%d0
 	move.l	-(%a5),%d6
 	addx.l	%d6,%d1
-	moveq	#0,%d5
-	move.b	21(%sp),%d5
-	lsl.w	#5,%d5
+	move.w	34(%sp),%d5
 	lea	26(%a0,%d5.w),%a5
 	add.l	-(%a5),%d2
 	move.l	-(%a5),%d6
@@ -727,10 +732,8 @@ poly68k_blocks_tab:
 	addx.l	%d6,%d0
 	move.l	-(%a5),%d6
 	addx.l	%d6,%d1
-	moveq	#0,%d5
-	move.b	20(%sp),%d5
-	lsl.w	#5,%d5
-	lea	26(%a1,%d5.w),%a5
+	move.w	32(%sp),%d5
+	lea	58(%a0,%d5.w),%a5
 	add.l	-(%a5),%d2
 	move.l	-(%a5),%d6
 	addx.l	%d6,%d3
@@ -742,9 +745,7 @@ poly68k_blocks_tab:
 	addx.l	%d6,%d1
 	move.l	%d2,8(%sp)
 	moveq	#0,%d2
-	moveq	#0,%d5
-	move.b	27(%sp),%d5
-	lsl.w	#5,%d5
+	move.w	46(%sp),%d5
 	lea	24(%a0,%d5.w),%a5
 	add.l	-(%a5),%d3
 	move.l	-(%a5),%d6
@@ -755,10 +756,8 @@ poly68k_blocks_tab:
 	addx.l	%d6,%d1
 	move.l	-(%a5),%d6
 	addx.l	%d6,%d2
-	moveq	#0,%d5
-	move.b	26(%sp),%d5
-	lsl.w	#5,%d5
-	lea	24(%a1,%d5.w),%a5
+	move.w	44(%sp),%d5
+	lea	56(%a0,%d5.w),%a5
 	add.l	-(%a5),%d3
 	move.l	-(%a5),%d6
 	addx.l	%d6,%d4
@@ -768,9 +767,7 @@ poly68k_blocks_tab:
 	addx.l	%d6,%d1
 	move.l	-(%a5),%d6
 	addx.l	%d6,%d2
-	moveq	#0,%d5
-	move.b	25(%sp),%d5
-	lsl.w	#5,%d5
+	move.w	42(%sp),%d5
 	lea	26(%a0,%d5.w),%a5
 	add.l	-(%a5),%d3
 	move.l	-(%a5),%d6
@@ -781,10 +778,8 @@ poly68k_blocks_tab:
 	addx.l	%d6,%d1
 	move.l	-(%a5),%d6
 	addx.l	%d6,%d2
-	moveq	#0,%d5
-	move.b	24(%sp),%d5
-	lsl.w	#5,%d5
-	lea	26(%a1,%d5.w),%a5
+	move.w	40(%sp),%d5
+	lea	58(%a0,%d5.w),%a5
 	add.l	-(%a5),%d3
 	move.l	-(%a5),%d6
 	addx.l	%d6,%d4
@@ -795,9 +790,7 @@ poly68k_blocks_tab:
 	move.l	-(%a5),%d6
 	addx.l	%d6,%d2
 	move.l	%d3,12(%sp)
-	moveq	#0,%d5
-	move.b	33(%sp),%d5
-	lsl.w	#5,%d5
+	move.w	48(%sp),%d5
 	lea	24(%a0,%d5.w),%a5
 	add.l	-(%a5),%d4
 	move.l	-(%a5),%d6
@@ -808,7 +801,7 @@ poly68k_blocks_tab:
 	addx.l	%d6,%d2
 	moveq	#3,%d3
 	and.w	%d4,%d3
-	move.w	%d3,34(%sp)
+	move.w	%d3,52(%sp)
 	and.w	#-4,%d4
 	move.l	%d4,%d3
 	move.l	%d0,%d5
@@ -838,19 +831,19 @@ poly68k_blocks_tab:
 	addx.l	%d3,%d2
 	moveq	#0,%d3
 	addx.l	%d3,%d7
-	add.w	34(%sp),%d7
-	move.w	%d7,32(%sp)
-	subq.l	#1,36(%sp)
+	add.w	52(%sp),%d7
+	move.w	%d7,50(%sp)
+	subq.l	#1,54(%sp)
 	bne	.Lb_loop
-	move.l	92(%sp),%a1
+	move.l	108(%sp),%a1
 	move.l	%d4,0(%a1)
 	move.l	%d0,4(%a1)
 	move.l	%d1,8(%a1)
 	move.l	%d2,12(%a1)
 	moveq	#0,%d0
-	move.w	32(%sp),%d0
+	move.w	50(%sp),%d0
 	move.l	%d0,16(%a1)
 .Lb_ret0:
-	lea	44(%sp),%sp
+	lea	60(%sp),%sp
 	movem.l	(%sp)+,%d2-%d7/%a2-%a6
 	rts
