@@ -157,6 +157,8 @@ static void sg_build(void)
   g = sg_glyph[0x73 - 0x60]; sg_hline(g, 15);                                     /* ⎽ 下 */
   g = sg_glyph[0x61 - 0x60]; for (y = 0; y < 16; y++) g[y] = (y & 1) ? 0x55 : 0xaa; /* ▒ 市松 */
   g = sg_glyph[0x60 - 0x60]; for (y = 4; y < 12; y++) g[y] = 0x3c;                /* ◆ */
+  g = sg_glyph[0x7e - 0x60]; g[7] = g[8] = 0x18;                                  /* · 中点 */
+  g = sg_glyph[0x66 - 0x60]; g[1] = g[4] = 0x30; g[2] = g[3] = 0x48;              /* ° */
   sg_ready = 1;
 }
 
@@ -200,7 +202,9 @@ static const unsigned char *kanji_glyph(unsigned short jis)
   (void)jis; return zero;
 #else
   int ku = (jis >> 8) - 0x20, ten = (jis & 0xff) - 0x20;
-  if (ku < 1 || ku > 94 || ten < 1 || ten > 94) return (const unsigned char *)0xF00000UL;
+  if (ku < 1 || ku > 94 || ten < 1 || ten > 94 || (ku >= 9 && ku <= 15)) return (const unsigned char *)0xF00000UL;
+  /* CGROM には 9〜15 区が無い。1〜8 区 (非漢字) の直後に 16 区 (第 1 水準、0xF05E00) が続く */
+  if (ku >= 16) ku -= 7;
   return (const unsigned char *)(0xF00000UL + (unsigned long)((ku - 1) * 94 + (ten - 1)) * 32);
 #endif
 }
@@ -695,6 +699,31 @@ static void put_cp(long cp)
     else { put_cell('?', 0, 1); put_cell('?', 0, 1); }  /* 変換不能な全角は '??' で桁を保つ */
     return;
   }
+  { unsigned char a = 0, m = 0;   /* 半角の記号は ASCII / DEC 特殊グリフに寄せる (Claude Code などの TUI 向け) */
+    switch (cp) {
+      case 0x23bf: m = 0x6d; break;                                  /* ⎿ → └ */
+      case 0x00b7: case 0x2022: case 0x2219: m = 0x7e; break;        /* · • → 中点 */
+      case 0x00b0: m = 0x66; break;                                  /* ° */
+      case 0x00b1: a = '+'; break;                                   /* ± */
+      case 0x2264: a = '<'; break;                                   /* ≤ */
+      case 0x2265: a = '>'; break;                                   /* ≥ */
+      case 0x23fa: case 0x25cf: case 0x25cb: case 0x25c9: case 0x25ef: a = 'o'; break;   /* ⏺ ● ○ ◉ */
+      case 0x273b: case 0x273d: case 0x2736: case 0x2733: case 0x2722: case 0x2217: case 0x2731: a = '*'; break;   /* ✻ ✽ ✶ ✳ ✢ */
+      case 0x276f: case 0x203a: case 0x25b8: case 0x25b6: case 0x23f5: case 0x2192: case 0x21d2: a = '>'; break;   /* ❯ › ▸ ▶ ⏵ → */
+      case 0x2039: case 0x25c2: case 0x25c0: case 0x2190: a = '<'; break;
+      case 0x2191: case 0x25b4: case 0x25b2: a = '^'; break;
+      case 0x2193: case 0x25be: case 0x25bc: a = 'v'; break;
+      case 0x2713: case 0x2714: case 0x2705: a = 'v'; break;         /* ✓ */
+      case 0x2717: case 0x2718: case 0x00d7: case 0x2715: a = 'x'; break;   /* ✗ × */
+      case 0x2026: a = '.'; break;                                   /* … (1 桁なので 1 字) */
+      case 0x2013: case 0x2014: case 0x2015: case 0x2212: a = '-'; break;
+      case 0x2018: case 0x2019: a = '\''; break;
+      case 0x201c: case 0x201d: a = '"'; break;
+      case 0x26a0: a = '!'; break;                                   /* ⚠ */
+      case 0x00a0: a = ' '; break;
+    }
+    if (m) { put_cell(m, F_SPECIAL, 1); return; }
+    if (a) { put_cell(a, 0, 1); return; } }
   put_cell('?', 0, 1);   /* 半角の未対応文字 */
 }
 
