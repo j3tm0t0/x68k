@@ -12,7 +12,8 @@ kanjitab.h: genkanji.py
 
 # 絵文字表 emojitab.h はコミット済み (Twemoji PNG を genemoji.py で 16x16・16色に変換)。
 # 絵文字を足すときは Twemoji の <コードポイント>.png を集めて再生成する (要 Pillow):
-#   python3 genemoji.py <PNGディレクトリ> > emojitab.h
+#   python3 selemoji.py <emoji-frequency.html> <PNGディレクトリ> > emojilist.txt   (収録する字を選ぶ)
+#   python3 genemoji.py <PNGディレクトリ> emojilist.txt > emojitab.h
 
 # 文字幅表 widthtab.h (コミット済み。pyte と同じ wcwidth から作る): tests/venv/bin/python genwidth.py > widthtab.h
 

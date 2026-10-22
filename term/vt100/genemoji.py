@@ -5,7 +5,8 @@ X68000 のテキスト画面は 4 プレーン = 1 ピクセル 4bit で、テ�
 透明ピクセルはパレット 0 (黒) にする (黒背景の端末を前提)。
 
 ソースは Twemoji 15.1.0 (CC-BY 4.0, (c) 2023 Twitter/X, jdecked/twemoji)。変換後の表だけを収録する。
-usage: genemoji.py SRCDIR > emojitab.h   (SRCDIR に <hexコードポイント>.png)
+usage: genemoji.py SRCDIR [LIST] > emojitab.h   (SRCDIR に <hexコードポイント>.png)
+LIST (emojilist.txt) を渡すとその行頭の hex コードポイントだけを収録する (無い PNG はエラー)。
 """
 import sys, os, glob
 from PIL import Image
@@ -51,7 +52,12 @@ def convert(path):
 
 srcdir = sys.argv[1]
 ents = []
-for p in sorted(glob.glob(os.path.join(srcdir, "*.png"))):
+if len(sys.argv) > 2:
+    want = [l.split()[0] for l in open(sys.argv[2], encoding="utf-8") if l.strip() and not l.startswith("#")]
+    paths = [os.path.join(srcdir, h + ".png") for h in want]
+else:
+    paths = sorted(glob.glob(os.path.join(srcdir, "*.png")))
+for p in paths:
     name = os.path.splitext(os.path.basename(p))[0]
     try:
         cp = int(name, 16)
@@ -70,6 +76,7 @@ for cp, bm in ents:
     out.write("{0x%x,{%s}},\n" % (cp, ",".join(str(b) for b in bm)))
 out.write("};\n")
 out.write("#define EMOJITAB_N %d\n" % len(ents))
+out.write("#define EMOJITAB_MIN 0x%x   /* 表の最小コードポイント (これ未満は引かない) */\n" % ents[0][0])
 out.write("""
 /* コードポイント -> 絵文字インデックス (無ければ -1) */
 static int emoji_index(unsigned long cp)

@@ -1307,7 +1307,7 @@ static int cp_kind(long cp, unsigned short *code, unsigned char *fl)
    * 前の文字との合成はしない。絵文字の肌色修飾 (U+1F3FB-1F3FF) は wcwidth では 2 だが、前の絵文字に
    * 重なって 1 字に見えるのが普通なので捨てる。 */
   if ((cp >= 0x1f3fb && cp <= 0x1f3ff) || in_ranges(zerotab, (int)ZEROTAB_N, (unsigned long)cp)) return K_DROP;
-  if (cp >= 0x2705) { int ei = emoji_index((unsigned long)cp);   /* 絵文字: 16x16・16色で全角 2 セル (表の最小は U+2705) */
+  if (cp >= EMOJITAB_MIN) { int ei = emoji_index((unsigned long)cp);   /* 絵文字: 16x16・16色で全角 2 セル (表の最小未満は引かない) */
     if (ei >= 0) { *code = (unsigned short)ei; *fl = F_EMOJI; return K_W2; } }
   if ((cp >= 0xff61 && cp <= 0xff9f) || cp == 0x00a5 || cp == 0x203e) { *code = (unsigned short)cp; return K_N1; }   /* CGROM の JIS X 0201 にある半角 */
   if (is_wide(cp)) {
