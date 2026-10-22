@@ -1,0 +1,466 @@
+From 3241166321ab99819d05a28eee1235df9ef776e8 Mon Sep 17 00:00:00 2001
+From: moto <j3tm0t0@gmail.com>
+Date: Thu, 22 Oct 2026 19:16:46 +0900
+Subject: [PATCH] BOOTWAIT (default on): answer NOT READY until the HDS is
+ open; keep retrying the connection
+
+The MSC log showed the Z reads the HDS boot area about 35 s after power-on
+and serves everything after a soft reset from its Linux page cache. When
+Wi-Fi/SMB was slower than that, the first imgdir/HDS read blocked the USB
+task in vd_sync() (long enough for Linux's 30 s SCSI timeout), and if the
+connection failed the HDS reads returned zeros as a successful read,
+which then stayed cached until the Z was powered off.
+
+- HDS reads/writes while the HDS isn't open return VD_NOTREADY. msc_disk.c
+  keeps TinyUSB re-invoking the callback for up to 5 s (the USB task, HID
+  and netpipe keep running), then fails the command with sense 02/04/01
+  (becoming ready) via tud_msc_request_sense_cb instead of TinyUSB's
+  02/3A/00 (medium not present). Linux sd retries 04/01 with a delay for
+  about 3 minutes, and a failed read is never cached.
+- SMB read/write errors on an open HDS -> 03/11/00 instead of zeros.
+  Other -1 cases in the virtual FAT stay zero-filled successes as before.
+- No vd_sync() for the image directory, ID 6 and netpipe writes.
+- connect_task keeps retrying every 5 s after the first 5 tries and runs
+  vd_mount() when SMB comes up. status shows smb=retrying and
+  notready=/ioerr= counters; MSC_LOG marks defer/notready/ready-after.
+- The Linux IMAGE directory write-back (W 0x4160) is accepted.
+
+-DBOOTWAIT=OFF restores the old behaviour (binary identical).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PrGdt1XK1exBgERrMmLA1u
+---
+ CMakeLists.txt                     |  7 +++
+ src/connect.c                      | 19 ++++++
+ src/hidkbd.c                       |  9 ++-
+ src/msc_disk.c                     | 93 ++++++++++++++++++++++++++++++
+ src/virtual_disk.c                 | 27 ++++++++-
+ src/virtual_disk.h                 | 10 ++++
+ test/bootwait/.gitignore           |  1 +
+ test/bootwait/Makefile             | 14 +++++
+ test/bootwait/bootwait_test.c      | 39 +++++++++++++
+ test/bootwait/stub/bsp/board_api.h |  0
+ test/bootwait/stub/pico/stdlib.h   |  5 ++
+ test/bootwait/stub/tusb.h          |  7 +++
+ 12 files changed, 228 insertions(+), 3 deletions(-)
+ create mode 100644 test/bootwait/.gitignore
+ create mode 100644 test/bootwait/Makefile
+ create mode 100644 test/bootwait/bootwait_test.c
+ create mode 100644 test/bootwait/stub/bsp/board_api.h
+ create mode 100644 test/bootwait/stub/pico/stdlib.h
+ create mode 100644 test/bootwait/stub/tusb.h
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 2853529..3d20810 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -83,6 +83,13 @@ if(HID_KEYBOARD)
+     target_compile_definitions(${PROJECT_NAME} PRIVATE HID_KEYBOARD=1 MEMP_NUM_UDP_PCB=6)
+ endif()
+ 
++# HDS が開けるまで Z の読み書きに NOT READY (04/01) を返して待たせ、接続は裏で繰り直し続ける (0 埋めを返さない)。
++# -DBOOTWAIT=OFF で元の動き (最初の HDS の読み込みで接続を待ち、失敗なら 0 埋め) に戻す
++option(BOOTWAIT "Answer NOT READY until the HDS is open instead of blocking / returning zeros" ON)
++if(BOOTWAIT)
++    target_compile_definitions(${PROJECT_NAME} PRIVATE BOOTWAIT=1)
++endif()
++
+ # 起動時の調査用: Z からの MSC の命令を 1 件 1 行の UDP で MSC_LOG_HOST:6870 に送る (src/msclog.c)。-DMSC_LOG=ON で入れる
+ option(MSC_LOG "Log USB MSC commands over UDP (boot-time investigation)" OFF)
+ set(MSC_LOG_HOST "192.168.1.108" CACHE STRING "Receiver of the MSC log (UDP 6870)")
+diff --git a/src/connect.c b/src/connect.c
+index 12b5d73..0da1229 100644
+--- a/src/connect.c
++++ b/src/connect.c
+@@ -222,6 +222,25 @@ void connect_task(void *params)
+     xSemaphoreGive(remote_sem);
+     xTaskNotify(main_th, 1, eSetBits);
+ 
++#if BOOTWAIT
++    /* 5 回で通らなくても諦めず、裏で繰り直し続ける (smbd が遅れて上がる、Wi-Fi が遠い など)。
++       その間 Z からの HDS の読み書きは NOT READY で待たせている (virtual_disk.c / msc_disk.c) */
++    for (int i = 5; sysstatus < STAT_CONFIGURED && strlen(config.wifi_ssid) > 0 && strlen(config.smb2_server) > 0; i++) {
++        vTaskDelay(pdMS_TO_TICKS(5000));
++        xSemaphoreTake(remote_sem, portMAX_DELAY);
++        if (sysstatus < STAT_SMB2_CONNECTED) {
++            printf("Retry connection (%d)\n", i);
++            msclog_mark("retry connection %d", i);
++            connection(sysstatus >= STAT_WIFI_CONNECTED ? CONNECT_SMB2 : CONNECT_WIFI);
++        }
++        if (sysstatus >= STAT_SMB2_CONNECTED) {
++            vd_mount();
++            msclog_mark("connected after retry %d (sysstatus %d)", i, sysstatus);
++        }
++        xSemaphoreGive(remote_sem);
++    }
++#endif
++
+     while (1) {
+         uint32_t nvalue;
+ 
+diff --git a/src/hidkbd.c b/src/hidkbd.c
+index 10d6a14..d92aafa 100644
+--- a/src/hidkbd.c
++++ b/src/hidkbd.c
+@@ -57,6 +57,9 @@ static TaskHandle_t st_th;
+ extern volatile bool connect_finished;          /* connect.c */
+ extern const char *rootpath[8];                 /* connect.c */
+ extern volatile uint32_t msc_reads, msc_writes; /* msc_disk.c */
++#if BOOTWAIT
++extern volatile uint32_t msc_notready, msc_ioerr;
++#endif
+ 
+ /* USB タスクだけが触る */
+ static struct hidkbd_cmd cmd;
+@@ -134,7 +137,7 @@ static const char *smb_state(void)
+     case STAT_SMB2_CONNECTED:   return "connected";
+     case STAT_SMB2_CONNECTING:  return "connecting";
+     }
+-    return connect_finished ? "failed" : "waiting";
++    return connect_finished ? (BOOTWAIT ? "retrying" : "failed") : "waiting";
+ }
+ 
+ /* status の 1 行を作る。cyw43_arch_lwip_begin の中で呼ぶ (RSSI を cyw43 に聞く) */
+@@ -164,6 +167,10 @@ static int status_line(char *s, int size)
+                       (unsigned long)(to_ms_since_boot(get_absolute_time()) / 1000), tud_mounted() ? "mounted" : "unmounted",
+                       (unsigned long)msc_reads, (unsigned long)msc_writes, (unsigned long)netpipe_xchg, acc, (unsigned long)done,
+                       pending ? "busy" : (tud_hid_ready() ? "ok" : "notready"), (int)(&__HeapLimit - (char *)sbrk(0)));
++#if BOOTWAIT
++    if (n < size)
++        n += snprintf(s + n, size - n, " notready=%lu ioerr=%lu", (unsigned long)msc_notready, (unsigned long)msc_ioerr);
++#endif
+     return n < size ? n : size - 1;
+ }
+ 
+diff --git a/src/msc_disk.c b/src/msc_disk.c
+index 58609ae..d958b7d 100644
+--- a/src/msc_disk.c
++++ b/src/msc_disk.c
+@@ -28,6 +28,7 @@
+ #include "tusb.h"
+ #include "virtual_disk.h"
+ #include "msclog.h"
++#include "pico/stdlib.h"
+ 
+ enum
+ {
+@@ -95,6 +96,82 @@ bool tud_msc_start_stop_cb(uint8_t lun, uint8_t power_condition, bool start, boo
+   return true;
+ }
+ 
++#if BOOTWAIT
++//--------------------------------------------------------------------+
++// HDS がまだ開けていないときの待たせ方
++//
++// USB タスクは止めない (Z の Linux は 1 命令 30 秒で諦めてリセットする。HID も止まる)。0 を返すと TinyUSB が
++// 同じ命令でもう一度呼ぶので、DEFER_MS まではそうして待ち、まだなら失敗にして sense を NOT READY, LOGICAL UNIT
++// IS IN PROCESS OF BECOMING READY (02/04/01) にする。Linux の sd はこれを見て間を置いて出し直す (既定で約 180 秒)。
++// 失敗した読み込みはキャッシュに残らないので、0 埋めを返していた今までと違い、つながったあとに正しく読み直す。
++// TinyUSB は失敗に MEDIUM NOT PRESENT (02/3A/00) を付ける (Linux は媒体を外されたと扱う) ので
++// tud_msc_request_sense_cb で書き換える。
++//--------------------------------------------------------------------+
++
++#define DEFER_MS    5000
++
++static uint32_t defer_lba = 0xffffffff, defer_from;
++static uint8_t sense_key, sense_asc, sense_ascq;   // 次の REQUEST SENSE で返す (0 なら TinyUSB のまま)
++volatile uint32_t msc_notready, msc_ioerr;          // 回数 (status 用)
++
++static uint32_t now_ms(void)
++{
++  return to_ms_since_boot(get_absolute_time());
++}
++
++static void set_sense(uint8_t key, uint8_t asc, uint8_t ascq)
++{
++  sense_key = key;
++  sense_asc = asc;
++  sense_ascq = ascq;
++}
++
++// vd_read_block / vd_write_block の結果を TinyUSB の戻り値にする。-1 は従来どおり成功として見せる
++static int32_t vd_result(char dir, uint8_t lun, uint32_t lba, int rc, uint32_t bufsize)
++{
++  if (rc == VD_NOTREADY) {
++    if (defer_lba != lba) {
++      defer_lba = lba;
++      defer_from = now_ms();
++      msclog_mark("defer %c 0x%lx", dir, (unsigned long)lba);
++      return 0;
++    }
++    if (now_ms() - defer_from < DEFER_MS)
++      return 0;                     // もう一度呼ばれる
++    defer_lba = 0xffffffff;
++    msc_notready++;
++    msclog_mark("notready %c 0x%lx -> 04/01", dir, (unsigned long)lba);
++    set_sense(SCSI_SENSE_NOT_READY, 0x04, 0x01);
++    return -1;
++  }
++  if (defer_lba == lba) {
++    msclog_mark("ready after %lums", (unsigned long)(now_ms() - defer_from));
++  }
++  defer_lba = 0xffffffff;
++  if (rc == VD_IOERR) {
++    msc_ioerr++;
++    msclog_mark("ioerr %c 0x%lx -> 03/11", dir, (unsigned long)lba);
++    set_sense(SCSI_SENSE_MEDIUM_ERROR, 0x11, 0x00);   // UNRECOVERED READ ERROR
++    return -1;
++  }
++  return bufsize;
++}
++
++// Invoked when received REQUEST SENSE: TinyUSB の既定 (失敗なら MEDIUM NOT PRESENT) を書き換える
++int32_t tud_msc_request_sense_cb(uint8_t lun, void* buffer, uint16_t bufsize)
++{
++  (void) lun;
++  uint8_t *b = (uint8_t *) buffer;
++  if (sense_key != 0 && bufsize >= sizeof(scsi_sense_fixed_resp_t)) {
++    b[2] = sense_key;
++    b[12] = sense_asc;
++    b[13] = sense_ascq;
++  }
++  sense_key = 0;
++  return bufsize < sizeof(scsi_sense_fixed_resp_t) ? bufsize : sizeof(scsi_sense_fixed_resp_t);
++}
++#endif
++
+ // Callback invoked when received READ10 command.
+ // Copy disk's data to buffer (up to bufsize) and return number of copied bytes.
+ int32_t tud_msc_read10_cb(uint8_t lun, uint32_t lba, uint32_t offset, void* buffer, uint32_t bufsize)
+@@ -103,12 +180,20 @@ int32_t tud_msc_read10_cb(uint8_t lun, uint32_t lba, uint32_t offset, void* buff
+   if ( lba >= DISK_BLOCK_NUM ) return -1;
+ 
+   int rc = vd_read_block(lba, buffer);
++#if BOOTWAIT
++  if (rc == VD_NOTREADY && lba == defer_lba)
++    return vd_result('R', lun, lba, rc, bufsize);     // 待っている間は数えない・記録しない
++#endif
+   msclog_rw('R', lun, lba, rc, buffer);
+ #if HID_KEYBOARD
+   msc_reads++;
+ #endif
++#if BOOTWAIT
++  return vd_result('R', lun, lba, rc, bufsize);
++#else
+   (void) rc;
+   return bufsize;
++#endif
+ }
+ 
+ // Callback invoked when received WRITE10 command.
+@@ -119,12 +204,20 @@ int32_t tud_msc_write10_cb(uint8_t lun, uint32_t lba, uint32_t offset, uint8_t*
+   if ( lba >= DISK_BLOCK_NUM ) return -1;
+ 
+   int rc = vd_write_block(lba, buffer);
++#if BOOTWAIT
++  if (rc == VD_NOTREADY && lba == defer_lba)
++    return vd_result('W', lun, lba, rc, bufsize);
++#endif
+   msclog_rw('W', lun, lba, rc, NULL);
+ #if HID_KEYBOARD
+   msc_writes++;
+ #endif
++#if BOOTWAIT
++  return vd_result('W', lun, lba, rc, bufsize);
++#else
+   (void) rc;
+   return bufsize;
++#endif
+ }
+ 
+ // Callback invoked when received an SCSI command not in built-in list below
+diff --git a/src/virtual_disk.c b/src/virtual_disk.c
+index 8ac1cf1..998fc41 100644
+--- a/src/virtual_disk.c
++++ b/src/virtual_disk.c
+@@ -392,7 +392,9 @@ int vd_read_block(uint32_t lba, uint8_t *buf)
+         if (!imagedir_init) {
+             /* Lazy initialization of "X68000Z/image" directory */
+             struct dir_entry *dirent;
++#if !BOOTWAIT
+             vd_sync();
++#endif
+             memset(imagedir, 0,  sizeof(imagedir));
+             dirent = (struct dir_entry *)imagedir;
+             init_dir_entry(dirent++, ".          ", ATTR_DIR, 0, 4, 0);
+@@ -424,7 +426,16 @@ int vd_read_block(uint32_t lba, uint8_t *buf)
+             return -1;
+         DPRINTF3("disk %d: read 0x%x\n", id, lba);
+ 
++#if BOOTWAIT
++        /* 接続を待って USB タスクを止めない (止めている間に Z の Linux が 30 秒で諦めてリセットする)。
++           HDS が開けるまでは NOT READY を返し、Z の Linux に待たせる。ID 6 (netpipe など) は接続と関係なく答える */
++        if (diskinfo[id].type == DTYPE_HDS && diskinfo[id].sfh == NULL)
++            return sysstatus >= STAT_CONFIGURED ? VD_IOERR : VD_NOTREADY;
++        if (diskinfo[id].type == DTYPE_REMOTEBOOT)
++            vd_sync();
++#else
+         vd_sync();
++#endif
+ 
+         if (diskinfo[id].type == DTYPE_HDS && diskinfo[id].sfh != NULL) {
+             if (lba == 2) {
+@@ -436,7 +447,7 @@ int vd_read_block(uint32_t lba, uint8_t *buf)
+                 lba -= 0x20 - 2;
+             }
+             if (hds_cache_read(diskinfo[id].smb2, diskinfo[id].sfh, lba, buf) < 0)
+-                return -1;
++                return BOOTWAIT ? VD_IOERR : -1;
+             return 0;
+         }
+ 
+@@ -537,6 +548,12 @@ static int configtxtlen = 0;
+ 
+ int vd_write_block(uint32_t lba, uint8_t *buf)
+ {
++#if BOOTWAIT
++    if (lba == 0x4160) {
++        // "X68000Z/image" directory: Z の Linux がファイルの更新時刻を書き戻すだけ (捨てる)
++        return 0;
++    }
++#endif
+     if (lba == 0x4020) {
+         // Root directory
+         if (memcmp(&buf[32], "CONFIG  TXT", 11) == 0) {
+@@ -573,11 +590,17 @@ int vd_write_block(uint32_t lba, uint8_t *buf)
+             return -1;
+         DPRINTF3("disk %d: write 0x%x\n", id, lba);
+ 
++#if BOOTWAIT
++        if (diskinfo[id].type == DTYPE_HDS && diskinfo[id].sfh == NULL)
++            return sysstatus >= STAT_CONFIGURED ? VD_IOERR : VD_NOTREADY;
++        if (diskinfo[id].type == DTYPE_REMOTECOMM && lba >= NETPIPE_WLBA && lba < NETPIPE_WLBA + 8)
++            return netpipe_write(lba, buf);     /* netpipe は SMB の接続を待たない */
++#endif
+         vd_sync();
+ 
+         if (diskinfo[id].type == DTYPE_HDS && diskinfo[id].sfh != NULL) {
+             if (hds_cache_write(diskinfo[id].smb2, diskinfo[id].sfh, lba, buf) < 0)
+-                return -1;
++                return BOOTWAIT ? VD_IOERR : -1;
+             return 0;
+         }
+         if (diskinfo[id].type == DTYPE_REMOTECOMM) {
+diff --git a/src/virtual_disk.h b/src/virtual_disk.h
+index 3af3cbf..9a33f71 100644
+--- a/src/virtual_disk.h
++++ b/src/virtual_disk.h
+@@ -41,6 +41,16 @@
+ #define VOLUME_SECTOR_COUNT (0x20 + FAT_SECTORS * 2 + (MAX_CLUSTER - 2) * CLUS_PER_SECT)
+                                                                 // 0x4003fa0
+ 
++/* BOOTWAIT=1 (既定、cmake -DBOOTWAIT=OFF で外す): HDS がまだ開けていない間の読み書きに 0 埋めの成功ではなく
++   NOT READY を返す (msc_disk.c)。Z の Linux は失敗した読み込みをキャッシュせず、04/01 なら待って出し直す */
++#ifndef BOOTWAIT
++#define BOOTWAIT 0
++#endif
++
++/* vd_read_block / vd_write_block の戻り値。-1 は従来どおり (Z には 0 埋めの成功として見せる) */
++#define VD_NOTREADY         (-2)    /* HDS がまだ開けていない: 少し待たせてから NOT READY (04/01) */
++#define VD_IOERR            (-3)    /* HDS の読み書きに失敗した / HDS が無い: MEDIUM ERROR (03/11) */
++
+ /* virtual disk function prototypes */
+ 
+ int vd_init(void);
+diff --git a/test/bootwait/.gitignore b/test/bootwait/.gitignore
+new file mode 100644
+index 0000000..c0ec9c1
+--- /dev/null
++++ b/test/bootwait/.gitignore
+@@ -0,0 +1 @@
++bootwait_test
+diff --git a/test/bootwait/Makefile b/test/bootwait/Makefile
+new file mode 100644
+index 0000000..24b2845
+--- /dev/null
++++ b/test/bootwait/Makefile
+@@ -0,0 +1,14 @@
++# msc_disk.c の BOOTWAIT をホストで試験する (TinyUSB と pico-sdk は stub/ の最小限で置き換える): make -C test/bootwait
++TOP = ../..
++CFLAGS = -w -DHID_KEYBOARD=1 -Istub -I$(TOP)/src
++
++test: bootwait_test
++	./bootwait_test
++
++bootwait_test: bootwait_test.c $(TOP)/src/msc_disk.c $(TOP)/src/virtual_disk.h stub/tusb.h stub/pico/stdlib.h
++	$(CC) $(CFLAGS) -o $@ bootwait_test.c
++
++clean:
++	rm -f bootwait_test
++
++.PHONY: test clean
+diff --git a/test/bootwait/bootwait_test.c b/test/bootwait/bootwait_test.c
+new file mode 100644
+index 0000000..0d6a3bc
+--- /dev/null
++++ b/test/bootwait/bootwait_test.c
+@@ -0,0 +1,39 @@
++/* msc_disk.c の BOOTWAIT (NOT READY で待たせる、sense の書き換え) をホストで試験する: make -C test/bootwait */
++#define BOOTWAIT 1
++#include <stdio.h>
++#include <stdint.h>
++uint32_t fake_ms;
++static int next_rc;
++int vd_read_block(uint32_t lba, uint8_t *buf) { return next_rc; }
++int vd_write_block(uint32_t lba, uint8_t *buf) { return next_rc; }
++#include "msc_disk.c"
++static int fails;
++#define CHECK(c, ...) do { if (!(c)) { printf("FAIL line %d: ", __LINE__); printf(__VA_ARGS__); puts(""); fails++; } } while (0)
++static void sense(uint8_t *k, uint8_t *a, uint8_t *q) { uint8_t b[18] = {0x70,0,0x02,0,0,0,0,10,0,0,0,0,0x3a,0}; int n = tud_msc_request_sense_cb(0, b, 512); CHECK(n == 18, "len %d", n); *k = b[2]; *a = b[12]; *q = b[13]; }
++int main(void) {
++    uint8_t buf[512], k, a, q; int32_t r;
++    /* generic -1 (e.g. root dir beyond the first sector) stays success */
++    next_rc = -1; r = tud_msc_read10_cb(0, 0x4021, 0, buf, 512); CHECK(r == 512, "generic -1 -> %d", (int)r);
++    /* not ready: 0 (re-invoke) until 5 s, then -1 and sense 02/04/01 */
++    next_rc = VD_NOTREADY; fake_ms = 1000;
++    r = tud_msc_read10_cb(0, 0x803fa0, 0, buf, 512); CHECK(r == 0, "first notready -> %d", (int)r);
++    fake_ms = 5999; r = tud_msc_read10_cb(0, 0x803fa0, 0, buf, 512); CHECK(r == 0, "4.999 s -> %d", (int)r);
++    fake_ms = 6000; r = tud_msc_read10_cb(0, 0x803fa0, 0, buf, 512); CHECK(r == -1, "5 s -> %d", (int)r);
++    sense(&k, &a, &q); CHECK(k == 2 && a == 4 && q == 1, "sense %x/%x/%x", k, a, q);
++    sense(&k, &a, &q); CHECK(k == 2 && a == 0x3a, "sense not cleared: %x/%x", k, a);   /* untouched afterwards */
++    CHECK(msc_notready == 1, "notready count %u", msc_notready);
++    /* Linux retries the same LBA: deferral starts again */
++    fake_ms = 7000; r = tud_msc_read10_cb(0, 0x803fa0, 0, buf, 512); CHECK(r == 0, "retry -> %d", (int)r);
++    /* becomes ready during the deferral */
++    next_rc = 0; fake_ms = 8000; r = tud_msc_read10_cb(0, 0x803fa0, 0, buf, 512); CHECK(r == 512, "ready -> %d", (int)r);
++    r = tud_msc_read10_cb(0, 0x803fa1, 0, buf, 512); CHECK(r == 512, "next sector -> %d", (int)r);
++    /* I/O error -> -1, 03/11/00 */
++    next_rc = VD_IOERR; r = tud_msc_read10_cb(0, 0x803fa2, 0, buf, 512); CHECK(r == -1, "ioerr -> %d", (int)r);
++    sense(&k, &a, &q); CHECK(k == 3 && a == 0x11 && q == 0, "sense %x/%x/%x", k, a, q);
++    /* write not ready: same deferral */
++    next_rc = VD_NOTREADY; fake_ms = 20000; r = tud_msc_write10_cb(0, 0x803fb0, 0, buf, 512); CHECK(r == 0, "write defer -> %d", (int)r);
++    fake_ms = 25001; r = tud_msc_write10_cb(0, 0x803fb0, 0, buf, 512); CHECK(r == -1, "write timeout -> %d", (int)r);
++    sense(&k, &a, &q); CHECK(k == 2 && a == 4 && q == 1, "write sense %x/%x/%x", k, a, q);
++    printf("%s (%u reads, %u writes counted)\n", fails ? "FAILED" : "all passed", msc_reads, msc_writes);
++    return fails != 0;
++}
+diff --git a/test/bootwait/stub/bsp/board_api.h b/test/bootwait/stub/bsp/board_api.h
+new file mode 100644
+index 0000000..e69de29
+diff --git a/test/bootwait/stub/pico/stdlib.h b/test/bootwait/stub/pico/stdlib.h
+new file mode 100644
+index 0000000..89e5d1f
+--- /dev/null
++++ b/test/bootwait/stub/pico/stdlib.h
+@@ -0,0 +1,5 @@
++#include <stdint.h>
++extern uint32_t fake_ms;
++typedef uint64_t absolute_time_t;
++static inline absolute_time_t get_absolute_time(void) { return fake_ms; }
++static inline uint32_t to_ms_since_boot(absolute_time_t t) { return (uint32_t)t; }
+diff --git a/test/bootwait/stub/tusb.h b/test/bootwait/stub/tusb.h
+new file mode 100644
+index 0000000..45ba622
+--- /dev/null
++++ b/test/bootwait/stub/tusb.h
+@@ -0,0 +1,7 @@
++#include <stdint.h>
++#include <stdbool.h>
++#include <string.h>
++enum { SCSI_SENSE_NOT_READY = 2, SCSI_SENSE_MEDIUM_ERROR = 3, SCSI_SENSE_ILLEGAL_REQUEST = 5 };
++enum { SCSI_CMD_PREVENT_ALLOW_MEDIUM_REMOVAL = 0x1e };
++typedef struct { uint8_t b[18]; } scsi_sense_fixed_resp_t;
++static inline bool tud_msc_set_sense(uint8_t l, uint8_t k, uint8_t a, uint8_t q) { return true; }
+-- 
+2.54.0 (Apple Git-157)
+
