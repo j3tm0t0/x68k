@@ -797,39 +797,26 @@ static void vram_move_lines(int dst_line, int src_line, int nlines)
   }
 #endif
   PROF(3, nlines);   /* 32bit 転送で動かしたライン数 (TXRASCOPY の分は数えない) */
-  if (vt_small) {   /* 6 ドットのセル: 枠の左端はバイト境界 (4 セルごと)。右端の端数のバイトは仕切りのセルと同じ */
-    int nb = (COLS * 6 + 7) / 8;
-    for (p = 0; p < 4; p++) {
-      volatile unsigned char *base = TVRAM + (unsigned long)p * PLANE;
-      if (dst_line <= src_line) {
-        for (y = 0; y < nlines; y++) {
-          volatile unsigned char *d = base + (long)(dst_line + y) * VBYTES, *q = base + (long)(src_line + y) * VBYTES;
+  /* 1 ラインずつ、4 プレーンを続けて動かす (プレーンごとに全部動かすと、途中の画面で一部のプレーンだけ
+   * 動いた行が出て、実機の Z では青や赤がちらついた) */
+  {
+    int st = dst_line <= src_line ? 1 : -1;
+    y = st > 0 ? 0 : nlines - 1;
+    for (; y >= 0 && y < nlines; y += st) {
+      volatile unsigned char *d0 = TVRAM + (long)(dst_line + y) * VBYTES, *s0 = TVRAM + (long)(src_line + y) * VBYTES;
+      if (vt_small) {   /* 6 ドットのセル: 枠の左端はバイト境界 (4 セルごと)。右端の端数のバイトは仕切りのセルと同じ */
+        int nb = (COLS * 6 + 7) / 8;
+        for (p = 0; p < 4; p++) {
+          volatile unsigned char *d = d0 + (unsigned long)p * PLANE, *q = s0 + (unsigned long)p * PLANE;
           for (k = 0; k < nb; k++) d[k] = q[k];
         }
       } else {
-        for (y = nlines - 1; y >= 0; y--) {
-          volatile unsigned char *d = base + (long)(dst_line + y) * VBYTES, *q = base + (long)(src_line + y) * VBYTES;
-          for (k = 0; k < nb; k++) d[k] = q[k];
+        for (p = 0; p < 4; p++) {
+          volatile u32 *d = (volatile u32 *)(d0 + (unsigned long)p * PLANE);
+          volatile u32 *q = (volatile u32 *)(s0 + (unsigned long)p * PLANE);
+          for (k = nl; k >= 4; k -= 4) { *d++ = *q++; *d++ = *q++; *d++ = *q++; *d++ = *q++; }
+          while (k-- > 0) *d++ = *q++;
         }
-      }
-    }
-    return;
-  }
-  for (p = 0; p < 4; p++) {
-    volatile unsigned char *base = TVRAM + (unsigned long)p * PLANE;
-    if (dst_line <= src_line) {
-      for (y = 0; y < nlines; y++) {
-        volatile u32 *d = (volatile u32 *)(base + (long)(dst_line + y) * VBYTES);
-        volatile u32 *s = (volatile u32 *)(base + (long)(src_line + y) * VBYTES);
-        for (k = nl; k >= 4; k -= 4) { *d++ = *s++; *d++ = *s++; *d++ = *s++; *d++ = *s++; }
-        while (k-- > 0) *d++ = *s++;
-      }
-    } else {   /* 下へ: 後ろのラインから */
-      for (y = nlines - 1; y >= 0; y--) {
-        volatile u32 *d = (volatile u32 *)(base + (long)(dst_line + y) * VBYTES);
-        volatile u32 *s = (volatile u32 *)(base + (long)(src_line + y) * VBYTES);
-        for (k = nl; k >= 4; k -= 4) { *d++ = *s++; *d++ = *s++; *d++ = *s++; *d++ = *s++; }
-        while (k-- > 0) *d++ = *s++;
       }
     }
   }
