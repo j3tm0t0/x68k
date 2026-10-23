@@ -1594,6 +1594,18 @@ static void pane_follow(void)
   }
 }
 #endif
+#if defined(VT_VCONS) && !defined(VT_ZOS)
+/* 出力が無くても枠を見直す (ssh.x のキー待ちの刻みから呼ぶ)。相手が黙っている間に zos.x がペインを表に戻したり
+ * 最大化したりしても、すぐ描き直す (vt_write のときだけ見ていると、次の出力までペインに古い絵が残った) */
+void vt_follow(void)
+{
+  int s;
+  if (!pane_dyn) return;
+  s = sup_enter();
+  pane_follow();
+  sup_leave(s);
+}
+#endif
 void vt_write(const unsigned char *p, int n)
 {
   int i, sup;

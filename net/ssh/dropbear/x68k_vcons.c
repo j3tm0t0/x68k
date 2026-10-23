@@ -215,6 +215,16 @@ static void vc_prefix(void)
   vc_send_byte((unsigned char)vc_esc);
 }
 
+/* zos.x のペインの大きさが変わったら (term/vt100 が枠についていく)、相手にも窓の大きさを送る (dropbear の SIGWINCH) */
+static int winch_c, winch_r;
+static void winch_check(void)
+{
+  int c, r;
+  vt_get_size(&c, &r);
+  if (winch_c && (c != winch_c || r != winch_r)) raise(SIGWINCH);
+  winch_c = c; winch_r = r;
+}
+
 /* キーボードを非ブロッキングで読み、表のコンソールの送信待ちに足す。切り替えのキーもここで処理する */
 static void kbuf_fill(void)
 {
@@ -222,6 +232,7 @@ static void kbuf_fill(void)
   if (!vc[vc_act].used) return;
   vc_use(vc_act);
   v = &vc[vc_act];
+  if (vt_active) { vt_follow(); winch_check(); }   /* zos.x のペインが表に戻った・大きさが変わったら、出力を待たずに描き直す */
   if (vc_pfx) vc_prefix();
   if (vc_req < 0) {
 #ifdef X68K_ZTERM
@@ -402,13 +413,8 @@ int x68k_chan_write(int chan, int fd, const void *p, unsigned int n)
 #endif
   if (vt_active) {
     vcon_t *v = &vc[k];
-    static int lastc, lastr;
-    int c, r;
     vt_write((const unsigned char *)p, (int)n);
-    /* zos.x のペインの大きさが変わったら (term/vt100 が枠についていく)、相手にも窓の大きさを送る (dropbear の SIGWINCH) */
-    vt_get_size(&c, &r);
-    if (lastc && (c != lastc || r != lastr)) raise(SIGWINCH);
-    lastc = c; lastr = r;
+    winch_check();
     v->kbuf_len += vt_reply(v->kbuf + v->kbuf_len, (int)sizeof v->kbuf - v->kbuf_len);   /* DSR/DA の応答はこのチャネルへ */
     return (int)n;
   }

@@ -69,6 +69,7 @@ void vt_con_save(void *st);
 void vt_con_load(const void *st);
 void vt_con_new(void *scr);
 void vt_con_visible(int on);
+void vt_follow(void);                                /* zos.x のペインの枠を見直す (出力が無いときも。ssh.x のキー待ちから) */
 void vt_con_rect(int col, int row, int w, int h);   /* いまの端末を画面の枠に置き直す (表の端末を何枚でも並べられる) */
 unsigned short vt_jis_ucs(unsigned short jis);       /* JIS X 0208 -> Unicode (0 = 無い) */
 void vt_con_status(const char *s);     /* 最上行の右端に s を反転で一時表示 (論理画面は変えない)。NULL で消す */
