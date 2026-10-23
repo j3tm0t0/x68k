@@ -420,9 +420,9 @@ HDS=npd 入りの .hds tests/xeij_xip.sh   # 比べる用: 同じ XEiJ + picosim
   まとめて名前を外に出さない (登録は constructor)
 - **lwIP は入れ子に呼べない**: lwIP が送ったフレームに slirp が lan_send の中で答え、すぐ lwIP に渡すと tcp_output の途中で
   tcp_input が走って落ちた。受けたフレームは溜めて、poll と交換の初めに渡す (Pico でも cyw43 の受信は別の文脈なので同じ形)
-- DNS: Pico の lwIP の DNS を slirp の DNS の口 (192.168.1.3) にすると、Mac の resolver (Tailscale の 100.100.100.100) に
-  送っても答えが返らなかった (Mac から dig すると両方答える。slirp の転送の問題で、tis.x / tsp_svc ではない)。
-  試験は公開の resolver (TSP_DNS=8.8.8.8、slirp の NAT 越しに UDP 1 往復) と、lwIP の手元の名前 `mac.test` (= ゲートウェイ)
+- DNS: Pico の lwIP の DNS は picosim の DNS の口 (192.168.1.3)。picosim が Mac の resolver (getaddrinfo) で答える
+  (はじめは slirp の転送が Mac の resolver に届かず、公開の resolver を使っていた。harness/picosim bacb837 で直った)。
+  ほかに lwIP の手元の名前 `mac.test` (= ゲートウェイ)
 
 結果 (XEiJ 0.26.10.08 -model=SUPER、10MHz 68000、MacBook Pro。どれも通過):
 
