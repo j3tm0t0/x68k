@@ -40,6 +40,7 @@ USB キーボード (0012) を入れるときは `cmake -DHID_KEYBOARD=ON ..` (�
 | `driver/mkbootwait.py` | 0029: 進み具合の最後の見出しを「BOOT」に |
 | `src/tsp_svc.c` / `tsp.h` / `tsp_svc.h` / `tsp_plat.h` / `tsp_lwip/lwipopts.h` | 0031 (試し、**書き込んでいない**): tis.x -p のソケット窓口 ([../tistack](../tistack))。0xA6 のレコードを np_exchange の中で答える。`-DTSP=OFF` で外す。Pico W (264KB) では RAM が足りない見込み (ヒープ 112,340 → 100,020 B、動いている Pico のヒープの最大は約 104KB) なので、Pico 2 W のファームだけに入れる方針 |
 | `src/msc_disk.c` | 0033: INQUIRY の文字列を欄 (8 / 16 / 4 バイト) に収める。上流から product id が 9 バイトはみ出していて、pico-sdk 2.1 の TinyUSB (Pico 2 W) では tud_task のスタックを壊し、USB ホストが INQUIRY を送った途端に落ちていた (Z にディスクが見えない) |
+| `driver/mkbootwait.py` / `bootwait_gen_p2w.S` / `src/bootwait.c` | 0035: 待ち画面の副題のボード名を実物に (RP2350 では「Raspberry Pi Pico 2 W」。`BW_BOARD` で作り分け、Pico W の絵は今までと同じ) |
 | `driver/bootwait.S` / `driver/mkbootwait.py` | 0028: ◆ の行を本物の進み具合 (Wi-Fi → SMB → HDS → 起動) に |
 | `driver/mkbootwait.py` | 0027: ロゴの行は見た目の中央から 20 ドット左 (最終の配置) |
 | `driver/mkbootwait.py` | 0026: ロゴの行を「副題の左端にそろえる」と「見た目の中央」の中間に (既定 BW_LOGO=between) |
