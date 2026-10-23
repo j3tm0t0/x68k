@@ -239,6 +239,12 @@ INQUIRY / READ CAPACITY / TEST UNIT READY / REQUEST SENSE / MODE SENSE も含め
   今までどおり)。`make test` の `tests/tsptest.sh` が net/tistack/tests/xeij_pico.sh を回して判定する (XEiJ と GUI が要る。
   NOXEIJ=1 で飛ばす): 名前・echo・put・get・sink・src・ssh.x (Mac の sshd、鍵交換まで)・Mac からの rcmd.x (echo・x68put 300KB)
 
+- Z-OS の煙試験 `tests/zostest.sh` (`make test` に入っている): XEiJ で zos.x (ksh のペイン 2 つ) を立て、右のペインで
+  ssh.x -t を TSP 越しに Mac の試験用 sshd (ユーザ権限、127.0.0.1:2224、鍵 1 つ、ForceCommand) へ。左のペインで echo、
+  右で abc を打ち、テキスト VRAM を x68k-zos の tvram2txt.py で読んで判定する。Z-OS の道具 (zos.x・xeij_run.sh・
+  xeijkeys.py・tvram2txt.py) は x68k-zos の kernel/ から (`ZOS=`、写して使う)。無ければ SKIP。
+  2026-10-23: 5 項目とも PASS、sshd の見た端末は 48x31 (右のペイン)、2 分 14 秒
+
 ## サービスを足す (tistack の Pico 側ソケット窓口など)
 
 `picosim.h` の 2 つの口を使う。どちらも picosim の 1 本のスレッドから呼ばれるのでロックは要らない。

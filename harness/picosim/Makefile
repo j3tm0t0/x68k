@@ -71,6 +71,7 @@ test: build/picosim build/picosim-echo
 	python3 -I tests/bootwaittest.py build/picosim $(FW)
 	python3 -I tests/remotetest.py build/picosim $(FW)
 	tests/tsptest.sh
+	tests/zostest.sh
 
 clean:
 	rm -f build/picosim build/picosim-echo
