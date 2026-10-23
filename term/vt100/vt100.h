@@ -76,6 +76,9 @@ void vt_con_new(void *scr);
 void vt_con_visible(int on);
 void vt_follow(void);                                /* zos.x のペインの枠を見直す (出力が無いときも。ssh.x のキー待ちから) */
 void vt_con_rect(int col, int row, int w, int h);
+extern int vt_nomove;                                /* (zos.x) vt_defer のときスクロールで VRAM を動かさない (既定 1) */
+extern int vt_defer;                                 /* (zos.x) 1: vt_write は描かない。描くのは vt_flush_some */
+int vt_flush_some(int maxrows);                      /* (zos.x) 描き直しの要る行を多くて maxrows 行描く。残っていれば 1 */
 void vt_con_cursor(int on);                          /* いまの端末のカーソルを描く (1) / 描かない (0)。既定 1 */   /* いまの端末を画面の枠に置き直す (表の端末を何枚でも並べられる) */
 unsigned short vt_jis_ucs(unsigned short jis);       /* JIS X 0208 -> Unicode (0 = 無い) */
 void vt_con_status(const char *s);     /* 最上行の右端に s を反転で一時表示 (論理画面は変えない)。NULL で消す */
