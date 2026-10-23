@@ -69,7 +69,7 @@ def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 7777
     s = socket.socket()
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    s.bind(('127.0.0.1', port))
+    s.bind((sys.argv[2] if len(sys.argv) > 2 else '127.0.0.1', port))   # 実機の Z からなら 0.0.0.0
     s.listen(8)
     while True:
         c, _ = s.accept()
