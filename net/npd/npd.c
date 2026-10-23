@@ -246,6 +246,11 @@ static void rec_in(uint8_t *s, int n)
       arg[0] = len;
       arg[1] = (long)ip;
       tap('S', ip, len);
+      /* 入口は取り直す: 交換の SCSI を待つ間 (_CHANGE_PR) に tis.x -r で外されて解放されたかもしれない。
+         このスレッドはスーパーバイザで動くので、取り直してから呼ぶまでの間には切り替わらない */
+      tis = (void *)call_etd(etd, 26, 0);
+      if (tis == (void *)-1)
+        tis = 0;
       if (tis && (call_etd(tis, TIS_NP_IN, arg) & 1))
         tsp_more = 1;
     } else if (len >= ACCEL_RES_HDR && ip[0] == ACCEL_MARK) {

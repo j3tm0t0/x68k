@@ -255,6 +255,7 @@ const char *state_str(struct tsock *t)
   case S_LISTEN:  return "LISTEN";
   case S_SYNSENT: return "SYN SENT";
   case S_SYNRCVD: return "SYN RECEIVED";
+  case S_ZOMBIE:  return "DRAINING";    /* close 済み、送信リングを Pico に出し切るまで (tis.x -s だけが見る) */
   case S_EST:
     if (t->dgram)
       return "ESTABLISHED";
@@ -526,7 +527,7 @@ static long do_write(long fd, const uint8_t *buf, uint32_t len, const uint8_t *t
     if (t->st != S_EST || t->tx_shut)
       return done ? (long)done : fail(i, "Not connected");
     if (t->reset || (t->peer < 0 && !t->remote))
-      return done ? (long)done : fail(i, "Connection reset");
+      return done ? (long)done : fail(i, t->err ? t->err : "Connection reset");
     if ((sp = be->sendspace(i)) > 0) {
       uint32_t n = be->send(i, buf + done, len - done < sp ? len - done : sp);
       info.wbytes += n;

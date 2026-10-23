@@ -412,6 +412,15 @@ static void x_rcmd(void)
         break;
     T1(_TI_usflush, a);
     cls(a);
+    if (round == 1) {
+      /* rcmd.x の本当の並び: close の直後に同じポートで bind / listen (前の接続はまだ Pico で閉じている途中。
+         LISTEN が CLOSE より先に Pico に届く) */
+      long ls2 = lsn(2323, 0);
+      CHECK("rcmd: re-listen on 2323 right after close (old connection still draining) -> LISTEN", !strcmp(st(ls2), "LISTEN"));
+      while (!cl[c].closed)
+        step();
+      cls(ls2);
+    }
     run_ms(400);
     CHECK("rcmd: LAN client got the output and FIN", cl[c].closed && cl[c].rxlen == strlen(out) && !memcmp(cl[c].rx, out, cl[c].rxlen));
     CHECK("rcmd: second client while adopted was refused", cl[c2].refused || cl[c2].reset || cl[c2].closed);

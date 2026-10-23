@@ -209,7 +209,7 @@ npd の X6NR 交換 (IP パケットの `[長さ 2][中身][詰め物]` の列) 
 
 | Z → Pico | 本体 | Pico → Z | 本体 |
 |---|---|---|---|
-| CONNECT | proto, flags (NAME / TLS), lport, rport, addr, [名前] | CONNECTED | laddr, lport, raddr, rport |
+| CONNECT | proto, flags (NAME / TLS), lport (いまは使わない: Pico が選ぶ), rport, addr, [名前] | CONNECTED | laddr, lport, raddr, rport |
 | LISTEN | backlog, lport, laddr | BOUND | lport (LISTEN / UDPOPEN の返事) |
 | UDPOPEN | lport, laddr | ACCEPT | (listen の slot) handle, laddr, lport, raddr, rport |
 | DATA | TCP のデータ (CREDIT まで) | DATA | TCP のデータ (WINDOW まで) |
@@ -353,7 +353,8 @@ tsp_svc.c をそのまま載せる。LAN の相手 (echo 7 / discard 9 / source 
 管 (npd.x の代わり) の決まり: 交換は Z からだけ、1 回に要求 ≦ 4078・応答 ≦ 4064 バイト、Z に急ぎか Pico に MORE が
 あればすぐ次、無ければ 60ms ごと、1 回 5ms (既定)。書き込みの失敗・読み込みの失敗・古い応答を混ぜられる。
 
-2026-10-23: **103 項目すべて通過**。見ているもの:
+2026-10-23: **104 項目すべて通過** (速さの表の 18 項目を含む)。tis.c を直したあと XEiJ のループバックの試験も
+全部通った (tistest 46、echo 4、rcmd 4、ssh 2)。見ているもの:
 
 - gethostbyname を Pico の DNS で (NXDOMAIN は NULL、localhost は Z のまま)、名前で引いたアドレスへのブロッキング
   connect、getpeername / getsockname (Pico のアドレス)
@@ -362,7 +363,8 @@ tsp_svc.c をそのまま載せる。LAN の相手 (echo 7 / discard 9 / source 
 - 公平さ (4MB を受けながら打鍵の echo: 平均 10ms、最悪 2 交換)
 - listen / accept (backlog 2 で 3 本目は断られる、LAN のクライアントとやり取り、相手の close → read 0 と CLOSE WAIT)
 - **rcmd.x の流儀** (backlog 0、sockstate が LISTEN でなくなるまで _CHANGE_PR、accept が同じ fd、ASCII の recvline、
-  write → usflush → close、同じポートに 3 回 bind し直す、引き取り中の 2 本目は断られる)
+  write → usflush → close、同じポートに 3 回 bind し直す (1 回は close の直後、前の接続が Pico でまだ閉じている
+  途中に。LISTEN が CLOSE より先に Pico に届き、lwIP の SO_REUSEADDR で通る)、引き取り中の 2 本目は断られる)
 - **ssh.x (dropbear) の流儀** (名前を引いてブロッキング connect、ノンブロッキングにして socklen で poll、バナーと
   KEXINIT を往復、相手の close で read 0、同じ fd の 2 回 close が 0, 0)
 - shutdown(SHUT_WR) のあと echo が 20000 バイト返して EOF・CLOSING、相手の RST → read 0 と write の "Connection reset"
@@ -391,11 +393,14 @@ tsp_svc.c をそのまま載せる。LAN の相手 (echo 7 / discard 9 / source 
 - 記録形式の効率: 1 交換あたりのデータ **Z → LAN 4033 バイト、LAN → Z 4018 バイト** (上限 4078 / 4064 の 99%)。
   1MB に 260 交換。速さは「交換 1 回の時間」で決まり、記録形式はほぼ限りまで詰めている
 - **Z の側の律速は写し**。tis.c の memcpy は 1 バイトずつ (68000 で 1 バイト約 3µs) なので、今のままだと 100〜130KB/s
-  (それでも xip.x の 45KB/s の 2〜3 倍)。long で写す memcpy (約 0.6µs / バイト) にすれば 300〜400KB/s の見込み
+  (それでも xip.x の 45KB/s の 2〜3 倍)。long で写す memcpy (約 0.6µs / バイト) にすれば 300〜400KB/s の見込み。
+  ただし 68000 は奇数番地に long で触れないので、写し元と写し先の番地の偶奇がそろうときだけ。リングの位置は任意なので
+  半分ほどは 1 バイトずつに落ちる (偶奇が違うときの写し方か、リングの位置を偶数にそろえる工夫が要る)
 - SCSI の交換 1 回の時間は実機で測っていない (npd.x のメモでは SCSI の命令 1 回 0.2〜2.5ms、交換は書き込み + 読み込みの 2 回)
-- 往復の遅れ: 交換のあと Pico に届いた答えは次の交換で来る。Z が何か送ったあとは、送信の残りの申告 (WINDOW) が
-  急ぎになって続けて交換するので echo は 10ms、何も送っていないときに届いたものは最大 60ms (npd.x の問い合わせ間隔) 待つ。
-  connect は 70ms (SYN を出した交換の次の問い合わせで CONNECTED)
+- 往復の遅れ: 交換のあと Pico に届いた答えは次の交換で来る。Z が何か送ると、その要求の WINDOW が「送りたい量 =
+  送信リングの大きさ」を申告し、Pico は CREDIT を増やして MORE を立てるので、すぐ次の交換が起きる (1 バイトの打鍵でも
+  余計な交換が 1〜2 回)。そこで echo が拾えるので往復 10ms。何も送っていないときに届いたものは最大 60ms
+  (npd.x の問い合わせ間隔) 待つ。connect は 70ms (SYN を出した交換の次の問い合わせで CONNECTED)
 
 ### Pico 2 W のファームができたら確かめること
 
