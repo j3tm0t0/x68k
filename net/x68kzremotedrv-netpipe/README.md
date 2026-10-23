@@ -47,8 +47,8 @@ USB キーボード (0012) を入れるときは `cmake -DHID_KEYBOARD=ON ..` (�
 | `src/connect.c` / `config_file.c` / `config.tmpl.txt` / `include/vd_command.h` / `driver/settingui.c` / `hidkbd.c` | 0039: 基板ごとのホスト名 (設定 `HOSTNAME`、空欄なら `pico-` + ボード ID の下 4 桁。今までは全部 PicoW) と固定 IP (`IPADDR` / `NETMASK` / `GATEWAY` / `DNS`、`IPADDR` が空欄なら DHCP)。CONFIG.TXT と設定画面の右の「ネットワーク設定」で変える (再起動後に有効)。フラッシュでは v4 の項目の後ろに印 `NET1` を付けて置くので、古いファームに戻しても設定は読める (古いファームが書き直すと新しい項目は消える)。`status` に `host=<名前>` (0040 で位置を変えた)。ホスト名は実機で確認、固定 IP は未試験。フラッシュの並び: v4 の項目 (32〜1727) の後ろ 1728 に `NET1`、hostname 32・ipaddr 16・netmask 16・gateway 16・dns 16 (〜1827) |
 | `src/hidkbd.c` | 0040: UDP 6869 の返事はどれも最初の語 (ok / err) の直後に `host=<ホスト名>` (`ok host=pico-f350 stat=5 ...`)。Pico Z Loader と同じ形 |
 | `src/vd_command.c` | 0041: 設定画面の Wi-Fi の一覧 (WIFI_SCAN) を 10 秒で打ち切る。Wi-Fi のつなぎ直しと重なると終わらず、USB タスクが止まって Z からディスクが消えた (PZL で見つかった) |
-| `src/connect.c` | 0042: 設定画面の SETCONFIG で Wi-Fi / SMB をつなぎ直す前に、SMB の HDS とリモートドライブを外し (その間は NOT READY)、つなぎ直したら開き直す。古い接続が残って次の keepalive まで -14 を返していた (PZL で見つかった)。SD カードの分はそのまま。実機は未試験 |
-| `driver/settingui.c` | 0043: 設定画面のネットワークの項目を「その他の設定」の枠の中 (7〜11 行目) に入れる。別の見出しが上の枠の下の線と重なっていた (実機の Z で) |
+| `src/connect.c` | 0042: 設定画面の SETCONFIG で Wi-Fi / SMB をつなぎ直す前に、SMB の HDS とリモートドライブを外し (その間は NOT READY)、つなぎ直したら開き直す。古い接続が残って次の keepalive まで -14 を返していた (PZL で見つかった)。SD カードの分はそのまま。実機の Z で SERVER を確定し直して確認 |
+| `driver/settingui.c` | 0043: 設定画面のネットワークの項目を「その他の設定」の枠の中 (7〜11 行目) に入れる。別の見出しが上の枠の下の線と重なっていた (実機の Z で直ったことを確認) |
 | `driver/bootwait.S` / `driver/mkbootwait.py` | 0028: ◆ の行を本物の進み具合 (Wi-Fi → SMB → HDS → 起動) に |
 | `driver/mkbootwait.py` | 0027: ロゴの行は見た目の中央から 20 ドット左 (最終の配置) |
 | `driver/mkbootwait.py` | 0026: ロゴの行を「副題の左端にそろえる」と「見た目の中央」の中間に (既定 BW_LOGO=between) |
