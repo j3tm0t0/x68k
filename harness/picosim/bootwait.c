@@ -46,10 +46,14 @@
 
 struct pz pz;                           /* 外 (picosim.c) から見る状態 */
 
-/* B: (remote.c + x68kserremote の remoteserv.c)。リンクしていなければ NULL */
-int remote_request(uint8_t *c, uint8_t *r) __attribute__((weak));
-extern int remote_units __attribute__((weak));
-static int nunits(void) { return &remote_units ? remote_units : 0; }
+/* B: (remote.c + x68kserremote の remoteserv.c)。リンクしていなければこの弱い定義 (B: 無し) が使われる */
+__attribute__((weak)) int remote_units;
+__attribute__((weak)) int remote_request(uint8_t *c, uint8_t *r) { (void)c; (void)r; return -1; }
+__attribute__((weak)) void remote_add(const char *dir)
+{
+  fprintf(stderr, "picosim: built without the remote drive (make RS=.../x68kserremote); -R %s ignored\n", dir);
+}
+static int nunits(void) { return remote_units; }
 
 static uint8_t *bw1, *bw2, *hdsboot, *setui, *scsirem;   /* 68000 のバイナリ (-F から) */
 static long bw1_len, bw2_len, hdsboot_len, setui_len, scsirem_len;
@@ -444,7 +448,7 @@ static int vd_command(const uint8_t *c, uint8_t *r)
   }
   default:
     /* リモートドライブ (scsiremote.sys) の要求。ファームと同じく、接続が済むまでは答えない */
-    if (remote_request && nunits() && pz_sysstatus() >= 5)
+    if (nunits() && pz_sysstatus() >= 5)
       return remote_request((uint8_t *)c, r);
     return -1;
   }

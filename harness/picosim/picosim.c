@@ -36,7 +36,7 @@
 extern double np_accel_scale;
 extern FILE *lan_pcap;
 extern int pz_vd_page_by_lba;
-void remote_add(const char *dir) __attribute__((weak));
+void remote_add(const char *dir);
 int picosim_verbose;
 static uint64_t t0_us;
 
@@ -507,10 +507,6 @@ int main(int argc, char **argv)
     case 'K': pz_set_config_file(optarg); break;
     case 'P': pz_vd_page_by_lba = 1; break;
     case 'R':
-      if (!remote_add) {
-        fprintf(stderr, "picosim: built without the remote drive (make RS=.../x68kserremote)\n");
-        exit(2);
-      }
       remote_add(optarg);
       break;
     case 'c': cache_mb = atoi(optarg); break;
