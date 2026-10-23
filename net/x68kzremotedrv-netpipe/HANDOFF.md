@@ -77,5 +77,5 @@ make -j8      # x68kzremotedrv.elf / .uf2 (fork の build-p2w/ で作れる。00
 1. (済) 明示だけの版を書き、設定画面で RMTUNIT 2 / REMOTE1 = `sd:/` → C: = SD、FD は D: E:。status に `host=pico-f350`。
 2. ホスト名と固定 IP は Charlie (PZL 186beb6) と同じ形に揃えた (項目名・既定 pico-XXXX・NET1 の並び・返事の host= の位置)。mDNS は今はしない。固定 IP は moto が頼むまで Z の基板では試さない。
 3. (0042 で直した、実機で SERVER の確定で試した) SETCONFIG で Wi-Fi をつなぎ直すと古い SMB の接続が残り、次の keepalive までリモートドライブが -14 を返していた。fork は enable_sta_mode を起動時の 1 回しか呼ばないので、つなぎ直しで固定 IP が DHCP に戻ることはない (netif を作り直さない) はず (未試験)。
-3. tistack の実機の速さ (`tis.x -p`) は Pico 2 W でまだ測っていない。
-4. パッチ 0036-0038 を main へ (ホストの試験は関係しないが、マージ前に走らせる)。
+3. (済、23:10) tistack の実機の速さ: 往復 53 / 149 ms、1MB 109・145 / 26・16 KB/s、rcmd 300KB 36 / 12 KB/s (tis.x -p / xip.x)。net/tistack/README.md「実機の Z で」
+4. (済) パッチは main。リリース v2026.10.23 の下書きは scratchpad/release-v2026.10.23/ (NOTES.md と zip)。公開は moto の OK のあと team-lead の合図で。
