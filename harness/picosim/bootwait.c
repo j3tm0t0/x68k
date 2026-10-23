@@ -371,6 +371,7 @@ static void bw_reply(uint32_t lba, uint8_t *buf)
 static uint8_t vd_hdr[16], vd_wr[VD_PAGE * 32], vd_rd[VD_PAGE * 32];
 static int vd_rpages, vd_rcnt;
 static int64_t vd_base = -1;            /* -P: この応答で最初に読まれた LBA の 8 の倍数 */
+static int32_t vd_rbase = -1;           /* 新しいドライバが知らせてくる読み始めの sect (下位 16 ビット)。-1 = 古いドライバ */
 
 static int vd_command(const uint8_t *c, uint8_t *r)
 {
@@ -469,6 +470,9 @@ static void vd_write(const uint8_t *b)
     vd_rpages = n < 0 ? 0 : (n - 1) / VD_PAGE;
     vd_rcnt = 0;
     vd_base = -1;
+    /* 見出しの reserved[0] の bit 7: 新しいドライバ (driver/scsiremote.c・settinguisub.c の rpage パッチ)。
+       reserved[0] の下位 5 ビットと reserved[1] が読み始めの sect の下位 16 ビットを 8 で割ったもの */
+    vd_rbase = (vd_hdr[14] & 0x80) ? ((vd_hdr[14] & 0x1f) << 8 | vd_hdr[15]) << 3 : -1;
   }
 }
 
@@ -482,6 +486,22 @@ int pz_vd_page_by_lba;
 static void vd_read(uint32_t lba, uint8_t *buf)
 {
   int page = vd_rcnt + (lba % 8);
+  if (vd_rbase >= 0) {
+    /* ファームの rpage パッチと同じ: ページ = ((起点 - 組) & 0xffff) / 8 * 8 + lba % 8。範囲外 (上向きの先読みなど) は
+       署名を 0 にして返し、ドライバに捨てさせる (ドライバは 0x10000 下で読み直すが、下位 16 ビットは変わらない) */
+    page = (int)((((uint32_t)vd_rbase - (lba & ~7u)) & 0xffff) / 8 * 8 + (lba % 8));
+    memcpy(buf, vd_hdr, 16);
+    buf[13] = vd_rpages;
+    if (page > vd_rpages || page >= 32) {
+      memset(buf, 0, 4);
+      buf[12] = 0xff;
+      memset(buf + 16, 0, VD_PAGE);
+    } else {
+      buf[12] = page;
+      memcpy(buf + 16, vd_rd + page * VD_PAGE, VD_PAGE);
+    }
+    return;
+  }
   if (pz_vd_page_by_lba) {
     if (vd_base < 0)
       vd_base = lba & ~7u;

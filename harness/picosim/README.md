@@ -67,7 +67,7 @@ X68_HOST=127.0.0.1 X68_PORT=23268 harness/raspi/x68.sh 'ping.x -c 4 192.168.1.1'
 | `-F dir` | | フォークの `driver/` (bootwait1.bin・bootwait.bin・hdsboot.bin・settingui.bin を読む)。付けると ID 6 の LBA 0 に署名 |
 | `-C file` | | 制御: 1 行 1 命令を書くと実行して消す。`ready` `close` `status N` `auto` `powercycle` `hds PATH` |
 | `-R dir` | | B: (リモートドライブ) にする Mac のディレクトリ。何度でも (B:, C:, ...)。下記 |
-| `-P` | | vdbuf のページを LBA から決める (ファームの不具合の直し方の試し。下記) |
+| `-P` | | 古いドライバ (bit 7 無し) にも vdbuf のページを LBA から決める (試し。下記)。新しいドライバには付けなくても LBA から |
 | `-K file` | | 設定画面の設定 (config_data) を保存するファイル (FLASHCONFIG で書き、起動時に読む) |
 | `-c MB` `-r KB` | 64, 16 | Z の Linux の読み込みキャッシュの大きさ (0 で無し) / 先読み (4KB ページ単位) |
 | `-d µs` | 0 | 命令ごとの遅れ (USB の往復の真似。メールボックスの道では Z の CPU は待ちの間も動く。SPC の道では XEiJ ごと止まる) |
@@ -132,6 +132,20 @@ _EXEC では text+data の最後のかけら ((text+data−15,296) mod 15,360 �
 問題の ssh.x は 11,612 バイト → 24 ページで、再配置表の 3,966 バイト目 (= ページ 8 の頭) から先が壊れ、再配置が
 ずれて落ちた。リリースの ssh.x は 10,252 バイト → 21 ページで無事。壊れるのは次の応答が 9 ページ以上のときだけ。`cat` など別の大きさで読むと正しい中身になる
 (CRC が合ったのはこのため)。ファイルの大きさしだいでどのプログラムでも起きる。
+
+**直した版 (rpage、x68k-pwauth のパッチ `remotedrv-rpage.patch`、実機の Pico に入れたもの)**: ドライバ (scsiremote.c・
+settinguisub.c) が要求の見出しの reserved[0..1] に、応答を読み始める sect の下位 16 ビット (8 単位) と bit 7 を入れ、
+読んだページの番号も照合する。Pico は `page = ((起点 − (lba & ~7)) & 0xffff) / 8 * 8 + lba % 8` で決め、範囲外
+(上向きの先読みなど) は署名を 0 にして返す (ドライバは捨てて 0x10000 下で読み直すが、下位 16 ビットは変わらない)。
+bit 7 の無い古いドライバには今までどおり数える。picosim も bit 7 を見て同じ計算をする (常に有効)。
+
+確かめたこと (2026-10-23): パッチを当てたフォークの写し (scratch) で scsiremote.bin / settingui.bin をビルドして `-F` に:
+- XEiJ: `b:/ssh-accel.x` が起動、pwauth の `rdchk.x b:/rand.bin 26972 15360` / `23294 15360` と `rdchk.x b:/ssh-accel.x`
+  (64 / text+data / reloc の 3 回) がどれも `0 differ`。待ち画面から S の設定画面 (GETCONFIG は 4 ページ) も出る
+- 古い scsiremote.bin (bit 7 無し) を同じ picosim で: 26972 / 23294 は今までどおり壊れ (`11350 differ, first 0078da` =
+  26972 + 3966)、25000 は `0 differ`。互換のまま (古いドライバの不具合は Pico だけでは直らない)
+- `tests/remotetest.py`: 古いドライバの 16 / 24 ページの後の破損、rpage ドライバで rdchk と同じ大きさ・混ぜた大きさ・
+  ソフトリセットして Z のキャッシュの古い応答に当たる道 (0x10000 下で読み直し) がどれも正しい
 
 `-P` はページを LBA から決める (その応答で最初に読まれた 8 セクタの組からの距離。先読みはそれより上しか読まない)。
 -P では同じ ssh.x が B: から起動した。`tests/remotetest.py` が com_cmdres と同じ手順で、既定 (ファームと同じ) で
