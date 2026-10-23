@@ -1,0 +1,170 @@
+From 8c85591a7aaf43c98493e45a4afa5fd209da0b95 Mon Sep 17 00:00:00 2001
+From: moto <j3tm0t0@gmail.com>
+Date: Fri, 23 Oct 2026 11:28:03 +0900
+Subject: [PATCH] remote drive: map response pages from the LBA, not from the
+ read count
+
+scsiremote.sys reads response page i from sect + (i & 7) and steps sect down by 8 every 8 pages,
+and once more before each command. The Pico picked the page as vdbuf_rcnt + lba % 8 and advanced
+vdbuf_rcnt whenever a sector with lba % 8 == 7 was read. When a response is exactly 8, 16 or 24 pages
+the driver leaves one 8-sector group unread; on the next command the Z's Linux reads ahead into that
+group, vdbuf_rcnt moves 8 pages too far, and pages 8.. of that response carry the data 8 pages
+(3968 bytes) ahead. The header seqno is the current one, so the driver accepted it: a _READ that
+followed a direct read with an 8/16/24-page remainder came back shifted (the Human68k loader's
+relocation table, so programs loaded from B: crashed).
+
+- driver (scsiremote.c, settinguisub.c): decide the read start sect before sending the command and
+  pass its low 16 bits (in units of 8) in header.reserved[] with bit 7 set; also check header.page.
+- Pico: with bit 7, page = ((base - (lba & ~7)) & 0xffff) / 8 * 8 + lba % 8; out-of-range pages
+  (read-ahead) get a broken signature so the driver throws them away. Without bit 7 (old drivers),
+  count as before.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PrGdt1XK1exBgERrMmLA1u
+---
+ driver/scsiremote.c   | 11 +++++++++--
+ driver/settinguisub.c | 10 ++++++++--
+ src/virtual_disk.c    | 32 +++++++++++++++++++++++++++-----
+ 3 files changed, 44 insertions(+), 9 deletions(-)
+
+diff --git a/driver/scsiremote.c b/driver/scsiremote.c
+index d236e7b..2fae407 100644
+--- a/driver/scsiremote.c
++++ b/driver/scsiremote.c
+@@ -103,11 +103,17 @@ void com_cmdres(void *wbuf, size_t wsize, void *rbuf, size_t rsize)
+   int wcnt = (wsize - 1) / (512 - 16);
+   int rcnt = (rsize - 1) / (512 - 16);
+ 
++  /* 応答を読み始める sect を先に決めて Pico に知らせる (下位 16 ビットを 8 単位で。Pico はページを LBA から決める:
++     Z の Linux の先読みや読み直しで Pico に届く読み込みの数が変わっても、ページを取り違えない) */
++  int rsect = ((sect - 8) % 0x200000) + 0x200000;
++
+   h = &vdbuf_write.header;
+   h->signature = 0x5836385a;    /* "X68Z" */
+   h->session = seqtim;
+   h->seqno = seqno;
+   h->maxpage = wcnt;
++  h->reserved[0] = 0x80 | ((rsect >> 11) & 0x1f);
++  h->reserved[1] = (rsect >> 3) & 0xff;
+   for (int i = 0; i <= wcnt; i++) {
+     h->page = i;
+     int s = wsize > (512 - 16) ? 512 - 16 : wsize;
+@@ -122,7 +128,7 @@ void com_cmdres(void *wbuf, size_t wsize, void *rbuf, size_t rsize)
+     }
+   }
+ 
+-  sect = ((sect - 8) % 0x200000) + 0x200000;
++  sect = rsect;
+   h = &vdbuf_read.header;
+   for (int i = 0; i <= rcnt; i++) {
+     while (1) {
+@@ -133,7 +139,8 @@ void com_cmdres(void *wbuf, size_t wsize, void *rbuf, size_t rsize)
+         if ((i % 16) == 15)
+           DPRINTF1("\r\n");
+       }
+-      if (memcmp(&vdbuf_read, &vdbuf_write, 12) == 0)
++      /* ページ番号も照合する (先頭 12 バイトは今の命令のものなので、別のページでも通ってしまう) */
++      if (memcmp(&vdbuf_read, &vdbuf_write, 12) == 0 && vdbuf_read.header.page == i)
+         break;
+       sect = ((sect - 0x10000) % 0x200000) + 0x200000;
+     }
+diff --git a/driver/settinguisub.c b/driver/settinguisub.c
+index e1f0194..6a03afc 100644
+--- a/driver/settinguisub.c
++++ b/driver/settinguisub.c
+@@ -67,11 +67,16 @@ void com_cmdres(void *wbuf, size_t wsize, void *rbuf, size_t rsize)
+   int wcnt = (wsize - 1) / (512 - 16);
+   int rcnt = (rsize - 1) / (512 - 16);
+ 
++  /* 応答を読み始める sect を Pico に知らせる (scsiremote.c と同じ。Pico はページを LBA から決める) */
++  int rsect = ((sect - 8) % 0x200000) + 0x200000;
++
+   h = &vdbuf_write.header;
+   h->signature = 0x5836385a;    /* "X68Z" */
+   h->session = seqtim;
+   h->seqno = seqno;
+   h->maxpage = wcnt;
++  h->reserved[0] = 0x80 | ((rsect >> 11) & 0x1f);
++  h->reserved[1] = (rsect >> 3) & 0xff;
+   for (int i = 0; i <= wcnt; i++) {
+     h->page = i;
+     int s = wsize > (512 - 16) ? 512 - 16 : wsize;
+@@ -81,12 +86,13 @@ void com_cmdres(void *wbuf, size_t wsize, void *rbuf, size_t rsize)
+     _iocs_s_writeext(0x20, 1, scsiid, 1, &vdbuf_write);
+   }
+ 
+-  sect = ((sect - 8) % 0x200000) + 0x200000;
++  sect = rsect;
+   h = &vdbuf_read.header;
+   for (int i = 0; i <= rcnt; i++) {
+     while (1) {
+       _iocs_s_readext(sect + (i & 7), 1, scsiid, 1, &vdbuf_read);
+-      if (memcmp(&vdbuf_read, &vdbuf_write, 12) == 0)
++      /* ページ番号も照合する (先頭 12 バイトは今の命令のものなので、別のページでも通ってしまう) */
++      if (memcmp(&vdbuf_read, &vdbuf_write, 12) == 0 && vdbuf_read.header.page == i)
+         break;
+       sect = ((sect - 0x10000) % 0x200000) + 0x200000;
+     }
+diff --git a/src/virtual_disk.c b/src/virtual_disk.c
+index ff800ac..1c0e13a 100644
+--- a/src/virtual_disk.c
++++ b/src/virtual_disk.c
+@@ -299,6 +299,15 @@ uint8_t vdbuf_read[(512 - 16) * 8 * 4];
+ uint8_t vdbuf_write[(512 - 16) * 8 * 4];
+ int vdbuf_rpages;
+ int vdbuf_rcnt;
++/* 応答のページは読まれた LBA から決める (読まれた回数で数えない)。
++   driver/scsiremote.c はページ i を sect + (i & 7) から読み、8 ページごとに sect を 8 下げ、古いキャッシュに当たると
++   sect を 0x10000 下げて読み直す。Z (Linux) はこの帯を 4KB (8 セクタ) 単位でキャッシュし、先読みもするので、Pico に
++   届く読み込みは driver の読み込みと 1 対 1 ではない。回数で数えると先読みや読み直しで vdbuf_rcnt が余分に 8 進み、
++   以降のページが 8 ページ先の中身になる (ヘッダの seqno は今の命令のものなので driver は気づかない。B: から読んだ
++   プログラムの再配置表が壊れて落ちた)。新しい driver は命令のヘッダ reserved[] に読み始めの sect (の下位 16 ビット、
++   8 単位) を入れてくる: ページ = ((起点 - 組) & 0xffff) / 8 * 8 + (lba & 7)。範囲外 (上向きの先読みなど) は署名を
++   壊して返し、driver に捨てさせる。reserved[0] の bit7 が無い古い driver には今までどおり数える。 */
++static int32_t vdbuf_rbase = -1;
+ 
+ struct vdbuf_header vdbuf_header;
+ 
+@@ -569,14 +578,25 @@ int vd_read_block(uint32_t lba, uint8_t *buf)
+                 }
+                 return 0;
+             } else if (lba >= (0x40000 / 512)) {
+-                int page = vdbuf_rcnt + (lba % 8);
+                 struct vdbuf *b = (struct vdbuf *)buf;
++                int page;
++                if (vdbuf_rbase >= 0) {
++                    page = (int)(((vdbuf_rbase - (lba & ~7u)) & 0xffff) / 8 * 8 + (lba % 8));
++                } else {
++                    page = vdbuf_rcnt + (lba % 8);
++                    if ((lba % 8) == 7) {
++                        vdbuf_rcnt += 8;
++                    }
++                }
+                 b->header = vdbuf_header;
+                 b->header.maxpage = vdbuf_rpages;
+-                b->header.page = page;
+-                memcpy(b->buf, &vdbuf_read[page * (512 - 16)], sizeof(b->buf));
+-                if ((lba % 8) == 7) {
+-                    vdbuf_rcnt += 8;
++                if (page > vdbuf_rpages || page >= (int)(sizeof(vdbuf_read) / (512 - 16))) {
++                    b->header.signature = 0;            /* 先読みなど: driver の照合 (先頭 12 バイト) に通らない */
++                    b->header.page = 0xff;
++                    memset(b->buf, 0, sizeof(b->buf));
++                } else {
++                    b->header.page = page;
++                    memcpy(b->buf, &vdbuf_read[page * (512 - 16)], sizeof(b->buf));
+                 }
+                 return 0;
+             }
+@@ -682,6 +702,8 @@ int vd_write_block(uint32_t lba, uint8_t *buf)
+                 xSemaphoreGive(remote_sem);
+                 vdbuf_rpages = (rsize < 0) ? 0 : ((rsize - 1) / (512 - 16));
+                 vdbuf_rcnt = 0;
++                vdbuf_rbase = (vdbuf_header.reserved[0] & 0x80) ?
++                              (((vdbuf_header.reserved[0] & 0x1f) << 8 | vdbuf_header.reserved[1]) << 3) : -1;
+                 DPRINTF3("vdbuf_rpages=%d\n", vdbuf_rpages);
+             }
+             return 0;
+-- 
+2.54.0 (Apple Git-157)
+
