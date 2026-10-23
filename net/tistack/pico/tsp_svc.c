@@ -22,7 +22,10 @@
 #include "tsp_svc.h"
 #include "tsp_plat.h"
 
-#define NPS             40              /* Pico 側のソケット (Z の 32 番号 + accept されて引き取り待ちの子) */
+#ifndef TSP_NPS
+#define TSP_NPS         40
+#endif
+#define NPS             TSP_NPS         /* Pico 側のソケット (Z の 32 番号 + accept されて引き取り待ちの子) */
 #define NONE            0xff
 #define UDPQ            4               /* UDP: Z に渡していない受信の最大 (古いものから捨てる) */
 #ifndef TSP_TXPOOL
