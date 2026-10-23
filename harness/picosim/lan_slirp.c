@@ -19,6 +19,22 @@
 #include "libslirp.h"
 
 struct lan_config lan_cfg;
+FILE *lan_pcap;                         /* -p: LAN を流れたフレームを pcap に書く (tcpdump -r で読む) */
+
+static void pcap_frame(const uint8_t *f, int len)
+{
+  static int hdr;
+  uint64_t t = picosim_now_us();
+  uint32_t h[4] = { (uint32_t)(t / 1000000), (uint32_t)(t % 1000000), (uint32_t)len, (uint32_t)len };
+  if (!hdr) {
+    static const uint32_t g[6] = { 0xa1b2c3d4, 0x00040002, 0, 0, 65535, 1 };
+    fwrite(g, 4, 6, lan_pcap);          /* 2.4、Ethernet、ホストのバイト順 */
+    hdr = 1;
+  }
+  fwrite(h, 4, 4, lan_pcap);
+  fwrite(f, 1, len, lan_pcap);
+  fflush(lan_pcap);
+}
 
 static Slirp *slirp;
 static const uint8_t z_mac[6] = { 0x02, 0x58, 0x36, 0x38, 0x00, 0x68 };   /* Z の架空の MAC ("X68") */
@@ -116,10 +132,12 @@ static void deliver(const uint8_t *f, int len, int from)
 {
   static const uint8_t bcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
   int type = len >= 14 ? (f[12] << 8) | f[13] : 0;
+  if (lan_pcap)
+    pcap_frame(f, len);
   if (picosim_verbose >= 3)
     picosim_log("lan: %s %02x:%02x:%02x:%02x:%02x:%02x type %04x len %d\n", from == -1 ? "slirp>" : from == -2 ? "z>" : "att>",
                 f[0], f[1], f[2], f[3], f[4], f[5], type, len);
-  if (from < 0)
+  if (from == -1)
     memcpy(gw_mac, f + 6, 6);
   if (type == 0x0806 && len >= 42) {
     uint32_t tip;

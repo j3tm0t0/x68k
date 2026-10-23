@@ -3,7 +3,7 @@
  *            XEiJ (harness/xeij/agent/PicoBridge.java) が SCSI の命令を TCP で渡してくる
  *
  *   picosim [-l 127.0.0.1:6868] [-n 192.168.1.0/24] [-g 192.168.1.1] [-D DNS] [-L [u]PORT:ZPORT]...
- *           [-0 disk.hds] [-N 秒] [-c MB] [-r KB] [-d µs] [-a 倍率] [-s 秒] [-v]
+ *           [-0 disk.hds] [-N 秒] [-c MB] [-r KB] [-d µs] [-a 倍率] [-s 秒] [-p lan.pcap] [-v]
  *
  * 受け持つ SCSI ID:
  *   ID 6 = netpipe (netpipe.c)。LBA 0x100000 の要求と 0x110000〜0x1ffff7 の応答。ほかの LBA は 0 を返し、書き込みは捨てる
@@ -34,6 +34,7 @@
 #include "picosim.h"
 
 extern double np_accel_scale;
+extern FILE *lan_pcap;
 int picosim_verbose;
 static uint64_t t0_us;
 
@@ -427,7 +428,7 @@ static void usage(void)
 {
   fprintf(stderr,
           "usage: picosim [-l 127.0.0.1:6868] [-n 192.168.1.0/24] [-g GW] [-D DNS] [-L [u]PORT:ZPORT|none]...\n"
-          "               [-0 disk.hds] [-N sec] [-c MB] [-r KB] [-d us] [-a scale] [-s sec] [-v]\n");
+          "               [-0 disk.hds] [-N sec] [-c MB] [-r KB] [-d us] [-a scale] [-s sec] [-p lan.pcap] [-v]\n");
   exit(2);
 }
 
@@ -440,7 +441,7 @@ int main(int argc, char **argv)
   lan_cfg.net = ip_arg("192.168.1.0");
   lan_cfg.gw = ip_arg("192.168.1.1");
   lan_cfg.dns = 0;
-  while ((o = getopt(argc, argv, "l:n:g:D:L:0:N:c:r:d:a:s:vh")) != -1) {
+  while ((o = getopt(argc, argv, "l:n:g:D:L:0:N:c:r:d:a:s:p:vh")) != -1) {
     switch (o) {
     case 'l': listen_spec = optarg; break;
     case 'n': {
@@ -478,6 +479,12 @@ int main(int argc, char **argv)
     case 'd': cmd_delay_us = atoi(optarg); break;
     case 'a': np_accel_scale = atof(optarg); break;
     case 's': stat_sec = atoi(optarg); break;
+    case 'p':
+      if (!(lan_pcap = fopen(optarg, "wb"))) {
+        perror(optarg);
+        exit(1);
+      }
+      break;
     case 'v': picosim_verbose++; break;
     default: usage();
     }
