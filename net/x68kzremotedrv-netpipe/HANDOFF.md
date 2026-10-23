@@ -9,7 +9,7 @@
 |---|---|
 | Z の中の sd 基板 (Pico 2 WH + microSD、192.168.1.4) | 段階 2 の試験版 (uf2 f9e6717a、**SD を自動で C: にする版**) が入っている。設定 (フラッシュ 0x1F0000) はそのまま。B: = SMB のリモートドライブ、C: = SD、D: E: = 内蔵 FD |
 | 明示だけにした版 | 作ってあるが**まだ書き込んでいない** (fork 369cda6 + ac0b102)。書き込むと C: が消え、FD が C: D: に戻る。C: にしたいときは設定でユニット数 2・REMOTE1 = `sd:/` |
-| パッチ | 0036 (SD の HDS、明示のみ)、0037 (SD をリモートドライブのユニットに + sdcopy)、0038 (Pico 2 W のビルド)。x68k の `tistack` ブランチ。main には未マージ |
+| パッチ | 0036 (SD の HDS、明示のみ)、0037 (SD をリモートドライブのユニットに + sdcopy)、0038 (Pico 2 W のビルド)、0039 (ホスト名と固定 IP、実機未確認)。x68k の `tistack` ブランチ。main には未マージ |
 
 実機で確かめたこと (自動で C: にする版): C: で dir / mkdir / ren / del / rmdir、B:→C:→B: のコピーが cmp で一致 (400KB)、
 `sdcopy` で 64MB を約 86 秒、2 本目は `err sdcopy busy`、無いファイルは `err:smb-open`。
@@ -19,7 +19,7 @@
 
 - fork (ローカルのみ、push しない): `/Users/moto/Dropbox/src/github.com/yunkya2/x68kzremotedrv-tsp`、ブランチ `sddata`
   - 0b1063c まで = `tsp` (パッチ 0001-0035 と同じ)
-  - 483429f = 0036、369cda6 = 0037、ac0b102 = 0038
+  - 483429f = 0036、369cda6 = 0037、ac0b102 = 0038、0bb206a = 0039
   - サブモジュールの dir (libsmb2, x68kserremote, pico-sdk, FreeRTOS-Kernel) は `../x68kzremotedrv-hid` への symlink。`lib/FatFs_SD` は no-OS-FatFS 6c644cf の clone への symlink
 - x68k: `/Users/moto/Dropbox/src/github.com/j3tm0t0/x68k-tistack` (ブランチ `tistack`)。パッチは `net/x68kzremotedrv-netpipe/patches/`、説明は README の表
 - パッチを作り直すとき: fork で `git format-patch --start-number 36 0b1063c..sddata -o <x68k>/net/x68kzremotedrv-netpipe/patches/`
@@ -34,7 +34,7 @@ cd x68kzremotedrv-tsp && mkdir build-p2w && cd build-p2w
 export PATH=~/opt/arm-gnu-toolchain-14.3.rel1-darwin-arm64-arm-none-eabi/bin:$PATH CMAKE_POLICY_VERSION_MINIMUM=3.5
 CFLAGS="-include time.h -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types -Wno-error=int-conversion" \
   cmake -DPICO_BOARD=pico2_w -DPICO_PLATFORM=rp2350 -DPICO_SDK_PATH=<pico-sdk> -DFREERTOS_KERNEL_PATH=<FreeRTOS-Kernel> -DHID_KEYBOARD=ON ..
-make -j8      # x68kzremotedrv.elf / .uf2
+make -j8      # x68kzremotedrv.elf / .uf2 (fork の build-p2w/ で作れる。0039 まで入れて c8de9191)
 ```
 
 `-DPICO_PLATFORM=rp2350` を付けないと、最初の configure が rp2040 で止まることがある。Pico W の既定 (`pico_w`) は古い SDK のままで、SD のパッチ (0036 以降) とは組み合わせていない。
@@ -72,6 +72,6 @@ make -j8      # x68kzremotedrv.elf / .uf2
 ## 次にやること
 
 1. 明示だけにした版を sd 基板に書き、設定画面で ユニット数 2 / REMOTE1 = `sd:/` を選んで C: になるか、FD が D: E: になるかを確かめる (設定を書き換えるので team-lead に先に確認)。
-2. team-lead の小さな頼み: 基板ごとのホスト名 (設定項目、既定は `pico-` + ボード ID の下 4 桁)、固定 IP (ip/netmask/gw/dns、既定は DHCP)、status にホスト名。
+2. ホスト名と固定 IP (0039) を実機で: status の `host=pico-xxxx`、設定画面の右の「ネットワーク設定」の見た目 (Delta に XEiJ で頼んだ)、固定 IP にして ping が通るか (設定を変えるので team-lead に確認)。
 3. tistack の実機の速さ (`tis.x -p`) は Pico 2 W でまだ測っていない。
 4. パッチ 0036-0038 を main へ (ホストの試験は関係しないが、マージ前に走らせる)。
