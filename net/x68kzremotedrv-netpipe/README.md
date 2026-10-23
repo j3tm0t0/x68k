@@ -42,7 +42,7 @@ USB キーボード (0012) を入れるときは `cmake -DHID_KEYBOARD=ON ..` (�
 | `src/msc_disk.c` | 0033: INQUIRY の文字列を欄 (8 / 16 / 4 バイト) に収める。上流から product id が 9 バイトはみ出していて、pico-sdk 2.1 の TinyUSB (Pico 2 W) では tud_task のスタックを壊し、USB ホストが INQUIRY を送った途端に落ちていた (Z にディスクが見えない) |
 | `driver/mkbootwait.py` / `bootwait_gen_p2w.S` / `src/bootwait.c` | 0035: 待ち画面の副題のボード名を実物に (RP2350 では「Raspberry Pi Pico 2 W」。`BW_BOARD` で作り分け、Pico W の絵は今までと同じ) |
 | `src/sdhds.c` / `sdhds.h` / `hw_config.c` / `hdscache.c` / `virtual_disk.c` / `connect.c` / `lib/FatFs_SD` | 0036: SPI の microSD の上の HDS。HDS の欄に `sd:/x68000z/hds1.hds` のように書くとカードのファイルを使う (SPI0: GP18 SCK / GP19 MOSI / GP20 MISO / GP21 CS、25MHz。`SD_SCK` などで変えられる。FatFs は [no-OS-FatFS-SD-SDIO-SPI-RPi-Pico](https://github.com/carlk3/no-OS-FatFS-SD-SDIO-SPI-RPi-Pico) 6c644cf)。カードの HDS は Wi-Fi を待たない。**明示したときだけ**: SCSI ID を 1 つ足すと、起動時に CONFIG.SYS のドライバより先にドライブ名を取るので、たとえば HDS1 に入れると B: になり、**リモートドライブが C: にずれる** (実機の Z で確認)。最初の接続のあと、カードに `/x68000z/hds1.hds` が無く HDS0 と同じ共有に `sdcopy/hds1.hds` があれば、1 回だけカードへ写す (`.part` に書いてから名前を変える。写すだけで、HDS1 に書かない限りディスクにはならない) |
-| `src/sdfs.c` / `sdfs.h` / `fileop.h` / `sdhds.c` / `virtual_disk.c` / `vd_command.c` / `hidkbd.c` / `connect.c` | 0037: SD カードを**リモートドライブのユニット**にする (SMB のユニットの後ろ。B: がリモートドライブなら **C:**)。SCSI ID は増やさないので B: はずれない。**明示したときだけ**: REMOTE の欄に `sd:/...` と書いたユニット (たとえばユニット数 2、REMOTE1 = `sd:/` で C:)。自動で足すと後ろのドライブ名が下がる (Z の内蔵 FD が C: D: から D: E: に。実機で確認) ので足さない。設定画面の共有の一覧にカードが `sd:` として出るので、HDS と REMOTE の欄でカードのファイルやディレクトリを選べる。Wi-Fi を待たない。`fileop.h` の `FUNC_*` が rootpath の `sd:` で FatFs に回す (ファイル・ディレクトリのハンドルは上位 32 ビットの印 0xfffe5344 で振り分ける。Z のドライバは READ / WRITE などにユニット番号を付けてこない)。ファイルの日付は変えられない (FatFs の `FF_USE_CHMOD` が 0。コピーしたファイルは書いた時刻になる)。FatFs は 1 本の錠で守る。FatFs の lib の `my_rtc.c` が `time()` を always-on タイマーに置き換えていて、止まったまま 0 を返していた (libsmb2 の時間切れが効かない) ので、起動時に 0 から動かし、SMB の時刻で合わせる。UDP 6869 に `sdcopy <共有名/パス> <sd のパス>`: 別のタスクと別の SMB の接続で共有からカードへ写す (`.part` に書いてから名前を変える)。HDS として開いているファイルと、写している最中の 2 本目は断る。`status` に `sdcopy=idle|run:N/M|done:N|err:<理由>`。実機の Z (自動で足す版で試験): `dir c:`・mkdir・ren・del・rmdir、B:→C:→B: のコピーが一致 (400KB)、sdcopy で 64MB を約 80 秒 (約 800KB/s) |
+| `src/sdfs.c` / `sdfs.h` / `fileop.h` / `sdhds.c` / `virtual_disk.c` / `vd_command.c` / `hidkbd.c` / `connect.c` | 0037: SD カードを**リモートドライブのユニット**にする (SMB のユニットの後ろ。B: がリモートドライブなら **C:**)。SCSI ID は増やさないので B: はずれない。**明示したときだけ**: REMOTE の欄に `sd:/...` と書いたユニット (たとえばユニット数 2、REMOTE1 = `sd:/` で C:)。自動で足すと後ろのドライブ名が下がる (Z の内蔵 FD が C: D: から D: E: に。実機で確認) ので足さない。設定画面の共有の一覧にカードが `sd:` として出るので、HDS と REMOTE の欄でカードのファイルやディレクトリを選べる。Wi-Fi を待たない。`fileop.h` の `FUNC_*` が rootpath の `sd:` で FatFs に回す (ファイル・ディレクトリのハンドルは上位 32 ビットに入れた値 0xfffe5344 で振り分ける。Z のドライバは READ / WRITE などにユニット番号を付けてこない)。ファイルの日付は変えられない (FatFs の `FF_USE_CHMOD` が 0。コピーしたファイルは書いた時刻になる)。FatFs は 1 本の錠で守る。FatFs の lib の `my_rtc.c` が `time()` を always-on タイマーに置き換えていて、止まったまま 0 を返していた (libsmb2 の時間切れが起きない) ので、起動時に 0 から動かし、SMB の時刻で合わせる。UDP 6869 に `sdcopy <共有名/パス> <sd のパス>`: 別のタスクと別の SMB の接続で共有からカードへ写す (`.part` に書いてから名前を変える)。HDS として開いているファイルと、写している最中の 2 本目は断る。`status` に `sdcopy=idle|run:N/M|done:N|err:<理由>`。実機の Z (自動で足す版で試験): `dir c:`・mkdir・ren・del・rmdir、B:→C:→B: のコピーが一致 (400KB)、sdcopy で 64MB を約 80 秒 (約 800KB/s) |
 | `CMakeLists.txt` / `src/FreeRTOSConfig.h` / `src/tsp_lwip/lwipopts.h` | 0038: Pico 2 W 向けのビルド (`-DPICO_BOARD=pico2_w -DPICO_PLATFORM=rp2350`、FreeRTOS は RP2350_ARM_NTZ の port、既定は 1 コア `P2W_CORES=1`)。`-DPICO_SDK_PATH=` (pico-sdk 2.1.1) と `-DFREERTOS_KERNEL_PATH=` (raspberrypi/FreeRTOS-Kernel 4f7299d) を指定する。0036 以降の SD カードは pico-sdk 2.x が要る (`pico/aon_timer`)。TSP は Pico 2 W では本来の大きさ。手順は [HANDOFF.md](HANDOFF.md) |
 | `src/connect.c` / `config_file.c` / `config.tmpl.txt` / `include/vd_command.h` / `driver/settingui.c` / `hidkbd.c` | 0039: 基板ごとのホスト名 (設定 `HOSTNAME`、空欄なら `pico-` + ボード ID の下 4 桁。今までは全部 PicoW) と固定 IP (`IPADDR` / `NETMASK` / `GATEWAY` / `DNS`、`IPADDR` が空欄なら DHCP)。CONFIG.TXT と設定画面の右の「ネットワーク設定」で変える (再起動後に有効)。フラッシュでは v4 の項目の後ろに印 `NET1` を付けて置くので、古いファームに戻しても設定は読める (古いファームが書き直すと新しい項目は消える)。`status` に `host=<名前>` (0040 で位置を変えた)。ホスト名は実機で確認、固定 IP は未試験。フラッシュの並び: v4 の項目 (32〜1727) の後ろ 1728 に `NET1`、hostname 32・ipaddr 16・netmask 16・gateway 16・dns 16 (〜1827) |
 | `src/hidkbd.c` | 0040: UDP 6869 の返事はどれも最初の語 (ok / err) の直後に `host=<ホスト名>` (`ok host=pico-f350 stat=5 ...`)。Pico Z Loader と同じ形 |
@@ -53,7 +53,7 @@ USB キーボード (0012) を入れるときは `cmake -DHID_KEYBOARD=ON ..` (�
 | `src/sdhds.c` / `src/FreeRTOSConfig.h` | 0045: Pico W (RP2040) でも SD を使えるように RAM を詰める: HDS の FIL は開くときに確保、sdcopy のタスク (8KB) は写すたびに作って消す、写す塊は RP2040 では 8KB。FreeRTOS 11 の RP2040 の port 用に `configUSE_PASSIVE_IDLE_HOOK` の既定。Pico W (`-DPICO_BOARD=pico_w -DPICO_PLATFORM=rp2040 -DTSP=OFF`、pico-sdk 2.1.1) の起動時の空きヒープ 107,468 B (SD の前の同じビルドは 112,264 B)。実機は未試験 |
 | `CMakeLists.txt` / `src/sdhds.c` / `src/sdfs.c` / `src/connect.c` | 0046: SD カードをビルドの選択に (`-DSD_CARD=ON|OFF`、既定は pico2_w で ON、pico_w で OFF)。OFF なら FatFs を入れず、`sd:` は開けない。Pico W で ON にしても sdcopy と起動時の fetch は入れない (RAM)。起動時の空きヒープ: Pico W (SD なし) 112,136 B、Pico W (SD あり) 107,872 B、Pico 2 W 343,952 B |
 | `src/hidkbd.c` / `src/connect.c` | 0047: 0040 の返事の組み立て (480 バイト) を status タスクのスタックから外す (static、呼ぶ側はどちらも lwIP の錠の中)、スタックを 1024 語に。keepalive のタスクの表を 16 に (8 では足りず何も出ていなかった) |
-| `src/connect.c` / `src/main.c` | 0048: SMB の keepalive を USB タスクで行う。HDS の読み書き (USB タスク) と keepalive (別のタスク) が同じ libsmb2 の接続を同時に使い、中が壊れて "Out of memory" で落ちた (最初の keepalive は接続の直後、Z が起動のために HDS0 を読んでいる最中に来る。Delta の p2w の試験で見つかった)。keepalive のタスクは印を立てるだけ |
+| `src/connect.c` / `src/main.c` | 0048: SMB の keepalive を USB タスクで行う。HDS の読み書き (USB タスク) と keepalive (別のタスク) が同じ libsmb2 の接続を同時に使い、中が壊れて "Out of memory" で落ちた (最初の keepalive は接続の直後、Z が起動のために HDS0 を読んでいる最中に来る。Delta の p2w の試験で見つかった)。keepalive のタスクはフラグを立てるだけ |
 | `src/virtual_disk.c` | 0049: 仮想 FAT のイメージファイルの鎖を、大きさを覆うちょうどの数 (32KB 単位に切り上げ) にする。大きさが 32KB で割り切れるとき 1 つ長かった (読むのには害が無いが fsck が指摘する) |
 | `driver/bootwait.S` / `driver/mkbootwait.py` | 0028: ◆ の行を本物の進み具合 (Wi-Fi → SMB → HDS → 起動) に |
 | `driver/mkbootwait.py` | 0027: ロゴの行は見た目の中央から 20 ドット左 (最終の配置) |
@@ -98,7 +98,7 @@ USB キーボード (0012) を入れるときは `cmake -DHID_KEYBOARD=ON ..` (�
 電源投入時にときどき「ディスクから起動できません」になる件の調査用。`cmake -DHID_KEYBOARD=ON -DMSC_LOG=ON ..`
 (受け手は `-DMSC_LOG_HOST=a.b.c.d`、既定 192.168.1.108) で、Z からの USB MSC の命令を 1 件 1 行の UDP (6870) で送る。
 Wi-Fi がつながる前の分もリング (128 件) に残して後で送る。USB の mount のあとと 2 秒以上途切れたあとの 300 件だけ。
-ID 6 の netpipe / scsiremote の帯は数だけ (`skip=`)。受け手:
+ID 6 の netpipe / scsiremote が使う LBA の範囲は数だけ (`skip=`)。受け手:
 
 ```sh
 python3 -uc 'import socket,time;s=socket.socket(2,2);s.bind(("",6870));[print(time.strftime("%T"),s.recv(512).decode()) for _ in iter(int,1)]' | tee -a /tmp/msclog.txt
@@ -163,13 +163,13 @@ python3 -uc 'import socket,time;s=socket.socket(2,2);s.bind(("",6870));[print(ti
   8 桁の穴が空いていた)。タイトルも同じく詰めた。ロゴの行は `BW_LOGO=center` (既定、0022 の見た目の中央) か
   `BW_LOGO=subtitle` (左端を副題の左端に) を `mkbootwait.py` に渡して選ぶ
 - 0024: 0023 の縦積みはやめ、0022 の横並びに戻した。ロゴの行だけ左に寄せ、左端を副題の左端にそろえる
-  (輪が副題の「Pico Z Loader」の上に来る)。ロゴの持ち方 (帯 x プレーン、art_blits) は 0023 のまま
+  (輪が副題の「Pico Z Loader」の上に来る)。ロゴの持ち方 (横の区間 x プレーン、art_blits) は 0023 のまま
 - 0023: ロゴを縦積みに。上に電源の輪と Z、その下に 1 行で「PICO Z LOADER」(PICO 白、Z 水色、LOADER 灰青)、どちらも中央。
-  副題は「for X68000 Z ・ Raspberry Pi Pico W / x68kzremotedrv」、下の行を詰め直した。ロゴは横の帯 x プレーンごとに持ち
+  副題は「for X68000 Z ・ Raspberry Pi Pico W / x68kzremotedrv」、下の行を詰め直した。ロゴは横の区間 x プレーンごとに持ち
   (空のプレーンは持たない)、表 (art_blits) で描く
 - 0022: 状態欄 (見出し・値・付け足しの 46 桁の塊) と ◆ の行を画面の中央に、下のバーを枠の縦線から縦線まで (4-93 桁) に。
   ロゴは外形の中央と塗った点の重心の中間を画面の中央に合わせる (輪が細く軽いので外形の中央より右に 5 ドットほど)
-- 0021: 名前を「Pico Z Loader」に。ロゴはオリジナル (電源の印の輪の中に Z、右に "PICO Z" と字間を空けた "LOADER")。
+- 0021: 名前を「Pico Z Loader」に。ロゴはオリジナル (電源の記号の輪の中に Z、右に "PICO Z" と字間を空けた "LOADER")。
   輪は青 (パレット 12、◆ に合わせて明るくなる)、Z と軸と "Z" は水色 (4)、"PICO" は白 (プレーン 0+1。ロゴの行に IOCS の字は出さない)、
   "LOADER" は灰色がかった青 (8)。字は [Orbitron](https://github.com/theleagueof/orbitron) (SIL Open Font License 1.1、
   © The Orbitron Project Authors) を描いた絵で、フォント自体は入れていない (`mkbootwait.py` が作り直すときだけ `driver/fonts/` に取ってくる)。
@@ -200,7 +200,7 @@ python3 -uc 'import socket,time;s=socket.socket(2,2);s.bind(("",6870));[print(ti
 ## 注意
 
 - Z の Linux は SCSI の読み込みをキャッシュし、X68000 をリセットしても消えない。応答は毎回違う LBA から読む。
-- 0x200000〜0x3fffff は scsiremote.sys (B: ドライブ) が使うので、netpipe の帯はその下に置く。
+- 0x200000〜0x3fffff は scsiremote.sys (B: ドライブ) が使うので、netpipe が使う LBA の範囲はその下に置く。
 - xip.x は送るフレームを 60 バイトまで詰めるので、ブリッジは IP の全長で切って送る。
 
 ## B: の読み込みが 8 ページずれる (0030、本家の不具合)
