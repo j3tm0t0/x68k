@@ -18,6 +18,11 @@
 
 ## 決まりごと
 
+- 仕事は GitHub Project「X68000 Z」(https://github.com/users/j3tm0t0/projects/2) の issue で。私 (Alpha) の分: x68k #1 (10.23.1)、#4 (Pico W の SD を実機で)、#5 (FAT の鎖、PR #6)、x68k-zos #10。
+  一覧: `GH_TOKEN=$(gh auth token -u j3tm0t0) gh project item-list 2 --owner j3tm0t0`。新しい仕事は issue を立てて project 2 に入れ、担当・分野・優先度・Status を付ける。
+  人に見せられないもの (上流に伝えていない不具合、moto の機材) は x68k-zos (#14 の下)、公開してよいものだけ x68k
+- 変更はブランチと PR ("Fixes #N")。試験の結果を PR に書き、通ったら自分でマージ。小さな直しと HANDOFF / CHANGELOG は main に直接でよい。公開の x68k の PR に上流の未報告の不具合や moto の機材のことを書かない
+
 - 使う人に見える変更 (fork のパッチ、npd / tis / ssh) を入れたら、x68k の `CHANGELOG.md` の「未公開 (次の版に入るもの)」に 1 行足す。リリースのときにその行を新しい版の見出しの下へ移す
 
 ## ブランチとコミット
