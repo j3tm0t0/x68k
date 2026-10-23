@@ -143,6 +143,9 @@ static int show(struct tis_info *in)
     putn(q->netdown);
     _dos_print(" stall ");
     putn(q->stall);
+    _dos_print(" gap ");
+    putn(q->gapmax);
+    _dos_print("0ms");
     _dos_print("\r\n");
   }
   for (i = 0; i < in->nsock; i++) {

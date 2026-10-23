@@ -591,6 +591,12 @@ static int pi_np_out(uint8_t *buf, int max, int *urg)
   }
   if (max > TSP_REQ_MAX)
     max = TSP_REQ_MAX;
+  {
+    static uint8_t np_seen;               /* 最初の交換の前 (常駐してから npd.x が来るまで) は数えない */
+    if (np_seen && since(last_np) > pstat.gapmax)
+      pstat.gapmax = since(last_np);
+    np_seen = 1;
+  }
   last_np = now_cs();
   if (reqlen) {
     *urg = !notsp;                      /* 前の交換の答えが来ていない: 同じ要求をもう一度 (TSP が無ければ急がない) */
