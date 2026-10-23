@@ -103,6 +103,10 @@ ok "sshd accepted the ssh.x key" "grep -q 'Accepted publickey' '$WORK/sshd.log'"
 sz=$(echo "$right" | grep -o '^size [0-9]*x[0-9]*' | head -1)
 echo "     terminal size seen by the sshd: ${sz:-?} (screen: $OUT/zos.txt)"
 grep -q "tsp: first 0xA6" "$WORK/picosim.log" && echo "     picosim: lwIP joined the LAN on the first 0xA6"
-if [ $fails -gt 0 ]; then cat "$OUT/zos.txt"; tail -5 "$WORK/sshd.log"; fi
+if [ $fails -gt 0 ]; then
+  cat "$OUT/zos.txt"; tail -5 "$WORK/sshd.log"
+  # 落ちたときの記録を残す (次の回に上書きされないように。TSP のたまの失敗を x68k-tistack-2 が調べる)
+  keep=$WORK.fail-$(date +%Y%m%d-%H%M%S); cp -R "$WORK" "$keep" 2>/dev/null && echo "     kept: $keep"
+fi
 echo "$fails failure(s)"
 exit $((fails > 0))
