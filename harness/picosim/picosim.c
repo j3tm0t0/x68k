@@ -36,6 +36,8 @@
 extern double np_accel_scale;
 extern FILE *lan_pcap;
 extern int pz_vd_page_by_lba;
+extern int pz_face_id;
+int pz_face_read(uint32_t lba, uint8_t *buf);
 void remote_add(const char *dir);
 int picosim_verbose;
 static uint64_t t0_us;
@@ -75,6 +77,8 @@ static uint32_t cmd_delay_us;
 static int t_read(int id, uint32_t lba, uint8_t *buf)
 {
   tg[id].reads++;
+  if (id == pz_face_id && id != 6)
+    return pz_face_read(lba, buf);
   return id == 6 ? pz_id6_read(lba, buf) : id == 0 ? pz_id0_read(lba, buf) : pz_hds_read(id, lba, buf);
 }
 
@@ -232,7 +236,7 @@ static void scsi(int id, const uint8_t *cdb, const uint8_t *out, uint32_t outlen
   pz_tick();
   if (id == 0 && pz.hds_fd >= 0)
     t->sects = pz.hds_sects;
-  int notready = id == 0 ? !pz_id0_ready() : id != 6 && !pz_hds_ready(id);
+  int notready = id == 0 ? !pz_id0_ready() : id != 6 && id != pz_face_id && !pz_hds_ready(id);
   switch (op) {
   case 0x00:                            /* TEST UNIT READY */
     if (notready)
@@ -463,7 +467,7 @@ int main(int argc, char **argv)
   lan_cfg.net = ip_arg("192.168.1.0");
   lan_cfg.gw = ip_arg("192.168.1.1");
   lan_cfg.dns = 0;
-  while ((o = getopt(argc, argv, "l:n:g:D:L:0:H:N:T:B:F:C:K:R:Pc:r:d:a:s:p:vh")) != -1) {
+  while ((o = getopt(argc, argv, "l:n:g:D:L:0:H:Q:N:T:B:F:C:K:R:Pc:r:d:a:s:p:vh")) != -1) {
     switch (o) {
     case 'l': listen_spec = optarg; break;
     case 'n': {
@@ -499,14 +503,18 @@ int main(int argc, char **argv)
       int id = atoi(optarg);
       const char *c = strchr(optarg, ':');
       struct stat st;
-      if (id < 1 || id > 5 || !c || stat(c + 1, &st) < 0) {
-        fprintf(stderr, "picosim: -H ID:file.hds (ID 1-5, existing file): %s\n", optarg);
+      if (id < 1 || id > 5 || !c) {
+        fprintf(stderr, "picosim: -H ID:file.hds[:hold|:after-remote] (ID 1-5): %s\n", optarg);
+        exit(2);
+      }
+      pz_hds_add(id, c + 1);
+      if (stat(pz_hds_path(id), &st) < 0) {
+        perror(pz_hds_path(id));
         exit(2);
       }
       tg[id].present = 1;
-      tg[id].name = c + 1;
+      tg[id].name = pz_hds_path(id);
       tg[id].sects = (uint32_t)(st.st_size / 512);
-      pz_hds_add(id, c + 1);
       picosim_log("id%d: %s (%u sectors)\n", id, c + 1, tg[id].sects);
       break;
     }
@@ -521,6 +529,13 @@ int main(int argc, char **argv)
     case 'C': pz.ctl_file = optarg; break;
     case 'K': pz_set_config_file(optarg); break;
     case 'P': pz_vd_page_by_lba = 1; break;
+    case 'Q':                           /* -Q N: リモートドライブの顔を ID N に (bootwait.c の pz_face_id) */
+      pz_face_id = atoi(optarg);
+      if (pz_face_id < 1 || pz_face_id > 6) usage();
+      tg[pz_face_id].present = 1;
+      tg[pz_face_id].name = "remote drive face";
+      tg[pz_face_id].sects = 0x80000000u / 512;
+      break;
     case 'R':
       remote_add(optarg);
       break;

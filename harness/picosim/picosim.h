@@ -49,7 +49,9 @@ int pz_id0_ready(void);
 int pz_id0_read(uint32_t lba, uint8_t *buf);
 int pz_id0_write(uint32_t lba, const uint8_t *buf);
 int pz_id6_read(uint32_t lba, uint8_t *buf);
-void pz_hds_add(int id, const char *path);   /* ID 1〜5 のデータの HDS (-H) */
+void pz_hds_add(int id, const char *path);   /* ID 1〜5 のデータの HDS (-H、末尾 :hold / :after-remote) */
+const char *pz_hds_path(int id);
+void pz_remote_init_seen(void);
 int pz_hds_ready(int id);
 int pz_hds_read(int id, uint32_t lba, uint8_t *buf);
 int pz_hds_write(int id, uint32_t lba, const uint8_t *buf);
