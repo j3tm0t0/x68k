@@ -7,7 +7,7 @@
 
 | もの | 状態 |
 |---|---|
-| Z の中の sd 基板 (Pico 2 WH + microSD、192.168.1.4、ホスト名 pico-f350) | fork sddata 670fb84 まで (0036-0043、uf2 4fb2a2f5、raspi3:~/fw-fork-4fb2a2f5.elf) を 21:26 に書き込み済み。SD は明示したときだけ |
+| Z の中の sd 基板 (Pico 2 WH + microSD、192.168.1.4、ホスト名 pico-f350) | fork sddata 0ae66c3 まで (0036-0044、uf2 f0957f45、raspi3:~/fw-fork-f0957f45.elf) を 23:25 に書き込み済み (0044 の煙試験: B:↔C:、B:↔A: のコピーが一致)。SD は明示したときだけ |
 | sd 基板の設定 (20:03 に設定画面で変更) | **RMTUNIT 1 → 2、REMOTE1 (空) → `sd:/`**。ほかは触っていない (Wi-Fi / SMB / HDS0 = x68000z/x68kdev.hds / REMOTE0 = x68000z/HFS/ / TZ JST-9 / TADJUST 2 / FASTCONN 0 / ネットワークの欄は空 = DHCP)。戻すには設定画面で RMTUNIT を 1 にする (REMOTE1 は残っていても使われない) |
 | Z のドライブ | A: = HDS0、B: = SMB のリモートドライブ、**C: = SD カード**、D: E: = 内蔵 FD。REMOTE1 を外すと FD が C: D: に戻る (実機で確認) |
 | パッチ | 0036 (SD の HDS、明示のみ)、0037 (SD をリモートドライブのユニットに + sdcopy)、0038 (Pico 2 W のビルド)、0039 (ホスト名と固定 IP。ホスト名は実機で確認、固定 IP は未試験)。main にマージ済み (6c661cb) |
@@ -78,4 +78,4 @@ make -j8      # x68kzremotedrv.elf / .uf2 (fork の build-p2w/ で作れる。00
 2. ホスト名と固定 IP は Charlie (PZL 186beb6) と同じ形に揃えた (項目名・既定 pico-XXXX・NET1 の並び・返事の host= の位置)。mDNS は今はしない。固定 IP は moto が頼むまで Z の基板では試さない。
 3. (0042 で直した、実機で SERVER の確定で試した) SETCONFIG で Wi-Fi をつなぎ直すと古い SMB の接続が残り、次の keepalive までリモートドライブが -14 を返していた。fork は enable_sta_mode を起動時の 1 回しか呼ばないので、つなぎ直しで固定 IP が DHCP に戻ることはない (netif を作り直さない) はず (未試験)。
 3. (済、23:10) tistack の実機の速さ: 往復 53 / 149 ms、1MB 109・145 / 26・16 KB/s、rcmd 300KB 36 / 12 KB/s (tis.x -p / xip.x)。net/tistack/README.md「実機の Z で」
-4. (済) パッチは main。リリース v2026.10.23 の下書きは scratchpad/release-v2026.10.23/ (NOTES.md と zip)。公開は moto の OK のあと team-lead の合図で。
+4. (済) リリース v2026.10.23 を公開 (https://github.com/j3tm0t0/x68k/releases/tag/v2026.10.23、ファームは 0001-0043 の 4fb2a2f5)。0044 (HDS キャッシュ) を入れた点リリースは moto の判断待ち。
