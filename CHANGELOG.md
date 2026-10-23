@@ -12,10 +12,6 @@ X68000 Z 向けに配っているもの (Pico のファーム、ssh.x / zterm、
 - `status` の返事を作るときのスタックのあふれを直した (0047)。ディスクが忙しい最中に UDP 6869 の `status` を何度も問い合わせると、メモリ切れで止まることがあった。
 - 起動直後などに "Out of memory" で止まることがあったのを直した (0048)。HDS の読み書きと SMB の接続を保つ問い合わせ (keepalive) が同じ接続を同時に使っていた。SMB につながった直後、Z が HDS を読んでいる最中に重なりやすい。
 
-### tis.x
-- npd.x がしばらく回ってこなくても、つながっている TCP を切らないようにした (Z-OS の中で ssh.x が "Error writing: I/O error" で切れることがあった)。待っている connect と名前の問い合わせだけを "Network is down" で終わらせる。
-- `tis.x -s` が Pico とのやり取りの数 (交換・送り直し・netdown・stall) も出す。
-
 ### Z-OS 関係 (term/vt100)
 - ペインごとのスクロールバッファの窓口 (`vt_sb`)。
 - 小さい字のモード (6x12) の漢字を、16 ドットの字から形を崩さずに作るようにした。
@@ -57,6 +53,10 @@ X68000 Z 向けに配っているもの (Pico のファーム、ssh.x / zterm、
 | 1 バイトの往復 | 53 ms | 149 ms |
 | Z → Mac、1MB | 109 KB/s | 25.7 KB/s |
 | Mac → Z、1MB | 145 KB/s | 16.5 KB/s |
+
+### tis.x
+- npd.x がしばらく回ってこなくても、つながっている TCP を切らないようにした (Z-OS の中で ssh.x が "Error writing: I/O error" で切れることがあった)。待っている connect と名前の問い合わせだけを "Network is down" で終わらせる。
+- `tis.x -s` が Pico とのやり取りの数 (交換・送り直し・netdown・stall) も出す。
 
 ## 2026.10.22
 
