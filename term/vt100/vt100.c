@@ -644,17 +644,54 @@ static void down8(const unsigned char *g, unsigned char *o)   /* 8x16 -> 6x12 (�
     o[y] = r;
   }
 }
-#ifdef VT_HOSTTEST
-static void down16(const unsigned char *g, unsigned char *o)   /* 16x16 (2 バイト/行) -> 12x12 (2 バイト/行) */
+/* 16x16 -> 12x12: となり合う 2 行 (2 列) を OR でまとめるのを 4 か所。まとめても形が変わらない所 (同じ行どうし・空いた行) を選ぶ
+ * (決まった所を間引くと横線や縦線が消え、OR で詰めると太って潰れる。Z の実機の _FNTADR の 12 ドットは潰れて読みにくかった) */
+static int popc(unsigned v) { int n = 0; while (v) { v &= v - 1; n++; } return n; }
+static void pick4(const unsigned *d, int n, unsigned char *merge)   /* d[i] = i と i+1 をまとめる重さ。merge[i]=1 で i に i+1 を */
 {
-  int y, x;
-  for (y = 0; y < 12; y++) {
-    unsigned short b = (unsigned short)(g[(y * 4 / 3) * 2] << 8 | g[(y * 4 / 3) * 2 + 1]), r = 0;
-    for (x = 0; x < 12; x++) if (b & (0x8000 >> (x * 4 / 3))) r |= 0x8000 >> x;
-    o[y * 2] = (unsigned char)(r >> 8); o[y * 2 + 1] = (unsigned char)r;
+  int k, i;
+  for (i = 0; i < n; i++) merge[i] = 0;
+  for (k = 0; k < 4; k++) {
+    int best = -1;
+    unsigned bc = 0xffffffffU;
+    for (i = 0; i + 1 < n; i++) {
+      unsigned c = d[i] * 4 + (i < 2 || i > n - 4 ? 1 : 0);   /* 同じ重さなら真ん中寄り */
+      if (merge[i] || (i > 0 && merge[i - 1]) || merge[i + 1]) continue;
+      if (c < bc) { bc = c; best = i; }
+    }
+    if (best >= 0) merge[best] = 1;
   }
 }
-#endif
+static void shrink16(const unsigned char *g, unsigned char *o)   /* 16x16 (2 バイト/行) -> 12x12 (2 バイト/行、左詰め) */
+{
+  unsigned short r[16], t[12];
+  unsigned d[16];
+  unsigned char m[16];
+  int y, x, n = 0;
+  for (y = 0; y < 16; y++) r[y] = (unsigned short)(g[y * 2] << 8 | g[y * 2 + 1]);
+  for (y = 0; y + 1 < 16; y++) d[y] = popc(r[y] ^ r[y + 1]);
+  pick4(d, 16, m);
+  for (y = 0; y < 16 && n < 12; y++) { t[n] = r[y]; if (m[y]) { t[n] |= r[y + 1]; y++; } n++; }
+  /* 列: 12 行にした絵で、となりの列との違いを数える */
+  for (x = 0; x + 1 < 16; x++) {
+    unsigned c = 0;
+    for (y = 0; y < 12; y++) c += ((t[y] >> (15 - x)) ^ (t[y] >> (14 - x))) & 1;
+    d[x] = c;
+  }
+  pick4(d, 16, m);
+  for (y = 0; y < 12; y++) {
+    unsigned short v = 0;
+    int b = 0;
+    for (x = 0; x < 16 && b < 12; x++) {
+      int on = (t[y] >> (15 - x)) & 1;
+      if (m[x]) { on |= (t[y] >> (14 - x)) & 1; x++; }
+      if (on) v |= 0x8000 >> b;
+      b++;
+    }
+    o[y * 2] = (unsigned char)(v >> 8); o[y * 2 + 1] = (unsigned char)v;
+  }
+}
+int vt_kanji12_rom;   /* 1: 12 ドットの漢字は IOCS _FNTADR (ROM) のものを使う。0 (既定): CGROM の 16 ドットを shrink16 で縮める */
 #ifndef VT_HOSTTEST
 static long fntadr(int code, int size)   /* IOCS _FNTADR: d0 = 字形の番地 */
 {
@@ -684,14 +721,12 @@ static const unsigned char *kanji12(unsigned short jis)   /* 12x12 (2 バイト/
   int h = (jis ^ (jis >> 5)) & 31, i;
   if (ck[h] == jis && jis) return cg[h];
 #ifndef VT_HOSTTEST
-  {
+  if (vt_kanji12_rom) {
     const unsigned char *g = (const unsigned char *)fntadr(jis, 6);   /* JIS でも Shift_JIS でも引ける */
     for (i = 0; i < 24; i++) cg[h][i] = g[i];
-  }
-#else
-  (void)i;
-  down16(kanji_glyph(jis), cg[h]);
+  } else
 #endif
+  { (void)i; shrink16(kanji_glyph(jis), cg[h]); }
   ck[h] = jis;
   return cg[h];
 }
