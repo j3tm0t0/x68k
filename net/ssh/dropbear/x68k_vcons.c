@@ -340,11 +340,13 @@ void x68k_tty_setup(void)
 #define TVRAM_PLANE 0x20000UL
 void x68k_tty_cleanup(void)
 {
-  int x, y, cols, rows, row, s, line;
+  int x, y, cols, rows, row, s, line, ox, oy;
+  volatile unsigned char *base;
   if (!vt_active) return;
   if (vc[vc_act].used) vc_use(vc_act);   /* 残すのは表のコンソールの画面 */
   vt_get_cursor(&x, &y);
   vt_get_size(&cols, &rows);
+  vt_get_origin(&ox, &oy);   /* Z-OS のペインの中なら、その枠だけを潰す (ほかのペインに触らない) */
   vt_fini();
   vt_active = 0;
   row = (x > 0) ? y + 1 : y;
@@ -352,14 +354,23 @@ void x68k_tty_cleanup(void)
   _iocs_b_locate(0, row < CON_ROWS ? row : CON_ROWS - 1); return;
 #endif
   s = _dos_super(0);
+  base = TVRAM_BASE + (unsigned long)oy * 16 * 128 + ox;
   for (line = 0; line < rows * 16; line++) {
-    volatile unsigned char *p0 = TVRAM_BASE + (unsigned long)line * 128;
+    volatile unsigned char *p0 = base + (unsigned long)line * 128;
     volatile unsigned char *p1 = p0 + TVRAM_PLANE, *p2 = p0 + 2 * TVRAM_PLANE, *p3 = p0 + 3 * TVRAM_PLANE;
     int c;
     for (c = 0; c < cols; c++) {
       unsigned char b = (unsigned char)(p0[c] | p1[c] | p2[c] | p3[c]);
       p0[c] = b; p1[c] = b; p2[c] = 0; p3[c] = 0;
     }
+  }
+  if (ox || oy || cols < 96) {
+    /* ペイン: コンソール (zos.x の IOCS) もペインの中の位置。潰したあとはプレーン 0,1 だけなので、
+     * 最終行を越えるならペインの IOCS に 1 行送らせる (TXRASCOPY は全幅なので使わない) */
+    if (s >= 0) _dos_super(s);
+    if (row > rows - 1) { _iocs_b_locate(0, rows - 1); _iocs_b_down_s(); row = rows - 1; }
+    _iocs_b_locate(0, row);
+    return;
   }
   if (row > CON_ROWS - 1) {
     int n = row - (CON_ROWS - 1);        /* 空けたい行数 */

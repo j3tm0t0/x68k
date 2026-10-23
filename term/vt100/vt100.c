@@ -60,17 +60,26 @@ unsigned short vt_host_r21;             /* CRTC R21 (68000 シミュレータは
 typedef unsigned int u32;  /* 32bit 転送用 (ホストの long は 8 バイトなので int) */
 
 #ifdef VT_HOSTTEST
-#define TVRAM  ((volatile unsigned char *)vt_host_vram)
+#define TVRAM_PHYS ((volatile unsigned char *)vt_host_vram)
 #define TPAL   ((volatile unsigned short *)vt_host_pal)
 #define CRTC_R21 (*(volatile unsigned short *)&vt_host_r21)
 #define CGBASE ((const unsigned char *)vt_host_cgrom)
 #else
-#define TVRAM  ((volatile unsigned char *)0xE00000UL)
+#define TVRAM_PHYS ((volatile unsigned char *)0xE00000UL)
 #define TPAL   ((volatile unsigned short *)0xE82200UL)
 #define CRTC_R21 (*(volatile unsigned short *)0xE8002AUL)   /* bit8 同時アクセス、bit4-7 その対象プレーン、bit0-3 ラスタコピーのプレーン */
 #define CGBASE ((const unsigned char *)0xF00000UL)    /* CGROM 先頭 (16x16 漢字) */
 #endif
 #define CGROM16 (CGBASE + 0x3A800)   /* 8x16 ANK フォント (0xF3A800) */
+
+/* ペイン: Z-OS (zos.x) の下では、IOCS _B_CONSOL が自分のペインの位置と大きさを返す。vt_init がそれを読み、
+ * 幅 96 桁未満か原点が左端でなければ、その枠の中だけに描く (TVRAM の原点をずらし、スクロールは TXRASCOPY
+ * (全幅) を使わず枠の幅だけ写す)。普通の Human68k では _B_CONSOL は 96 桁の全面なので、今までどおり全面に描く。
+ * ペインの左端は 4 桁の倍数 (スクロールを 32bit で写す。はみ出しは仕切りの桁で、どの行も同じ)。 */
+static volatile unsigned char *vt_base = TVRAM_PHYS;
+static int vt_pane;            /* 枠の中に描いている */
+static int pane_x, pane_y, pane_w, pane_h;   /* 枠 (桁・行) */
+#define TVRAM vt_base
 
 /* ---- セル ---- */
 /* cp: 描くコードポイント。0x20-0x7e は ANK、それ以外は Unicode (漢字など)。UTF-8 デコーダ
@@ -423,7 +432,7 @@ static void sa_off(void) { if (sa_cur) { CRTC_R21 = 0; sa_cur = 0; } }
  * 1-3 に入れば使える (バイトと 32bit の両方)。書いた所は元に戻す。スーパーバイザで呼ぶ。 */
 static int sa_probe(void)
 {
-  volatile unsigned char *v = TVRAM + 1020UL * VBYTES + 100;
+  volatile unsigned char *v = TVRAM_PHYS + 1020UL * VBYTES + 100;
   unsigned char keep[4][4];
   int p, k, ok = 1;
   for (p = 0; p < 4; p++) for (k = 0; k < 4; k++) keep[p][k] = v[p * PLANE + k];
@@ -614,7 +623,7 @@ static void vram_move_lines(int dst_line, int src_line, int nlines)
 {
   int p, y, k, nl = (COLS + 3) / 4;   /* 1 ラインのうち画面の COLS バイトだけ (128 のうち 96) 動かす */
 #if !defined(VT_HOSTTEST) || defined(VT_SIM_TXRAS)
-  if ((dst_line & 3) == 0 && (src_line & 3) == 0 && (nlines & 3) == 0 && dst_line != src_line) {
+  if (!vt_pane && (dst_line & 3) == 0 && (src_line & 3) == 0 && (nlines & 3) == 0 && dst_line != src_line) {
     if (dst_line < src_line)
       _iocs_txrascpy(((src_line / 4) << 8) | (dst_line / 4), nlines / 4, 0x000f);
     else
@@ -1595,7 +1604,55 @@ void vt_write(const unsigned char *p, int n)
 
 /* ================= 初期化・終了 ================= */
 void vt_default_size(int *cols, int *rows) { if (cols) *cols = MAXCOLS; if (rows) *rows = MAXROWS; }
-void vt_get_size(int *cols, int *rows) { if (cols) *cols = COLS; if (rows) *rows = ROWS; }
+static int vt_up;   /* vt_init 済み (vt_fini で 0) */
+static void pane_probe(void);
+/* vt_init の前 (ssh.x の pty 要求は画面を切り替える前) は、これから描く枠の大きさを返す */
+void vt_get_size(int *cols, int *rows)
+{
+  if (!vt_up) {
+    pane_probe();
+    if (cols) *cols = vt_pane ? pane_w : MAXCOLS;
+    if (rows) *rows = vt_pane ? pane_h : MAXROWS;
+    return;
+  }
+  if (cols) *cols = COLS; if (rows) *rows = ROWS;
+}
+void vt_get_origin(int *col, int *row) { if (col) *col = vt_pane ? pane_x : 0; if (row) *row = vt_pane ? pane_y : 0; }
+
+#ifdef VT_HOSTTEST
+static int host_pane_x = -1, host_pane_y, host_pane_w, host_pane_h;
+/* 試験用: _B_CONSOL の代わりに枠を与える (vthost -P x,y,w,h)。x < 0 で全面 */
+void vt_host_pane(int x, int y, int w, int h) { host_pane_x = x; host_pane_y = y; host_pane_w = w; host_pane_h = h; }
+#endif
+/* _B_CONSOL (IOCS $2E) を d1 = d2 = -1 で呼ぶと、変えずに今の枠を d1 = 原点 (x ドット << 16 | y ドット)、
+ * d2 = (桁数-1) << 16 | (行数-1) で返す */
+static void pane_probe(void)
+{
+  long org, size;
+  int x, y, w, h;
+#ifdef VT_HOSTTEST
+  if (host_pane_x < 0) { vt_pane = 0; return; }
+  org = ((long)host_pane_x * CW << 16) | (host_pane_y * CH);
+  size = ((long)(host_pane_w - 1) << 16) | (host_pane_h - 1);
+#else
+  {
+    register long d0 __asm__("d0") = 0x2e;
+    register long d1 __asm__("d1") = -1;
+    register long d2 __asm__("d2") = -1;
+    __asm__ volatile ("trap #15" : "+r"(d0), "+r"(d1), "+r"(d2) : : "cc", "memory");
+    org = d1; size = d2;
+  }
+#endif
+  x = ((org >> 16) & 0xffff) / CW; y = (org & 0xffff) / CH;
+  w = ((size >> 16) & 0xffff) + 1; h = (size & 0xffff) + 1;
+  vt_pane = 0;
+  if (w < MAXCOLS || x != 0) {
+    /* 枠らしいものだけ (左端が 4 桁の倍数、画面に収まる) */
+    if ((x & 3) == 0 && w >= 8 && h >= 4 && x + w <= MAXCOLS && y + h <= MAXROWS) {
+      vt_pane = 1; pane_x = x; pane_y = y; pane_w = w; pane_h = h;
+    }
+  }
+}
 
 void vt_init(int cols, int rows)
 {
@@ -1608,7 +1665,15 @@ void vt_init(int cols, int rows)
   if (rows <= 0) rows = MAXROWS;
   if (cols > MAXCOLS) cols = MAXCOLS;
   if (rows > MAXROWS) rows = MAXROWS;
+  pane_probe();
+  vt_base = TVRAM_PHYS;
+  if (vt_pane) {
+    vt_base = TVRAM_PHYS + (unsigned long)pane_y * CH * VBYTES + pane_x;
+    if (cols > pane_w) cols = pane_w;
+    if (rows > pane_h) rows = pane_h;
+  }
   COLS = cols; ROWS = rows;
+  vt_up = 1;
   if (!sg_ready) { sg_build(); pm_build(); }
   cx = cy = 0; top = 0; bot = ROWS - 1; pend_wrap = 0;
   c_fg = 7; c_bg = 0; a_bold = a_uline = a_reverse = 0; attr_update();
@@ -1647,6 +1712,7 @@ void vt_fini(void)
   _iocs_b_curon();
   sup_leave(s);
   _dos_breakck(1);
+  vt_up = 0;
 #ifdef VT_VCONS
   vc_inited = 0;
 #endif
@@ -1716,7 +1782,7 @@ int vt_host_verify(void)
   for (p = 0; p < 4 && ok; p++)
     for (r = 0; r < ROWS * CH && ok; r++)
       for (c = 0; c < COLS; c++) {
-        long o = (long)p * PLANE + (long)r * VBYTES + c;
+        long o = (long)(vt_base - TVRAM_PHYS) + (long)p * PLANE + (long)r * VBYTES + c;
         if (save[o] != vt_host_vram[o]) { ok = 0; break; }
       }
   for (p = 0; p < 4 * 0x20000; p++) vt_host_vram[p] = save[p];

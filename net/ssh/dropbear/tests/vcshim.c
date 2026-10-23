@@ -30,6 +30,7 @@ static struct iocs_time _iocs_ontime(void) { struct iocs_time t; t.sec = clk; t.
 static char con[4096];                 /* IOCS _B_PRINT に出たもの */
 static void _iocs_b_print(const char *s) { strncat(con, s, sizeof con - strlen(con) - 1); }
 static void _iocs_b_locate(int x, int y) { (void)x; (void)y; }
+static void _iocs_b_down_s(void) {}
 static void _iocs_txrascpy(int a, int b, int c) { (void)a; (void)b; (void)c; }
 static int _dos_super(int x) { (void)x; return -1; }
 static void x68dbg(const char *m) { (void)m; }

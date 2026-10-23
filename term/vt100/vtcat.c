@@ -27,6 +27,7 @@ void vt_dump_attr(FILE *f, int cols, int rows);
 
 #ifdef VT_HOSTTEST
 extern unsigned char vt_host_vram[], vt_host_cgrom[];
+void vt_host_pane(int x, int y, int w, int h);
 extern unsigned short vt_host_pal[];
 #define VRAMP ((const unsigned char *)vt_host_vram)
 #define PALP  ((const unsigned short *)vt_host_pal)
@@ -83,6 +84,10 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[i], "-r") && i + 1 < argc) replyfile = argv[++i];
 #ifdef VT_HOSTTEST
     else if (!strcmp(argv[i], "-V")) verify = 1;
+    else if (!strcmp(argv[i], "-P") && i + 1 < argc) {   /* Z-OS のペインのまね: -P 桁,行,幅,高さ (_B_CONSOL の代わり) */
+      int px, py, pw, ph;
+      if (sscanf(argv[++i], "%d,%d,%d,%d", &px, &py, &pw, &ph) == 4) vt_host_pane(px, py, pw, ph);
+    }
     else if (!strcmp(argv[i], "-g") && i + 1 < argc) {
       FILE *g = fopen(argv[++i], "rb");
       if (!g || fread(vt_host_cgrom, 1, 0xC0000, g) != 0xC0000) { fprintf(stderr, "cannot read CGROM %s\n", argv[i]); return 1; }

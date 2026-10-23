@@ -42,6 +42,10 @@ void vt_fini(void);
 /* 現在の画面サイズを得る (pty のウィンドウサイズ要求用)。 */
 void vt_get_size(int *cols, int *rows);
 
+/* 描いている枠の原点 (桁・行)。全面なら 0,0。Z-OS (zos.x) のペインの中では、_B_CONSOL が返したペインの左上。
+ * vt_init のときに _B_CONSOL を読み、幅 96 桁未満か原点が左端でなければ枠の中だけに描く (vt_get_size はその枠の大きさ)。 */
+void vt_get_origin(int *col, int *row);
+
 /* 既定の桁数・行数 (96x32)。 */
 void vt_default_size(int *cols, int *rows);
 

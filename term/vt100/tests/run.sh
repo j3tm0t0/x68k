@@ -101,5 +101,18 @@ if cc -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=undefined -DVT_H
 else
   fail "vcons (vctest をコンパイルできない)"
 fi
+# ---- 7. ペイン (Z-OS の zos.x の下: _B_CONSOL が返す枠の中だけに描く)。vthost -P で枠を与え、全面で描いた VRAM を
+#         枠の位置にずらしたものと同じか、枠の外を汚さないか (tests/panecmp.py)、VRAM = 論理画面 (-V) か ----
+for spec in "shell 48 0 48 31" "app_vimjp 48 0 48 31" "app_lessu8 0 0 47 31" "app_emoji 24 2 40 20" "syn_region 48 0 48 31"; do
+  read -r name px py pw ph <<< "$spec"
+  rec=tests/fixtures/$name.rec
+  [ -f "$rec" ] || { fail "pane $name (フィクスチャが無い)"; continue; }
+  ./vthost ${CGOPT[@]+"${CGOPT[@]}"} -s ${pw}x${ph} -v "$OUT/pane_full.vram" "$rec" "$OUT/pane_full.txt" > /dev/null 2>&1
+  ./vthost ${CGOPT[@]+"${CGOPT[@]}"} -P $px,$py,$pw,$ph -s 96x32 -v "$OUT/pane_pane.vram" "$rec" "$OUT/pane_pane.txt" > /dev/null 2>&1
+  if ! cmp -s "$OUT/pane_full.txt" "$OUT/pane_pane.txt"; then fail "pane $name (論理画面が全面 ${pw}x${ph} と違う)"
+  elif ! msg=$($PY tests/panecmp.py "$OUT/pane_full.vram" "$OUT/pane_pane.vram" $px $py $pw $ph 2>&1); then fail "pane $name"; echo "$msg" | head -8
+  elif ! msg=$(./vthost ${CGOPT[@]+"${CGOPT[@]}"} -V -c 64 -P $px,$py,$pw,$ph -s 96x32 "$rec" /dev/null 2>&1); then fail "pane $name (VRAM != 論理画面)"; echo "$msg" | head -5
+  else pass "pane $name ($pw x $ph @ $px,$py)"; fi
+done
 echo "---- $npass PASS, $nfail FAIL  (PNG: $OUT/*.png)"
 [ $nfail = 0 ]
