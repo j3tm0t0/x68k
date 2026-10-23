@@ -1,13 +1,14 @@
-From 6712b9e14b56730c6ccf2277312293df3f7ca15d Mon Sep 17 00:00:00 2001
+From 369cda62033217b0f28ffcdfa11339328fd50571 Mon Sep 17 00:00:00 2001
 From: moto <j3tm0t0@gmail.com>
-Date: Fri, 23 Oct 2026 19:14:33 +0900
+Date: Fri, 23 Oct 2026 19:22:51 +0900
 Subject: [PATCH] SD card as a remote-drive unit after the SMB ones (C: next to
  B:), and sdcopy over UDP 6869
 
 fileop.h sends every FUNC_* of a unit whose rootpath starts with "sd:" to sdfs.c (FatFs).
-A REMOTEn slot "sd:/..." uses that directory; with no such slot, a readable card adds one
-unit "sd:/" after the configured ones (vd_remoteunit() is what the Z sees: LBA 4 signature,
-CMD_INIT). No SCSI ID is added, so B: stays the SMB remote drive. Set up in vd_init, without
+Only a REMOTEn slot "sd:/..." (explicit; e.g. remoteunit 2 + REMOTE1 "sd:/" gives C:). Adding a
+unit automatically would move the drive letters after it (the Z's built-in FD drives C:/D: ->
+D:/E:). The settings UI lists the card as a share named "sd:" (CMD_SMB2_ENUM/LIST), so the
+HDS and REMOTE fields can pick sd:/... there. No SCSI ID is added, so B: stays the SMB remote drive. Set up in vd_init, without
 waiting for Wi-Fi. File dates are not settable (FF_USE_CHMOD 0); "."/".." are synthesized.
 
 All FatFs calls go through one recursive mutex (sdc_lock), since HDS I/O, the remote unit,
@@ -33,10 +34,10 @@ Claude-Session: https://claude.ai/code/session_01PrGdt1XK1exBgERrMmLA1u
  src/sdfs.h         |  35 ++++
  src/sdhds.c        | 326 ++++++++++++++++++++++++++++++-------
  src/sdhds.h        |  12 ++
- src/vd_command.c   |   2 +-
- src/virtual_disk.c |  28 ++++
+ src/vd_command.c   |  35 ++--
+ src/virtual_disk.c |  21 +++
  src/virtual_disk.h |   1 +
- 11 files changed, 787 insertions(+), 60 deletions(-)
+ 11 files changed, 805 insertions(+), 68 deletions(-)
  create mode 100644 src/sdfs.c
  create mode 100644 src/sdfs.h
 
@@ -1163,10 +1164,18 @@ index 57ee8c0..7215652 100644
 +
  #endif  /* _SDHDS_H_ */
 diff --git a/src/vd_command.c b/src/vd_command.c
-index c6005c7..3d0e669 100644
+index c6005c7..b8f26fe 100644
 --- a/src/vd_command.c
 +++ b/src/vd_command.c
-@@ -189,7 +189,7 @@ int vd_command(uint8_t *cbuf, uint8_t *rbuf)
+@@ -50,6 +50,7 @@ int lwip_poll(struct pollfd *fds, nfds_t nfds, int timeout);
+ #include "config_file.h"
+ #include "remoteserv.h"
+ #include "fileop.h"
++#include "sdhds.h"
+ 
+ //****************************************************************************
+ // Callback functions
+@@ -189,7 +190,7 @@ int vd_command(uint8_t *cbuf, uint8_t *rbuf)
          res->hour = tm->tm_hour;
          res->min = tm->tm_min;
          res->sec = tm->tm_sec;
@@ -1175,8 +1184,81 @@ index c6005c7..3d0e669 100644
        }
        res->version = PROTO_VERSION;
        strncpy(res->verstr, GIT_REPO_VERSION, sizeof(res->verstr) - 1);
+@@ -325,6 +326,9 @@ int vd_command(uint8_t *cbuf, uint8_t *rbuf)
+       smb2_enum_finished = false;
+       smb2_enum_ptr = NULL;
+       disconnect_smb2(smb2ipc);
++      /* SD カードを "sd:" という共有のように見せる (設定画面で HDS や REMOTE の欄に sd:/... を選べるように) */
++      if (res->status == 0 && res->n_items < 16 && sdc_mount())
++        strcpy((char *)res->share[res->n_items++], "sd:");
+       break;
+     }
+ 
+@@ -332,7 +336,7 @@ int vd_command(uint8_t *cbuf, uint8_t *rbuf)
+     {
+       struct cmd_smb2_list *cmd = (struct cmd_smb2_list *)cbuf;
+       struct res_smb2_list *res = (struct res_smb2_list *)rbuf;
+-      struct smb2_context *smb2;
++      struct smb2_context *smb2 = NULL;
+ 
+       rsize = sizeof(*res);
+       memset(res, 0, rsize);
+@@ -349,20 +353,29 @@ int vd_command(uint8_t *cbuf, uint8_t *rbuf)
+ 
+       res->status = -1;
+ 
+-      if ((smb2 = connect_smb2(cmd->share)) == NULL) {
++      bool sd = strcmp((char *)cmd->share, "sd:") == 0;     /* SD カード (CMD_SMB2_ENUM が足した共有) */
++      if (!sd && (smb2 = connect_smb2(cmd->share)) == NULL) {
+         break;
+       }
+ 
+-      struct smb2dir *dir;
++      struct smb2dir *dir = NULL;
++      uint64_t sddir = 0;
+       struct smb2dirent *ent;
+       char *p = res->list;
+       char *q = &res->list[sizeof(res->list)];
+ 
+       res->status = -2;
+ 
+-      dir = smb2_opendir(smb2, path);
+-      if (dir != NULL) {
+-        while ((ent = smb2_readdir(smb2, dir))) {
++      if (sd) {
++        char sp[264];
++        int err;
++        snprintf(sp, sizeof sp, "sd:/%s", path);
++        sddir = sdfs_opendir(sp, &err);
++      } else {
++        dir = smb2_opendir(smb2, path);
++      }
++      if (sd ? sddir != 0 : dir != NULL) {
++        while ((ent = sd ? sdfs_readdir(sddir) : smb2_readdir(smb2, dir))) {
+           if (ent->st.smb2_type == SMB2_TYPE_DIRECTORY ||
+               ent->st.smb2_type == SMB2_TYPE_FILE) {
+             if (strcmp(ent->name, ".") == 0 || strcmp(ent->name, "..") == 0)
+@@ -404,12 +417,16 @@ int vd_command(uint8_t *cbuf, uint8_t *rbuf)
+             }
+           }
+         }
+-        smb2_closedir(smb2, dir);
++        if (sd)
++          sdfs_closedir(sddir);
++        else
++          smb2_closedir(smb2, dir);
+         *p++ = '\0';
+         res->status = 0;
+       }
+ 
+-      disconnect_smb2(smb2);
++      if (!sd)
++        disconnect_smb2(smb2);
+       break;
+     }
+ 
 diff --git a/src/virtual_disk.c b/src/virtual_disk.c
-index faf9077..201559b 100644
+index faf9077..4dd997b 100644
 --- a/src/virtual_disk.c
 +++ b/src/virtual_disk.c
 @@ -48,6 +48,7 @@
@@ -1191,7 +1273,7 @@ index faf9077..201559b 100644
      }
  }
  
-+/* SD カードのユニットを足した後のリモートドライブのユニット数 (config.remoteunit ではなくこちらを Z に見せる) */
++/* Z に見せるリモートドライブのユニット数 (今は config.remoteunit と同じ。SD のユニットも REMOTE の欄で数える) */
 +int vd_remoteunit(void)
 +{
 +    return remoteunit;
@@ -1208,29 +1290,22 @@ index faf9077..201559b 100644
  
      remoteunit = atoi(config.remoteunit);
      remoteboot = atoi(config.remoteboot);
-@@ -254,6 +262,26 @@ int vd_init(void)
+@@ -254,6 +262,19 @@ int vd_init(void)
              smb2_hds = true;
              diskinfo[id].size = 0xfffffe00; /* tentative size */
          }
 +
 +        /* SD カードをリモートドライブのユニットにする (SMB のユニットの後ろ = B: の次の C:。SCSI ID は増やさないので
-+           ドライブ名はずれない)。REMOTE の欄に "sd:/..." と書いたユニットはそれを使う。どの欄にも書いていなければ、
-+           カードが読めるときは "sd:/" のユニットを 1 つ足す。Wi-Fi を待たない */
-+        bool sdunit = false;
++           B: はずれない)。REMOTE の欄に "sd:/..." と書いたユニットだけ (明示したときだけ): 自動で足すと、後ろの
++           ドライブ名が 1 つずつ下がる (Z の内蔵 FD は C: D: から D: E: に)。Wi-Fi を待たない */
 +        for (int i = 0; i < remoteunit && i < 8; i++) {
 +            if (!sdhds_is(config.remote[i]))
 +                continue;
-+            sdunit = true;
 +            struct smb2_stat_64 st;
 +            if (sdfs_stat(config.remote[i], &st) == 0 && st.smb2_type == SMB2_TYPE_DIRECTORY) {
 +                rootpath[i] = config.remote[i];
 +                printf("REMOTE%u: %s (SD)\n", i, config.remote[i]);
 +            }
-+        }
-+        if (!sdunit && remoteunit < 8 && sdc_mount()) {
-+            rootpath[remoteunit] = "sd:/";
-+            printf("REMOTE%u: sd:/ (SD, automatic)\n", remoteunit);
-+            remoteunit++;
 +        }
      }
  
