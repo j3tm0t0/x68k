@@ -514,7 +514,7 @@ int main(int argc, char **argv)
     }
   }
   lan_cfg.mask = htonl(prefix ? 0xffffffffu << (32 - prefix) : 0);
-  if (!lan_cfg.dns)                     /* slirp の DNS の口 (.3)。Z はゲートウェイに聞いてもよい (lan_slirp.c の dns_alias) */
+  if (!lan_cfg.dns)                     /* DNS の口 (.3)。ゲートウェイ (.1) の 53 番も同じ (lan_slirp.c の dns_answer) */
     lan_cfg.dns = htonl((ntohl(lan_cfg.net) & ntohl(lan_cfg.mask)) | 3);
   if (!nofwd && lan_cfg.nfwd == 0) {
     lan_cfg.fwd[0].hport = lan_cfg.fwd[0].zport = 2323;   /* rcmd.x */

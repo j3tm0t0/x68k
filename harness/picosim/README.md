@@ -59,7 +59,7 @@ X68_HOST=127.0.0.1 X68_PORT=23268 harness/raspi/x68.sh 'ping.x -c 4 192.168.1.1'
 | | 既定 | |
 |---|---|---|
 | `-l host:port` | 127.0.0.1:6868 | XEiJ を待つ口 |
-| `-n net/len` `-g gw` `-D dns` | 192.168.1.0/24, .1, .3 | slirp の LAN。ゲートウェイは Mac の 127.0.0.1 に、DNS は Mac の resolver に転送される。ゲートウェイの 53 番 (zshrc の `NETDNS` の既定) は DNS の口に付け替える |
+| `-n net/len` `-g gw` `-D dns` | 192.168.1.0/24, .1, .3 | slirp の LAN。ゲートウェイは Mac の 127.0.0.1 に。DNS の口とゲートウェイの UDP 53 番 (zshrc の `NETDNS` の既定) は picosim が Mac の resolver (getaddrinfo / getnameinfo) で答える (A と PTR。仮想の LAN のアドレスの PTR は picosim が名付ける) |
 | `-L [u]PORT:ZPORT` | `2323:2323` | Mac の 127.0.0.1:PORT → Z:ZPORT。`u` で UDP、`none` で無し。何度でも |
 | `-0 file.hds` `-N 秒` | | ID 0 を HDS ファイルで答える / 最初の N 秒 NOT READY (`-T 0,0,N` と同じ) |
 | `-T w,s,h` | | Pico Z Loader の起動待ち: 起動から w 秒で Wi-Fi、s 秒で SMB、h 秒で HDS が開く (下記) |
@@ -184,6 +184,9 @@ uint64_t picosim_now_us(void);                                                  
 
 ## 確かめたこと (2026-10-23、XEiJ 0.26.10.08 -model=SUPER、MacBook Pro)
 
+DNS: XEiJ の Z で `ping.x -c 2 localhost` → `PING localhost (127.0.0.1)` 2/2、`ping.x 192.168.1.1` の逆引きも
+(`lan: DNS A localhost -> rcode 0, 1 answer(s)` / `lan: DNS PTR 1.1.168.192.in-addr.arpa`)。`tests/bridgetest.py` にも 1 項目
+
 Pico Z Loader (`-T`、`-F` はフォークの driver/、HDS は 100MB の x68kcli イメージの写し):
 - 控え無し (`-T 3,6,12`): ID 0 は 12 秒 NOT READY、開いたら控えを書いて (`snapshot ... written (updated)`) そのまま起動
 - 電源を入れ直す (picosim と XEiJ を起動し直し、`-T 15,25,35`): 控えを返し (`serving the snapshot (waiting IPL)`)、
@@ -236,4 +239,6 @@ netpipe など (最初の日):
   picosim の Z キャッシュの先読みでそれらしくしているだけ
 - LAN は slirp の NAT。外 (インターネットや家の LAN) にも出られるので、試験はゲートウェイ (Mac) 宛てに留める。
   Mac から Z へは -L の転送だけ (Z を LAN の 1 台として外から見ることはできない)
-- DNS はゲートウェイの 53 番を slirp の DNS の口に付け替えて Mac の resolver に送るだけ (中身は確かめていない)
+- DNS は A と PTR の 1 問だけ。slirp の DNS の転送は使わない (macOS のローカルネットワークの許可が無い picosim からは
+  Mac の DNS サーバ (Tailscale の 100.100.100.100) に届かず "No route to host" だった。libslirp の macOS の
+  `res_ninit` に初期化していない構造体を渡す不具合も Makefile で直している)。名前を引く間は picosim が止まる

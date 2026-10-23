@@ -36,6 +36,10 @@ build/libslirp.tar.gz:
 build/libslirp.a: build/libslirp.tar.gz
 	rm -rf $(SLIRP_DIR) build/slirp-obj && mkdir -p build/slirp-obj
 	tar xzf $< -C build
+	# macOS: get_dns_addr_libresolv が res_ninit に初期化していない __res_state を渡し、DNS の口が見つからない
+	# (Z の DNS が "net unreachable" になった)。0 にしてから呼ぶ
+	sed -i '' 's/    if (res_ninit(&state) != 0) {/    memset(\&state, 0, sizeof(state));\n    if (res_ninit(\&state) != 0) {/' $(SLIRP_DIR)/src/slirp.c
+	grep -q 'memset(&state, 0' $(SLIRP_DIR)/src/slirp.c
 	sed -e 's/@SLIRP_MAJOR_VERSION@/4/;s/@SLIRP_MINOR_VERSION@/8/;s/@SLIRP_MICRO_VERSION@/0/;s/@SLIRP_VERSION_STRING@/"$(SLIRP_VER)"/' \
 	  $(SLIRP_DIR)/src/libslirp-version.h.in > $(SLIRP_DIR)/src/libslirp-version.h
 	for f in $(SLIRP_DIR)/src/*.c; do \

@@ -15,6 +15,7 @@
 #include <time.h>
 #include <poll.h>
 #include <arpa/inet.h>
+#include <netdb.h>
 #include "picosim.h"
 #include "libslirp.h"
 
@@ -111,8 +112,6 @@ static void put_arp(uint8_t *f, int op, const uint8_t *smac, uint32_t sip, const
   memcpy(f + 38, &dip, 4);
 }
 
-static int dns_alias(const uint8_t *ip, int len, int to_dns);
-static void readdr(uint8_t *ip, int len, int off, uint32_t addr);
 
 static int find_att_ip(uint32_t ip)
 {
@@ -164,13 +163,7 @@ static void deliver(const uint8_t *f, int len, int from)
       memcpy(&dip, f + 30, 4);
       if (dip == zip) {
         st_in++;
-        if (dns_alias(f + 14, len - 14, 0) && len - 14 <= 1500) {
-          uint8_t ip[1500];
-          memcpy(ip, f + 14, len - 14);
-          readdr(ip, len - 14, 12, lan_cfg.gw);
-          np_to_z(ip, len - 14);
-        } else
-          np_to_z(f + 14, len - 14);
+        np_to_z(f + 14, len - 14);
       }
     }
     if (!to_bcast)
@@ -231,17 +224,135 @@ static void readdr(uint8_t *ip, int len, int off, uint32_t addr)
   }
 }
 
-/* ゲートウェイの DNS: 家のルーターと同じくゲートウェイ (.1) の 53 番に聞けば答える (zshrc の NETDNS の既定)。
-   slirp の DNS の口 (-D、既定 .3) に付け替え、返事の送り元をゲートウェイに戻す。
-   (slirp はゲートウェイ宛ての接続を Mac の 127.0.0.1 につなぐので、DNS の口とゲートウェイは同じにできない) */
-static int dns_alias(const uint8_t *ip, int len, int to_dns)
+/* DNS: ゲートウェイ (.1、家のルーターと同じく zshrc の NETDNS の既定) と DNS の口 (-D、既定 .3) の UDP 53 番は、
+   slirp に渡さず picosim が Mac の resolver (getaddrinfo / getnameinfo) で答える。
+   slirp の DNS の転送は Mac の DNS サーバ (Tailscale の 100.100.100.100 など) に UDP で送るが、macOS の
+   ローカルネットワークの許可が無い picosim からは "No route to host" になった (python からは届く)。
+   getaddrinfo は mDNSResponder 経由なのでこの制限を受けない。問い合わせ 1 個 (A / PTR) だけを扱い、ほかの型は
+   答え無しの NOERROR。名前を引く間 (最大数秒) は picosim のループが止まる */
+static int dns_name(const uint8_t *m, int n, int off, char *out, int max)
+{
+  int o = 0;
+  while (off < n && m[off]) {
+    int l = m[off++];
+    if (l > 63 || off + l > n || o + l + 2 > max)
+      return -1;
+    if (o)
+      out[o++] = '.';
+    memcpy(out + o, m + off, l);
+    o += l;
+    off += l;
+  }
+  out[o] = 0;
+  return off < n ? off + 1 : -1;
+}
+
+static int dns_put_name(uint8_t *p, const char *name)
+{
+  int o = 0;
+  while (*name) {
+    const char *d = strchr(name, '.');
+    int l = d ? (int)(d - name) : (int)strlen(name);
+    if (l > 63)
+      return -1;
+    p[o++] = l;
+    memcpy(p + o, name, l);
+    o += l;
+    name += l + (d ? 1 : 0);
+  }
+  p[o++] = 0;
+  return o;
+}
+
+static uint32_t st_dns;
+
+static int dns_answer(const uint8_t *ip, int len)
 {
   int hl = (ip[0] & 15) * 4;
-  uint32_t a;
-  if (lan_cfg.dns == lan_cfg.gw || len < hl + 8 || ip[9] != 17)
+  uint32_t dst;
+  if (len < hl + 8 + 12 || ip[9] != 17 || ((ip[hl + 2] << 8) | ip[hl + 3]) != 53)
     return 0;
-  memcpy(&a, ip + (to_dns ? 16 : 12), 4);
-  return a == (to_dns ? lan_cfg.gw : lan_cfg.dns) && ((ip[hl + (to_dns ? 2 : 0)] << 8) | ip[hl + (to_dns ? 3 : 1)]) == 53;
+  memcpy(&dst, ip + 16, 4);
+  if (dst != lan_cfg.gw && dst != lan_cfg.dns)
+    return 0;
+  const uint8_t *q = ip + hl + 8;
+  int qn = len - hl - 8, qend, qtype;
+  char name[256];
+  if (q[2] & 0x80 || ((q[4] << 8) | q[5]) != 1 || (qend = dns_name(q, qn, 12, name, sizeof name)) < 0 || qend + 4 > qn)
+    return 1;                           /* 応答や問い合わせ 2 個以上は捨てる */
+  qtype = (q[qend] << 8) | q[qend + 1];
+  uint8_t r[1500];
+  int rl = 0, an = 0, rcode = 0;
+  uint8_t *m = r + 28;                  /* IP 20 + UDP 8 の後ろ */
+  memcpy(m, q, qend + 4);
+  rl = qend + 4;
+  if (qtype == 1) {                     /* A */
+    struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_DGRAM }, *res = NULL, *a;
+    if (getaddrinfo(name, NULL, &hints, &res) != 0)
+      rcode = 3;
+    for (a = res; a && an < 8 && rl + 16 < 1400; a = a->ai_next) {
+      static const uint8_t rr[10] = { 0xc0, 12, 0, 1, 0, 1, 0, 0, 0, 60 };
+      memcpy(m + rl, rr, 10);
+      m[rl + 10] = 0;
+      m[rl + 11] = 4;
+      memcpy(m + rl + 12, &((struct sockaddr_in *)a->ai_addr)->sin_addr, 4);
+      rl += 16;
+      an++;
+    }
+    if (res)
+      freeaddrinfo(res);
+  } else if (qtype == 12) {             /* PTR: a.b.c.d.in-addr.arpa */
+    unsigned b[4];
+    char host[256];
+    struct sockaddr_in sa = { .sin_family = AF_INET, .sin_len = sizeof sa };
+    if (sscanf(name, "%u.%u.%u.%u.in-addr.arpa", &b[3], &b[2], &b[1], &b[0]) == 4) {
+      sa.sin_addr.s_addr = htonl(b[0] << 24 | b[1] << 16 | b[2] << 8 | b[3]);
+      /* 仮想の LAN のアドレスは Mac に聞かない (家の LAN の同じアドレスの名前が返ってしまう) */
+      int local = (sa.sin_addr.s_addr & lan_cfg.mask) == (lan_cfg.net & lan_cfg.mask);
+      if (local)
+        snprintf(host, sizeof host, "%s", sa.sin_addr.s_addr == lan_cfg.gw ? "gateway.picosim" :
+                 sa.sin_addr.s_addr == zip ? "x68000z.picosim" : "");
+      if (local ? host[0] != 0 : getnameinfo((struct sockaddr *)&sa, sizeof sa, host, sizeof host, NULL, 0, NI_NAMEREQD) == 0) {
+        static const uint8_t rr[8] = { 0xc0, 12, 0, 12, 0, 1, 0, 0 };
+        memcpy(m + rl, rr, 8);
+        m[rl + 8] = 0;
+        m[rl + 9] = 60;
+        int nl = dns_put_name(m + rl + 12, host);
+        if (nl > 0) {
+          m[rl + 10] = nl >> 8;
+          m[rl + 11] = nl;
+          rl += 12 + nl;
+          an++;
+        }
+      } else
+        rcode = 3;
+    } else
+      rcode = 3;
+  }
+  m[2] = 0x81 | (q[2] & 0x01);          /* QR, RD を写す */
+  m[3] = 0x80 | rcode;                  /* RA */
+  m[6] = an >> 8;
+  m[7] = an;
+  m[8] = m[9] = m[10] = m[11] = 0;
+  /* IP と UDP: 宛先と送り元を入れ替える */
+  int tot = 28 + rl;
+  memset(r, 0, 28);
+  r[0] = 0x45;
+  r[2] = tot >> 8;
+  r[3] = tot;
+  r[8] = 64;
+  r[9] = 17;
+  memcpy(r + 12, ip + 16, 4);
+  memcpy(r + 16, ip + 12, 4);
+  memcpy(r + 20, ip + hl + 2, 2);
+  memcpy(r + 22, ip + hl, 2);
+  r[24] = (8 + rl) >> 8;
+  r[25] = 8 + rl;
+  readdr(r, tot, 12, dst);              /* チェックサム */
+  st_dns++;
+  picosim_log("lan: DNS %s %s -> rcode %d, %d answer(s)\n", qtype == 1 ? "A" : qtype == 12 ? "PTR" : "?", name, rcode, an);
+  np_to_z(r, tot);
+  return 1;
 }
 
 void lan_from_z(const uint8_t *ip, int len)
@@ -257,9 +368,9 @@ void lan_from_z(const uint8_t *ip, int len)
   memcpy(f + 6, z_mac, 6);
   f[12] = 0x08;
   f[13] = 0x00;
+  if (dns_answer(ip, len))
+    return;
   memcpy(f + 14, ip, len);
-  if (dns_alias(ip, len, 1))
-    readdr(f + 14, len, 16, lan_cfg.dns);
   st_out++;
   deliver(f, 14 + len, -2);
 }
@@ -422,5 +533,5 @@ int lan_init(void)
 
 void lan_stats(void)
 {
-  fprintf(stderr, "lan: Z->LAN %u frames  LAN->Z %u frames  ARP for Z %u\n", st_out, st_in, st_arp);
+  fprintf(stderr, "lan: Z->LAN %u frames  LAN->Z %u frames  ARP for Z %u  DNS %u\n", st_out, st_in, st_arp, st_dns);
 }
