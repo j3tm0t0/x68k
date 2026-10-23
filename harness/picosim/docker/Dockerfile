@@ -17,9 +17,9 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
 RUN [ "$TARGETARCH" != amd64 ] || { curl -fsSL -o /tmp/e.tbz https://github.com/yunkya2/elf2x68k/releases/download/$ELF2X68K/elf2x68k-Linux-$ELF2X68K.tar.bz2 \
     && mkdir -p /opt/elf2x68k && tar xjf /tmp/e.tbz -C /opt/elf2x68k && rm /tmp/e.tbz \
     && ln -s /opt/elf2x68k/m68k-xelf/bin/* /usr/local/bin/; }
-# 試験の sshd はユーザ権限で動かす (zostest.sh)
+# 試験は tester で動かす。root は Mac の代わりの sshd (22 番、tsptest の ssh.x の相手) を上げるだけ (run-suite.sh)
 RUN useradd -m -s /bin/bash tester && mkdir -p /run/sshd
+RUN ssh-keygen -A
 COPY run-suite.sh /usr/local/bin/run-suite.sh
-USER tester
 WORKDIR /home/tester
 ENTRYPOINT ["/usr/local/bin/run-suite.sh"]

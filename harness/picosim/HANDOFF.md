@@ -20,7 +20,14 @@ XEiJ (Java エージェント `harness/xeij/agent/PicoBridge.java`) が SCSI を
 | データの HDS (ID 1〜5) | `-H ID:file[:hold\|:after-remote]` | HDS1〜 / SD |
 | Z の Linux の読み込みキャッシュ・16KB 先読み | picosim.c (`-c` `-r`) | Z |
 
-## 回し方
+## 回し方 (Docker)
+
+`make -C harness/picosim docker-test` (`SUITES="host tsp zos"`、`JOBS=2`)。1 コンテナ = 1 回の試験で、口も作業場所も
+コンテナごとなので並べられる。第三者のもの (XEiJ・stage・ssh.x・driver/・lwIP・x68k-zos の kernel/) は image に入れず
+読むだけでつなぐ。記録は build/docker-out/。詳しくは [docker/README.md](docker/README.md)。2026-10-23: host・tsp・zos が
+コンテナで PASS、zos を 2 つ並べても PASS。
+
+## 回し方 (Mac で直に)
 
 ```sh
 make -C harness/picosim                    # 初回は libslirp を取ってきてビルド

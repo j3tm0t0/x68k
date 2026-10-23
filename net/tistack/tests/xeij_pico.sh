@@ -34,6 +34,7 @@ make -s -C tests tisnet.x tisrun.x
 [ -n "${NOBUILD:-}" ] || make -s -C pico/picosim
 
 rm -rf "$B" "$OUT/tmp"; mkdir -p "$B/TMP" "$OUT/tmp"
+[ -d "$B/tmp" ] || mkdir "$B/tmp"     # rcmd.x は A:\tmp に書く (Linux では大文字小文字を区別するので TMP とは別)
 cp "$XEIJ/data/HUMAN.SYS" "$XEIJ/data/COMMAND.X" "$B/"
 cp tis.x "$B/TIS.X"; cp ../npd/npd.sys "$B/NPD.SYS"; cp ../npd/npd.x "$B/NPD.X"
 cp tests/tisnet.x "$B/TISNET.X"; cp tests/tisrun.x "$B/TISRUN.X"

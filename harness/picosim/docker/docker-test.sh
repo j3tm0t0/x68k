@@ -22,6 +22,7 @@ LWIP=${LWIP:-$HOME/src/github.com/yunkya2/x68kzremotedrv/pico-sdk/lib/lwip}
 ZOS=${ZOS:-$SRC/x68k-zos-kernel/kernel}
 SSH_X=${SSH_X:-$(ls -t "$SRC"/x68k*/net/ssh/dropbear/ssh.x 2>/dev/null | head -1)}
 PZLREPO=${PZLREPO:-$SRC/x68k-zos-pzl}
+RCMD_X=${RCMD_X:-${TMPDIR:-/tmp}/tistest/rcmd.x}   # tsptest の Mac → rcmd.x (net/tistack/tests が作るもの。無ければその 2 項目は飛ばす)
 for v in XEIJ STAGE FW RS LWIP ZOS SSH_X; do [ -e "${!v}" ] || echo "docker-test: $v not found (${!v:-unset}); the suites that need it will SKIP"; done
 
 # image (1 回だけ作る。Dockerfile が変われば作り直す)
@@ -45,16 +46,19 @@ run_one() {
   # shellcheck disable=SC2046
   docker run --rm ${PLATFORM:+--platform "$PLATFORM"} --cpus "${CPUS:-4}" --shm-size 256m \
     -v "$TOP":/repo:ro $(mnt /mnt/xeij "$XEIJ") $(mnt /mnt/stage "$STAGE") $(mnt /mnt/fw "$FW") $(mnt /mnt/rs "$RS") \
-    $(mnt /mnt/lwip "$LWIP") $(mnt /mnt/zos "$ZOS") $(mnt /mnt/ssh.x "$SSH_X") $(mnt /mnt/pzlsrc "$PZLSRC") \
+    $(mnt /mnt/lwip "$LWIP") $(mnt /mnt/zos "$ZOS") $(mnt /mnt/ssh.x "$SSH_X") $(mnt /mnt/rcmd.x "$RCMD_X") $(mnt /mnt/pzlsrc "$PZLSRC") \
     -v "$d":/out "$IMAGE" "$s" > "$d/console.log" 2>&1
   local rc=$?
   echo "$rc" > "$d/rc"
-  printf '%-14s %s  (%s)\n' "$n-$s" "$([ $rc -eq 0 ] && echo PASS || echo FAIL)" "$d"
+  local st=FAIL
+  if [ $rc -eq 0 ]; then st=PASS; grep -q "^PASS" "$d/run.log" 2>/dev/null || st=SKIP; fi
+  echo "$st" > "$d/status"
+  printf '%-14s %s  (%s)\n' "$n-$s" "$st" "$d"
 }
-export -f run_one mnt; export OUT PLATFORM IMAGE TOP XEIJ STAGE FW RS LWIP ZOS SSH_X PZLSRC CPUS
+export -f run_one mnt; export OUT PLATFORM IMAGE TOP XEIJ STAGE FW RS LWIP ZOS SSH_X RCMD_X PZLSRC CPUS
 echo "docker-test: ${#SUITES[@]} run(s), $JOBS at a time, image $IMAGE ($PLATFORM), out $OUT"
 i=0; for s in "${SUITES[@]}"; do i=$((i + 1)); printf '%02d %s\n' "$i" "$s"; done | xargs -P "$JOBS" -L 1 bash -c 'run_one "$0" "$1"'
-fails=$(cat "$OUT"/*/rc | grep -vc '^0$')
+fails=$(cat "$OUT"/*/status | grep -vc '^PASS$')
 grep -h -E "^(PASS|FAIL|SKIP)" "$OUT"/*/run.log 2>/dev/null | sort | uniq -c | sort -rn | head -40
-echo "docker-test: $fails of ${#SUITES[@]} run(s) failed  ($OUT)"
+echo "docker-test: $fails of ${#SUITES[@]} run(s) did not pass (FAIL or SKIP)  ($OUT)"
 exit $((fails > 0))

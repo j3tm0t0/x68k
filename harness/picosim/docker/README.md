@@ -10,7 +10,10 @@ JOBS=3 CPUS=4 harness/picosim/docker/docker-test.sh host tsp zos
   作業場所 `picosim-zostest*` / `picosim-tsptest*` も)。最後に PASS/FAIL を数えた表と、落ちた回の数
 - SUITE: `host` (bridgetest・bootwaittest・remotetest・pzltest、数十秒) / `tsp` (tis.x -p を XEiJ で) / `zos` (Z-OS の
   ペインで ssh.x を TSP 越しに)。`make test-<SUITE>` と同じもの
-- 普段の (Docker を使わない) `make -C harness/picosim test` はそのまま使える
+- 普段の (Docker を使わない) `make -C harness/picosim test` はそのまま使える (Mac で直に、test-host・test-tsp・test-zos を確かめた)
+
+確かめたこと (2026-10-23、OrbStack Docker 29.4、arm64、MacBook Pro): `make docker-test` で host・tsp・zos がどれも PASS
+(tsp は rcmd.x まで)、`SUITES="zos zos"` を 2 つ並べても PASS。1 回: host 約 1 分、tsp 約 6 分、zos 約 4 分 (ビルド込み)
 
 ## なぜ Docker か (ネイティブでぶつかっていたもの)
 
@@ -44,5 +47,8 @@ XEiJ と stage は CI に置けない (第三者のもの) ので、置き場所
 
 - XEiJ のホストのディレクトリからの起動は、Linux では名前の大文字小文字を区別する。Human68k の既定のシェル名 `COMMAND.x` で
   `COMMAND.X` が見つからなかった → 試験の CONFIG.SYS に `SHELL = A:\COMMAND.X` を書く (net/tistack/tests/xeij_pico.sh)
+- 同じ理由で、rcmd.x が書く `A:\tmp` は `TMP` とは別 (xeij_pico.sh が両方作る)。zostest はファイルを小文字の名前で置いて
+  小文字で打つ (xeijkeys.py は大文字を Shift で打つが、取りこぼして ^Z が入ったことがある)。ペインの前面がどちらから
+  始まるかも Mac と違うことがあったので、ssh.x の入ったペインを画面から見つけて判定する
 - `objcopy --keep-global-symbols` に空の一覧を渡すと失敗する (tools/ld-hide.sh で場合分け)。`struct sockaddr_in` に
   `sin_len` は無い。`-liconv` は要らない (glibc)

@@ -5,9 +5,16 @@
 #   /mnt/xeij XEiJ (XEiJ.jar と data/)       /mnt/stage x68kcli の stage (Human68k・zsh・ksh...)
 #   /mnt/fw   起動待ち・hdsboot・settingui・scsiremote の 68000 のバイナリ (driver/)   /mnt/rs x68kserremote
 #   /mnt/pzlsrc PZL の写し (pzl/build/src/pico)   /mnt/lwip pico-sdk の lib/lwip   /mnt/zos x68k-zos の kernel/
-#   /mnt/ssh.x  試験に使う ssh.x
+#   /mnt/ssh.x  試験に使う ssh.x   /mnt/rcmd.x  tsptest の rcmd.x
 # 書くもの: /out (落ちたときの記録と、それぞれの試験の出力)
 set -uo pipefail
+if [ "$(id -u)" = 0 ]; then
+  # Mac の代わり: ゲートウェイ 192.168.1.1 = コンテナの 127.0.0.1 の 22 番に sshd (tsptest の ssh.x が鍵交換まで)。
+  # 試験そのものは tester で
+  /usr/sbin/sshd -o ListenAddress=127.0.0.1 -o PasswordAuthentication=no
+  chown tester /out 2>/dev/null
+  exec runuser -u tester -- "$0" "$@"
+fi
 mkdir -p /out
 log=/out/run.log
 exec > >(tee -a "$log") 2>&1
@@ -18,7 +25,7 @@ rsync -a --delete --exclude 'build/' --exclude 'x68kcli/tools' --exclude 'x68kcl
 mkdir -p "$W/x68kcli/tools" && ln -sfn /mnt/xeij "$W/x68kcli/tools/xeij"
 [ -d /mnt/stage ] && ln -sfn /mnt/stage "$W/x68kcli/stage"
 (cd "$W/x68kcli" && make -s agent) || { echo "FAIL agent"; exit 1; }
-export TMPDIR=/tmp/ CGROM=/mnt/xeij/data/CGROM_XEiJ.DAT STAGE=/mnt/stage ZOS=/mnt/zos SSH_X=/mnt/ssh.x XEIJLOCK_NAME=docker
+export TMPDIR=/tmp/ CGROM=/mnt/xeij/data/CGROM_XEiJ.DAT STAGE=/mnt/stage ZOS=/mnt/zos SSH_X=/mnt/ssh.x RCMD_X=/mnt/rcmd.x XEIJLOCK_NAME=docker
 Xvfb :99 -screen 0 1280x1024x24 -nolisten tcp >/tmp/xvfb.log 2>&1 &
 export DISPLAY=:99
 sleep 1
