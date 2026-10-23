@@ -3,7 +3,7 @@
  *            XEiJ (harness/xeij/agent/PicoBridge.java) が SCSI の命令を TCP で渡してくる
  *
  *   picosim [-l 127.0.0.1:6868] [-n 192.168.1.0/24] [-g 192.168.1.1] [-D DNS] [-L [u]PORT:ZPORT]...
- *           [-0 disk.hds] [-T Wi-Fi,SMB,HDS の秒] [-N 秒] [-B 控え] [-F ファームの driver/] [-C 制御] [-K 設定] [-R B: の中身]... [-c MB] [-r KB] [-d µs] [-a 倍率] [-s 秒] [-p lan.pcap] [-v]
+ *           [-0 disk.hds] [-H ID:データの HDS]... [-T Wi-Fi,SMB,HDS の秒] [-N 秒] [-B 控え] [-F ファームの driver/] [-C 制御] [-K 設定] [-R B: の中身]... [-c MB] [-r KB] [-d µs] [-a 倍率] [-s 秒] [-p lan.pcap] [-v]
  *
  * 受け持つ SCSI ID:
  *   ID 6 = netpipe (netpipe.c)。LBA 0x100000 の要求と 0x110000〜0x1ffff7 の応答。ほかの LBA は 0 を返し、書き込みは捨てる
@@ -36,6 +36,8 @@
 extern double np_accel_scale;
 extern FILE *lan_pcap;
 extern int pz_vd_page_by_lba;
+extern int pz_face_id;
+int pz_face_read(uint32_t lba, uint8_t *buf);
 void remote_add(const char *dir);
 int picosim_verbose;
 static uint64_t t0_us;
@@ -71,17 +73,42 @@ struct target {
 static struct target tg[8];
 static uint32_t cmd_delay_us;
 
+/* ---- --pzl: Pico Z Loader のファーム (pzl/、x68k-zos の branch pzl) の SCSI の層をそのまま使う ----
+ * pzl/build/pzl_all.o をリンクしたとき (build/picosim-pzl) だけ。ID 0〜6 の読み書きはすべて PZL の vd_read_block /
+ * vd_write_block に (Z の Linux が pscsi.ini 越しにするのと同じ番地)。bootwait.c と netpipe.c は使わない */
+static int use_pzl;
+__attribute__((weak)) int pzlh_init(const char *c, const char *r, const char *f, double a, double b, double d, uint32_t ip, uint32_t gw)
+{
+  (void)c; (void)r; (void)f; (void)a; (void)b; (void)d; (void)ip; (void)gw;
+  fprintf(stderr, "picosim: built without PZL (make build/picosim-pzl)\n");
+  return -1;
+}
+__attribute__((weak)) void pzlh_poll(double t) { (void)t; }
+__attribute__((weak)) int pzlh_read(int id, uint32_t lba, uint8_t *buf) { (void)id; (void)lba; (void)buf; return PS_IOERR; }
+__attribute__((weak)) int pzlh_write(int id, uint32_t lba, const uint8_t *buf) { (void)id; (void)lba; (void)buf; return PS_IOERR; }
+__attribute__((weak)) int pzlh_present(int id) { (void)id; return 0; }
+__attribute__((weak)) uint32_t pzlh_sects(int id) { (void)id; return 0; }
+__attribute__((weak)) int pzlh_ready(int id) { (void)id; return PS_IOERR; }
+__attribute__((weak)) int pzlh_sysstatus(void) { return 0; }
+__attribute__((weak)) int pzlh_rebooted(void) { return 0; }
+
 /* 1 セクタ。戻り値 PS_OK / PS_NOTREADY / PS_IOERR (ID 0 と ID 6 の中身は bootwait.c が決める) */
 static int t_read(int id, uint32_t lba, uint8_t *buf)
 {
   tg[id].reads++;
-  return id == 6 ? pz_id6_read(lba, buf) : pz_id0_read(lba, buf);
+  if (use_pzl)
+    return pzlh_read(id, lba, buf);
+  if (id == pz_face_id && id != 6)
+    return pz_face_read(lba, buf);
+  return id == 6 ? pz_id6_read(lba, buf) : id == 0 ? pz_id0_read(lba, buf) : pz_hds_read(id, lba, buf);
 }
 
 static int t_write(int id, uint32_t lba, const uint8_t *buf)
 {
   tg[id].writes++;
-  return id == 6 ? pz_id6_write(lba, buf) : pz_id0_write(lba, buf);
+  if (use_pzl)
+    return pzlh_write(id, lba, buf);
+  return id == 6 ? pz_id6_write(lba, buf) : id == 0 ? pz_id0_write(lba, buf) : pz_hds_write(id, lba, buf);
 }
 
 /* ---- Z の Linux の読み込みキャッシュ ---- */
@@ -219,6 +246,8 @@ static void scsi(int id, const uint8_t *cdb, const uint8_t *out, uint32_t outlen
   int op = cdb[0], lun = cdb[1] >> 5;
   uint32_t lba = 0, n = 0, alloc;
   memset(r, 0, sizeof *r);
+  if (use_pzl)
+    t->present = pzlh_present(id & 7);
   if (!t->present) {
     /* 対象の無い ID: 選択のタイムアウトは XEiJ 側で作れないので、LUN が無いことにする */
     static struct target none;
@@ -229,10 +258,18 @@ static void scsi(int id, const uint8_t *cdb, const uint8_t *out, uint32_t outlen
     check(r, t, 5, 0x25, 0);
     return;
   }
-  pz_tick();
-  if (id == 0 && pz.hds_fd >= 0)
-    t->sects = pz.hds_sects;
-  int notready = id == 0 && !pz_id0_ready();
+  int notready;
+  if (use_pzl) {
+    pzlh_poll((double)picosim_now_us() / 1e6);
+    t->present = pzlh_present(id);
+    t->sects = pzlh_sects(id);
+    notready = t->present && pzlh_ready(id) == PS_NOTREADY;
+  } else {
+    pz_tick();
+    if (id == 0 && pz.hds_fd >= 0)
+      t->sects = pz.hds_sects;
+    notready = id == 0 ? !pz_id0_ready() : id != 6 && id != pz_face_id && !pz_hds_ready(id);
+  }
   switch (op) {
   case 0x00:                            /* TEST UNIT READY */
     if (notready)
@@ -449,13 +486,38 @@ static uint32_t ip_arg(const char *s)
 static void usage(void)
 {
   fprintf(stderr,
-          "usage: picosim [-l 127.0.0.1:6868] [-n 192.168.1.0/24] [-g GW] [-D DNS] [-L [u]PORT:ZPORT|none]...\n"
-          "               [-0 disk.hds] [-T wifi,smb,hds] [-N sec] [-B snap] [-F fwdir] [-C ctlfile] [-K config] [-R dir]... [-c MB] [-r KB] [-d us] [-a scale] [-s sec] [-p lan.pcap] [-v]\n");
+          "usage: picosim [--pzl[=config.txt] [--pzl-root=DIR] [--pzl-flash=F] [--pzl-ip=A] [--pzl-zip=A]] [-l 127.0.0.1:6868] [-n 192.168.1.0/24] [-g GW] [-D DNS] [-L [u]PORT:ZPORT|none]...\n"
+          "               [-0 disk.hds] [-H ID:data.hds]... [-T wifi,smb,hds] [-N sec] [-B snap] [-F fwdir] [-C ctlfile] [-K config] [-R dir]... [-c MB] [-r KB] [-d us] [-a scale] [-s sec] [-p lan.pcap] [-v]\n");
   exit(2);
 }
 
 int main(int argc, char **argv)
 {
+  const char *pzl_cfg = NULL, *pzl_root = ".", *pzl_flash = NULL, *pzl_ip = "192.168.1.118", *pzl_zip = "192.168.1.68";
+  int pzl_on = 0;
+  /* --pzl[=config.txt] [--pzl-root=DIR] [--pzl-flash=FILE] [--pzl-ip=A] [--pzl-zip=A] (getopt の前に取り除く)。
+     config.txt が無ければフラッシュ (--pzl-flash) の設定 */
+  for (int i = 1; i < argc; i++)
+    if (!strncmp(argv[i], "--pzl", 5)) {
+      const char *a = argv[i];
+      if (!strcmp(a, "--pzl"))
+        pzl_on = 1;
+      else if (!strncmp(a, "--pzl=", 6))
+        pzl_on = 1, pzl_cfg = a + 6;
+      else if (!strncmp(a, "--pzl-root=", 11))
+        pzl_root = a + 11;
+      else if (!strncmp(a, "--pzl-flash=", 12))
+        pzl_flash = a + 12;
+      else if (!strncmp(a, "--pzl-ip=", 9))
+        pzl_ip = a + 9;
+      else if (!strncmp(a, "--pzl-zip=", 10))
+        pzl_zip = a + 10;
+      else
+        usage();
+      memmove(argv + i, argv + i + 1, (argc - i) * sizeof *argv);
+      argc--;
+      i--;
+    }
   const char *listen_spec = "127.0.0.1:6868", *hds0 = NULL;
   int o, nr_sec = 0, cache_mb = 64, ra_kb = 16, stat_sec = 0, nofwd = 0, prefix = 24;
   t0_us = 0;
@@ -463,7 +525,7 @@ int main(int argc, char **argv)
   lan_cfg.net = ip_arg("192.168.1.0");
   lan_cfg.gw = ip_arg("192.168.1.1");
   lan_cfg.dns = 0;
-  while ((o = getopt(argc, argv, "l:n:g:D:L:0:N:T:B:F:C:K:R:Pc:r:d:a:s:p:vh")) != -1) {
+  while ((o = getopt(argc, argv, "l:n:g:D:L:0:H:Q:N:T:B:F:C:K:R:Pc:r:d:a:s:p:vh")) != -1) {
     switch (o) {
     case 'l': listen_spec = optarg; break;
     case 'n': {
@@ -495,6 +557,25 @@ int main(int argc, char **argv)
       }
       break;
     case '0': hds0 = optarg; break;
+    case 'H': {                         /* -H ID:file.hds (ID 1〜5): データの HDS (ファームの HDS1〜。SD のデータディスクの真似) */
+      int id = atoi(optarg);
+      const char *c = strchr(optarg, ':');
+      struct stat st;
+      if (id < 1 || id > 5 || !c) {
+        fprintf(stderr, "picosim: -H ID:file.hds[:hold|:after-remote] (ID 1-5): %s\n", optarg);
+        exit(2);
+      }
+      pz_hds_add(id, c + 1);
+      if (stat(pz_hds_path(id), &st) < 0) {
+        perror(pz_hds_path(id));
+        exit(2);
+      }
+      tg[id].present = 1;
+      tg[id].name = pz_hds_path(id);
+      tg[id].sects = (uint32_t)(st.st_size / 512);
+      picosim_log("id%d: %s (%u sectors)\n", id, c + 1, tg[id].sects);
+      break;
+    }
     case 'N': nr_sec = atoi(optarg); break;
     case 'T':
       pz.bootwait = 1;
@@ -506,6 +587,13 @@ int main(int argc, char **argv)
     case 'C': pz.ctl_file = optarg; break;
     case 'K': pz_set_config_file(optarg); break;
     case 'P': pz_vd_page_by_lba = 1; break;
+    case 'Q':                           /* -Q N: リモートドライブの顔を ID N に (bootwait.c の pz_face_id) */
+      pz_face_id = atoi(optarg);
+      if (pz_face_id < 1 || pz_face_id > 6) usage();
+      tg[pz_face_id].present = 1;
+      tg[pz_face_id].name = "remote drive face";
+      tg[pz_face_id].sects = 0x80000000u / 512;
+      break;
     case 'R':
       remote_add(optarg);
       break;
@@ -572,7 +660,16 @@ int main(int argc, char **argv)
     return 1;
   }
   np_init();
-  pz_init();
+  if (pzl_on) {
+    if (pzlh_init(pzl_cfg, pzl_root, pzl_flash, pz.t_wifi, pz.t_smb, pz.t_hds, ip_arg(pzl_ip), lan_cfg.gw) < 0)
+      return 1;
+    use_pzl = 1;
+    lan_forward_to(ip_arg(pzl_zip));    /* -L の転送 (PZL の netpipe が Z の IP を名乗る。picosim は代理 ARP しない) */
+    for (int id = 0; id < 7; id++)
+      if (pzlh_present(id))
+        picosim_log("pzl: SCSI ID %d (%u sectors so far)\n", id, pzlh_sects(id));
+  } else
+    pz_init();
   lfd = listen_on(listen_spec);
   for (int i = 0; i < MAXCLI; i++)
     cli[i] = -1;
@@ -616,7 +713,10 @@ int main(int argc, char **argv)
             cli[i] = -1;
           }
     np_poll();
-    pz_tick();
+    if (use_pzl)
+      pzlh_poll((double)picosim_now_us() / 1e6);
+    else
+      pz_tick();
     if (want_stats || (next_stat && picosim_now_us() >= next_stat)) {
       want_stats = 0;
       if (next_stat)

@@ -89,6 +89,9 @@ static uint32_t env_ip(const char *name, const char *def)
   return inet_addr(v && *v ? v : def);
 }
 
+static uint32_t tsp_ip;
+static int attached;
+
 static void init(void)
 {
   ip4_addr_t ip, mask, gw, dns;
@@ -107,10 +110,12 @@ static void init(void)
   dns_setserver(0, &d);
   ip_addr_copy_from_ip4(m, gw);
   dns_local_addhost("mac.test", &m);
-  lan_attach(mac, ip.addr, rx, 0);
+  /* LAN にはまだ出ない: 最初の 0xA6 が来てから (exchange)。lwIP は Z の IP を名乗るので、TSP を使わない Z (xip.x と
+     npd.x の道) と一緒に picosim を動かすとき、Z 宛てのパケットを lwIP が横取りしないように */
+  tsp_ip = ip.addr;
   srandom((unsigned)picosim_now_us() ^ (unsigned)getpid());
   tsp_init((uint32_t)random() | 1);
-  picosim_log("tsp: lwIP %s on the LAN, socket service for tis.x -p (0xA6)\n", ip4addr_ntoa(&ip));
+  picosim_log("tsp: lwIP %s (joins the LAN on the first 0xA6), socket service for tis.x -p\n", ip4addr_ntoa(&ip));
 }
 
 static void poll_(void)
@@ -127,6 +132,11 @@ static int exchange(const uint8_t *req, int reqlen, uint8_t *res, int resmax, in
     off = getenv("TSP_OFF") && *getenv("TSP_OFF") == '1';
   if (off)
     return 0;                           /* TSP_OFF=1: 0xA6 を知らない今のファームの真似 (答えない) */
+  if (!attached) {
+    attached = 1;
+    lan_attach(mac, tsp_ip, rx, 0);
+    picosim_log("tsp: first 0xA6 record, lwIP joins the LAN\n");
+  }
   rx_drain();                           /* 届いているもの (ACK・データ) を先に lwIP に */
   n = tsp_exchange(req, reqlen, res, resmax, more);
   return n;

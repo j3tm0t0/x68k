@@ -1,0 +1,33 @@
+{
+  "comment": "Z の推測 (まだ Z で採っていない): Linux の usb-storage と hid の列挙、HID を bInterval で読み続け、Z の起動と dir に近い MSC の読み込み。Z で採った記録で置き換える",
+  "enum": [
+    {"op": "get_descriptor", "type": 1, "len": 18},
+    {"op": "get_descriptor", "type": 2, "len": 9},
+    {"op": "get_descriptor", "type": 2, "len": 255},
+    {"op": "get_descriptor", "type": 3, "index": 0, "len": 255},
+    {"op": "get_descriptor", "type": 3, "index": 2, "lang": 1033, "len": 255},
+    {"op": "get_descriptor", "type": 3, "index": 1, "lang": 1033, "len": 255},
+    {"op": "get_descriptor", "type": 3, "index": 3, "lang": 1033, "len": 255},
+    {"op": "set_configuration", "value": 1},
+    {"op": "msc_get_max_lun"},
+    {"op": "hid_set_idle", "duration": 0},
+    {"op": "get_descriptor", "type": 34, "interface": 1, "len": 255},
+    {"op": "get_descriptor", "type": 34, "interface": 2, "len": 255},
+    {"op": "hid_set_protocol", "value": 1, "protocols": [1, 2]},
+    {"op": "hid_set_report_led", "leds": 0}
+  ],
+  "hid_interval_ms": {},
+  "msc": [
+    {"op": "tur", "repeat": 3, "gap_ms": 100},
+    {"op": "inquiry"},
+    {"op": "read_capacity"},
+    {"op": "mode_sense", "page": 63, "len": 192},
+    {"op": "read10", "lba": 0, "n": 8},
+    {"op": "read10", "lba": 32, "n": 8},
+    {"op": "read10", "lba": 16416, "n": 8},
+    {"op": "read_hds", "id": 0, "lba": 0, "n": 32},
+    {"op": "read_hds", "id": 0, "lba": 64, "n": 64, "repeat": 20},
+    {"op": "tur", "repeat": 30, "gap_ms": 1000}
+  ],
+  "tail_s": 3
+}

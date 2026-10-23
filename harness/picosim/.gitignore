@@ -1,2 +1,4 @@
 build/
 tests/*.log
+*.log
+pzl/build/
