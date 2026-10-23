@@ -34,6 +34,7 @@ USB キーボード (0012) を入れるときは `cmake -DHID_KEYBOARD=ON ..` (�
 | `src/virtual_disk.c` | ID 6 の読み書きを netpipe に回す |
 | `src/connect.c` | Wi-Fi の省電力を切る (応答が 50〜300ms 遅れて TCP が遅くなるため) |
 | `src/accel.c` / `accel_ops.c` / `accel_proto.h` / `monocypher/` | 0011: 暗号アクセラレータ (X25519 / Ed25519 を Z の代わりに計算する。[../accel](../accel)) |
+| `src/virtual_disk.c` | 0031: 0030 の続き。範囲外のページを捨てさせるのは新しい driver (bit7) にだけ (古い driver は読み直し続けて固まるので、今までどおりに) |
 | `src/virtual_disk.c` / `driver/scsiremote.c` / `driver/settinguisub.c` | 0030: リモートドライブ (B:) の応答のページを読まれた LBA から決める (下の「B: の読み込みが 8 ページずれる」) |
 | `driver/mkbootwait.py` | 0029: 進み具合の最後の見出しを「BOOT」に |
 | `src/tsp_svc.c` / `tsp.h` / `tsp_svc.h` / `tsp_plat.h` / `tsp_lwip/lwipopts.h` | 0031 (試し、**書き込んでいない**): tis.x -p のソケット窓口 ([../tistack](../tistack))。0xA6 のレコードを np_exchange の中で答える。`-DTSP=OFF` で外す。Pico W (264KB) では RAM が足りない見込み (ヒープ 112,340 → 100,020 B、動いている Pico のヒープの最大は約 104KB) なので、Pico 2 W のファームだけに入れる方針 |
