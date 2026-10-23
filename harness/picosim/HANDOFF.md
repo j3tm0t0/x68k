@@ -16,6 +16,7 @@ XEiJ (Java エージェント `harness/xeij/agent/PicoBridge.java`) が SCSI を
 | Pico Z Loader (待ち画面・控え・設定画面) | bootwait.c (`-T` `-B` `-F` `-C` `-K`) | src/bootwait.c ほか |
 | B: リモートドライブ | remote.c + フォークの x68kserremote の remoteserv.c (ビルド時にそこから) | remoteserv |
 | vdbuf のページ (rpage、patch 0030) | ドライバが bit 7 で起点を知らせれば LBA から。古いドライバは数え方 (B: の破損ありのまま) | virtual_disk.c |
+| Pico Z Loader (新しいファーム) | `build/picosim-pzl --pzl=config.txt` で PZL のソースそのもの (pzl/README.md) | x68k-zos pzl |
 | データの HDS (ID 1〜5) | `-H ID:file[:hold\|:after-remote]` | HDS1〜 / SD |
 | Z の Linux の読み込みキャッシュ・16KB 先読み | picosim.c (`-c` `-r`) | Z |
 
@@ -34,6 +35,7 @@ make -C harness/picosim FW=<x68kzremotedrv の clone>/driver RS=<clone>/x68kserr
 | tests/bootwaittest.py | 控え無し → NOT READY → 控えを作る、待ち IPL の WAIT / READY / CHANGED、設定画面の vdbuf、ID 1 のデータの HDS、`-Q` | FW (driver/ のバイナリ) |
 | tests/remotetest.py | B: の com_cmdres を再現: 古いドライバの 16 / 24 ページの後の破損、rpage ドライバで正しい (ソフトリセット後の読み直しも) | RS、FW |
 | tests/tsptest.sh | XEiJ で tis.x -p: 名前・echo・put・get・sink・src・ssh.x (鍵交換まで)・Mac からの rcmd.x (net/tistack/tests/xeij_pico.sh を回す) | lwIP、XEiJ (x68kcli/tools)、GUI のセッション |
+| tests/pzltest.py | Pico Z Loader (x68k-zos pzl) の SCSI の層をホストで: NOT READY → 開く、LBA 2 = hdsboot、0x20 = 本物の 2、READ CAPACITY、書き込み、ID 6 の顔、無い HDS1 は 03/11 | PZL の作業木 (PZLREPO)、elf2x68k |
 | tests/zostest.sh | XEiJ で zos.x (ksh 2 ペイン)、右で ssh.x -t を TSP 越しに試験用 sshd へ、テキスト VRAM で判定 | 上 + x68k-zos の kernel/ (ZOS=)、x68kcli の stage、ssh.x |
 
 FW / RS の部品の作り方は README の「ファームの部品」 (本家 3afd408 + net/x68kzremotedrv-netpipe/patches)。

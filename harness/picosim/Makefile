@@ -40,6 +40,15 @@ build/remote.o: remote.c remote/config.h picosim.h
 build/remoteserv.o: $(RS)/service/remoteserv.c remote/config.h
 	mkdir -p build && cc $(REMOTE_CFLAGS) -w -c -o $@ $<
 
+PZLREPO ?= $(HOME)/Dropbox/src/github.com/j3tm0t0/x68k-zos-pzl
+# Pico Z Loader (x68k-zos の branch pzl) の SCSI の層入り: picosim --pzl=config.txt (pzl/Makefile、PZLREPO= PZLREV=)
+build/picosim-pzl: picosim.c netpipe.c lan_slirp.c bootwait.c picosim.h build/libslirp.a $(REMOTE_SRC) FORCE
+	$(MAKE) -C pzl PZLREPO=$(PZLREPO)
+	cc $(CFLAGS) -I$(SLIRP_DIR)/src -I$(ACCEL) -I$(ACCEL)/monocypher $(GLIB_CFLAGS) -o $@ \
+	  picosim.c netpipe.c lan_slirp.c bootwait.c $(REMOTE_SRC) pzl/build/pzl_all.o $(ACCEL)/accel_ops.c $(ACCEL)/monocypher/monocypher.c \
+	  $(ACCEL)/monocypher/monocypher-ed25519.c build/libslirp.a $(GLIB_LIBS) -lresolv -liconv
+FORCE:
+
 # 試験用: 0xA6 をそのまま返すサービス入り
 build/picosim-echo: picosim.c netpipe.c lan_slirp.c bootwait.c picosim.h build/libslirp.a tests/echosvc.c
 	cc $(CFLAGS) -I$(SLIRP_DIR)/src -I$(ACCEL) -I$(ACCEL)/monocypher $(GLIB_CFLAGS) -o $@ \
@@ -70,6 +79,8 @@ test: build/picosim build/picosim-echo
 	python3 -I tests/bridgetest.py build/picosim-echo
 	python3 -I tests/bootwaittest.py build/picosim $(FW)
 	python3 -I tests/remotetest.py build/picosim $(FW)
+	if [ -d "$(PZLREPO)" ]; then $(MAKE) build/picosim-pzl PZLREPO=$(PZLREPO) && python3 -I tests/pzltest.py build/picosim-pzl; \
+	  else echo "SKIP pzltest: no PZL repo ($(PZLREPO))"; fi
 	tests/tsptest.sh
 	tests/zostest.sh
 
