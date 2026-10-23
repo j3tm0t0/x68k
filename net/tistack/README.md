@@ -445,6 +445,22 @@ HDS=npd 入りの .hds tests/xeij_xip.sh   # 比べる用: 同じ XEiJ + picosim
 - XEiJ の中では交換 1 回の SCSI の時間がほぼ 0 なので、上の数字は **Z の CPU の律速** (tis.x と npd.x の写しと、
   libsocket / アプリの手間)。実機では交換の時間が足される (picosim の試験の「速さ」の表)
 
+### 実機の Z で (2026-10-23 23:10)
+
+X68000 Z + Pico 2 WH (sd 基板、fork 0036-0043、Wi-Fi で raspi3 の SMB)、相手は MacBook Pro (有線 192.168.1.90) の tisnet_peer.py。
+xip.x の道は `b:netcon` (xip.x + npd5.x、ESP/X のブリッジ)、tis.x の道はソフトリセットのあと `tis.x -p` + `npd.x` (1.2)。
+x68put の書き先はどちらも B: (SMB のリモートドライブ。同じ ID 6 の交換を tis.x と分け合う)。
+
+| 試験 | tis.x -p | xip.x | 倍 |
+|---|---|---|---|
+| 1 バイトの往復 (20 回の平均) | **53 ms** | 149 ms | 2.8 |
+| Z → Mac、1MB (tisnet sink) | **109 KB/s** (9.0 秒) | 25.7 KB/s (38.0 秒) | 4.2 |
+| Mac → Z、1MB (tisnet src) | **145 KB/s** (6.7 秒) | 16.5 KB/s (59.2 秒) | 8.8 |
+| Mac → Z、rcmd.x の x68put 300KB (圧縮なし、B: へ) | **35.7 KB/s** (8.4 秒、中身一致) | 12.1 KB/s (24.8 秒、中身一致) | 3.0 |
+
+- tis.x の道では、Z の待ち受け (rcmd.x の 2323) は Pico の番地 (192.168.1.4) に出る。xip.x の道は Z の番地 (192.168.1.68)
+- x68put は B: への書き込み (SMB) が律速に入る。A: (RAM ディスクなど) に書けばもっと速いはず (未計測)
+
 ### Pico 2 W のファームができたら確かめること
 
 1. 実機の交換 1 回の時間 (SCSI の書き込み 8 セクタ + 読み込み 8 セクタ)。速さはほぼこれで決まる
