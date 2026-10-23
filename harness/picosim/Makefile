@@ -10,19 +10,21 @@ GLIB_LIBS = -L$(GLIB)/lib -lglib-2.0
 ACCEL = ../../net/accel
 CFLAGS ?= -O2 -g -Wall
 SVC ?=
+# 待ち IPL / hdsboot / settingui の 68000 のバイナリ (フォークの driver/ でビルドしたもの。git には入れない)
+FW ?= $(HOME)/src/github.com/yunkya2/x68kzremotedrv-hid/driver
 SVCFLAGS ?=
 
 all: build/picosim
 
-build/picosim: picosim.c netpipe.c lan_slirp.c picosim.h build/libslirp.a $(SVC)
+build/picosim: picosim.c netpipe.c lan_slirp.c bootwait.c picosim.h build/libslirp.a $(SVC)
 	cc $(CFLAGS) -I$(SLIRP_DIR)/src -I$(ACCEL) -I$(ACCEL)/monocypher $(GLIB_CFLAGS) $(SVCFLAGS) -o $@ \
-	  picosim.c netpipe.c lan_slirp.c $(SVC) $(ACCEL)/accel_ops.c $(ACCEL)/monocypher/monocypher.c \
+	  picosim.c netpipe.c lan_slirp.c bootwait.c $(SVC) $(ACCEL)/accel_ops.c $(ACCEL)/monocypher/monocypher.c \
 	  $(ACCEL)/monocypher/monocypher-ed25519.c build/libslirp.a $(GLIB_LIBS) -lresolv
 
 # 試験用: 0xA6 をそのまま返すサービス入り
-build/picosim-echo: picosim.c netpipe.c lan_slirp.c picosim.h build/libslirp.a tests/echosvc.c
+build/picosim-echo: picosim.c netpipe.c lan_slirp.c bootwait.c picosim.h build/libslirp.a tests/echosvc.c
 	cc $(CFLAGS) -I$(SLIRP_DIR)/src -I$(ACCEL) -I$(ACCEL)/monocypher $(GLIB_CFLAGS) -o $@ \
-	  picosim.c netpipe.c lan_slirp.c tests/echosvc.c $(ACCEL)/accel_ops.c $(ACCEL)/monocypher/monocypher.c \
+	  picosim.c netpipe.c lan_slirp.c bootwait.c tests/echosvc.c $(ACCEL)/accel_ops.c $(ACCEL)/monocypher/monocypher.c \
 	  $(ACCEL)/monocypher/monocypher-ed25519.c build/libslirp.a $(GLIB_LIBS) -lresolv
 
 build/libslirp.tar.gz:
@@ -43,6 +45,7 @@ build/libslirp.a: build/libslirp.tar.gz
 
 test: build/picosim-echo
 	python3 -I tests/bridgetest.py build/picosim-echo
+	python3 -I tests/bootwaittest.py build/picosim $(FW)
 
 clean:
 	rm -f build/picosim build/picosim-echo

@@ -3,13 +3,13 @@
  *            XEiJ (harness/xeij/agent/PicoBridge.java) が SCSI の命令を TCP で渡してくる
  *
  *   picosim [-l 127.0.0.1:6868] [-n 192.168.1.0/24] [-g 192.168.1.1] [-D DNS] [-L [u]PORT:ZPORT]...
- *           [-0 disk.hds] [-N 秒] [-c MB] [-r KB] [-d µs] [-a 倍率] [-s 秒] [-p lan.pcap] [-v]
+ *           [-0 disk.hds] [-T Wi-Fi,SMB,HDS の秒] [-N 秒] [-B 控え] [-F ファームの driver/] [-C 制御] [-K 設定] [-c MB] [-r KB] [-d µs] [-a 倍率] [-s 秒] [-p lan.pcap] [-v]
  *
  * 受け持つ SCSI ID:
  *   ID 6 = netpipe (netpipe.c)。LBA 0x100000 の要求と 0x110000〜0x1ffff7 の応答。ほかの LBA は 0 を返し、書き込みは捨てる
  *          (ファームの ID 6 にある scsiremote.sys / 設定画面 / 起動待ち IPL は真似ない。LBA 0 が 0 なので Human68k は
  *          ディスクとして扱わない)
- *   ID 0 = -0 の HDS ファイル (書き込みも反映)。-N 秒のあいだは NOT READY (02/04/01) を返す (BOOTWAIT の真似)
+ *   ID 0 = -0 の HDS ファイル (書き込みも反映)。-T で Pico Z Loader の起動待ち (bootwait.c)。-N n は -T 0,0,n
  * Z の Linux の読み込みキャッシュ (-c MB、既定 64、0 で無し) と先読み (-r KB、既定 16 = 4KB ページ 4 枚) も真似る:
  *   読んだセクタは覚えておき、同じ (ID, LBA) は Pico に聞かずに前の中身を返す。npd.x が応答帯を毎回別の所で読むのはこのため
  * 形式 (PicoBridge.java と同じ、ビッグエンディアン):
@@ -63,37 +63,23 @@ struct target {
   int present;
   const char *name;
   uint32_t sects;
-  int fd;                               /* ID 0 の HDS */
-  uint64_t notready_until;              /* µs */
   uint8_t key, asc, ascq;               /* 次の REQUEST SENSE */
   uint32_t reads, writes;
 };
 static struct target tg[8];
 static uint32_t cmd_delay_us;
 
+/* 1 セクタ。戻り値 PS_OK / PS_NOTREADY / PS_IOERR (ID 0 と ID 6 の中身は bootwait.c が決める) */
 static int t_read(int id, uint32_t lba, uint8_t *buf)
 {
-  struct target *t = &tg[id];
-  t->reads++;
-  if (id == 6) {
-    if (np_read(lba, buf) < 0)
-      memset(buf, 0, 512);
-    return 0;
-  }
-  if (pread(t->fd, buf, 512, (off_t)lba * 512) != 512)
-    memset(buf, 0, 512);
-  return 0;
+  tg[id].reads++;
+  return id == 6 ? pz_id6_read(lba, buf) : pz_id0_read(lba, buf);
 }
 
 static int t_write(int id, uint32_t lba, const uint8_t *buf)
 {
-  struct target *t = &tg[id];
-  t->writes++;
-  if (id == 6) {
-    np_write(lba, buf);                 /* 帯の外の書き込みはファームと同じく成功扱いで捨てる */
-    return 0;
-  }
-  return pwrite(t->fd, buf, 512, (off_t)lba * 512) == 512 ? 0 : -1;
+  tg[id].writes++;
+  return id == 6 ? pz_id6_write(lba, buf) : pz_id0_write(lba, buf);
 }
 
 /* ---- Z の Linux の読み込みキャッシュ ---- */
@@ -153,18 +139,27 @@ static void cache_put(uint64_t k, const uint8_t *buf)
   memcpy(d, buf, 512);
 }
 
-static void z_read(int id, uint32_t lba, uint8_t *buf)
+void picosim_cache_clear(void)
+{
+  if (!c_cap)
+    return;
+  memset(c_bucket, 0xff, c_nbucket * sizeof *c_bucket);
+  memset(c_key, 0xff, c_cap * sizeof *c_key);
+  picosim_log("Z read cache cleared\n");
+}
+
+/* 失敗 (NOT READY など) はキャッシュに残らない (Z の Linux も失敗した読み込みは覚えない) */
+static int z_read(int id, uint32_t lba, uint8_t *buf)
 {
   uint64_t k = (uint64_t)id << 32 | lba;
   uint8_t *d;
-  if (!c_cap) {
-    t_read(id, lba, buf);
-    return;
-  }
+  int rc = PS_OK;
+  if (!c_cap)
+    return t_read(id, lba, buf);
   if ((d = cache_find(k)) != NULL) {
     st_hit++;
     memcpy(buf, d, 512);
-    return;
+    return PS_OK;
   }
   st_miss++;
   /* 先読み: 4KB のページ単位で、外れたページから c_ra_pages 枚を Pico から読んで覚える */
@@ -176,16 +171,24 @@ static void z_read(int id, uint32_t lba, uint8_t *buf)
     if (l != lba && cache_find(kk))
       continue;
     uint8_t tmp[512];
-    t_read(id, l, tmp);
-    cache_put(kk, tmp);
-    if (l == lba)
+    int r = t_read(id, l, tmp);
+    if (r == PS_OK)
+      cache_put(kk, tmp);
+    if (l == lba) {
       memcpy(buf, tmp, 512);
+      rc = r;
+      if (r != PS_OK)
+        break;
+    }
   }
+  return rc;
 }
 
 static int z_write(int id, uint32_t lba, const uint8_t *buf)
 {
   int r = t_write(id, lba, buf);
+  if (r != PS_OK)
+    return r;
   if (c_cap && id != 6)
     cache_put((uint64_t)id << 32 | lba, buf);
   else if (c_cap && cache_find((uint64_t)id << 32 | lba))
@@ -219,7 +222,10 @@ static void scsi(int id, const uint8_t *cdb, const uint8_t *out, uint32_t outlen
     check(r, t, 5, 0x25, 0);
     return;
   }
-  int notready = t->notready_until && picosim_now_us() < t->notready_until;
+  pz_tick();
+  if (id == 0 && pz.hds_fd >= 0)
+    t->sects = pz.hds_sects;
+  int notready = id == 0 && !pz_id0_ready();
   switch (op) {
   case 0x00:                            /* TEST UNIT READY */
     if (notready)
@@ -284,28 +290,37 @@ static void scsi(int id, const uint8_t *cdb, const uint8_t *out, uint32_t outlen
     check(r, t, 5, 0x20, 0);
     return;
   }
-  if (notready) {
-    check(r, t, 2, 0x04, 0x01);
-    return;
-  }
   if ((uint64_t)lba + n > t->sects || n * 512 > PS_DATA_MAX) {
     check(r, t, 5, 0x21, 0);
     return;
   }
   if (op == 0x08 || op == 0x28 || op == 0xa8) {
-    for (uint32_t i = 0; i < n; i++)
-      z_read(id, lba + i, in + i * 512);
+    for (uint32_t i = 0; i < n; i++) {
+      int rc = z_read(id, lba + i, in + i * 512);
+      if (rc != PS_OK) {
+        if (rc == PS_NOTREADY)
+          check(r, t, 2, 0x04, 0x01);
+        else
+          check(r, t, 3, 0x11, 0);
+        return;
+      }
+    }
     r->len = n * 512;
   } else {
     if (outlen < n * 512) {
       check(r, t, 5, 0x24, 0);
       return;
     }
-    for (uint32_t i = 0; i < n; i++)
-      if (z_write(id, lba + i, out + i * 512) < 0) {
+    for (uint32_t i = 0; i < n; i++) {
+      int rc = z_write(id, lba + i, out + i * 512);
+      if (rc == PS_NOTREADY) {
+        check(r, t, 2, 0x04, 0x01);
+        return;
+      } else if (rc != PS_OK) {
         check(r, t, 3, 0x0c, 0);
         return;
       }
+    }
   }
 }
 
@@ -428,7 +443,7 @@ static void usage(void)
 {
   fprintf(stderr,
           "usage: picosim [-l 127.0.0.1:6868] [-n 192.168.1.0/24] [-g GW] [-D DNS] [-L [u]PORT:ZPORT|none]...\n"
-          "               [-0 disk.hds] [-N sec] [-c MB] [-r KB] [-d us] [-a scale] [-s sec] [-p lan.pcap] [-v]\n");
+          "               [-0 disk.hds] [-T wifi,smb,hds] [-N sec] [-B snap] [-F fwdir] [-C ctlfile] [-K config] [-c MB] [-r KB] [-d us] [-a scale] [-s sec] [-p lan.pcap] [-v]\n");
   exit(2);
 }
 
@@ -441,7 +456,7 @@ int main(int argc, char **argv)
   lan_cfg.net = ip_arg("192.168.1.0");
   lan_cfg.gw = ip_arg("192.168.1.1");
   lan_cfg.dns = 0;
-  while ((o = getopt(argc, argv, "l:n:g:D:L:0:N:c:r:d:a:s:p:vh")) != -1) {
+  while ((o = getopt(argc, argv, "l:n:g:D:L:0:N:T:B:F:C:K:c:r:d:a:s:p:vh")) != -1) {
     switch (o) {
     case 'l': listen_spec = optarg; break;
     case 'n': {
@@ -474,6 +489,15 @@ int main(int argc, char **argv)
       break;
     case '0': hds0 = optarg; break;
     case 'N': nr_sec = atoi(optarg); break;
+    case 'T':
+      pz.bootwait = 1;
+      if (sscanf(optarg, "%lf,%lf,%lf", &pz.t_wifi, &pz.t_smb, &pz.t_hds) != 3)
+        usage();
+      break;
+    case 'B': pz.snap_file = optarg; break;
+    case 'F': pz.fw_dir = optarg; pz.signature = 1; break;
+    case 'C': pz.ctl_file = optarg; break;
+    case 'K': pz_set_config_file(optarg); break;
     case 'c': cache_mb = atoi(optarg); break;
     case 'r': ra_kb = atoi(optarg); break;
     case 'd': cmd_delay_us = atoi(optarg); break;
@@ -508,19 +532,26 @@ int main(int argc, char **argv)
   tg[6].present = 1;
   tg[6].name = "netpipe";
   tg[6].sects = 0x80000000u / 512;      /* ファームの diskinfo[6].size */
+  if (nr_sec && !pz.bootwait) {         /* -N n = -T 0,0,n */
+    pz.bootwait = 1;
+    pz.t_hds = nr_sec;
+  }
   if (hds0) {
     struct stat st;
-    tg[0].fd = open(hds0, O_RDWR);
-    if (tg[0].fd < 0 || fstat(tg[0].fd, &st) < 0) {
+    if (stat(hds0, &st) < 0) {
       perror(hds0);
       exit(1);
     }
     tg[0].present = 1;
     tg[0].name = hds0;
     tg[0].sects = (uint32_t)(st.st_size / 512);
-    if (nr_sec)
-      tg[0].notready_until = picosim_now_us() + (uint64_t)nr_sec * 1000000;
-    picosim_log("id0: %s (%u sectors)%s\n", hds0, tg[0].sects, nr_sec ? " NOT READY at first" : "");
+    pz.hds_path = hds0;
+    if (pz.bootwait && !pz.snap_file) {
+      static char sf[1024];
+      snprintf(sf, sizeof sf, "%s.bootsnap", hds0);
+      pz.snap_file = sf;
+    }
+    picosim_log("id0: %s (%u sectors)\n", hds0, tg[0].sects);
   }
   c_ra_pages = ra_kb / 4;
   cache_init(cache_mb);
@@ -530,6 +561,7 @@ int main(int argc, char **argv)
     return 1;
   }
   np_init();
+  pz_init();
   lfd = listen_on(listen_spec);
   for (int i = 0; i < MAXCLI; i++)
     cli[i] = -1;
@@ -573,6 +605,7 @@ int main(int argc, char **argv)
             cli[i] = -1;
           }
     np_poll();
+    pz_tick();
     if (want_stats || (next_stat && picosim_now_us() >= next_stat)) {
       want_stats = 0;
       if (next_stat)
