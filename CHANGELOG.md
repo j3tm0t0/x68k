@@ -18,7 +18,6 @@ X68000 Z 向けに配っているもの (Pico のファーム、ssh.x / zterm、
 
 ### x68kcli のイメージ
 - `/etc/zoshrc` (Z-OS のシェル zosh の別名と、`-lgcc2` を付ける gcc などの関数)。
-- `/etc/kshrc` (ksh の対話の設定。Z-OS のペインの既定のシェル) と `clear.x`。
 
 ## 2026.10.23
 
