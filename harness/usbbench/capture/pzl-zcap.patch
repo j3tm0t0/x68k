@@ -1,0 +1,41 @@
+--- a/pico/CMakeLists.txt	2026-10-23 20:40:52
++++ b/pico/CMakeLists.txt	2026-10-23 21:36:35
+@@ -55,7 +55,8 @@
+ add_executable(pzl
+     src/main.c
+     src/usb/usb_descriptors.c
+-    src/usb/msc_disk.c
++    ${CMAKE_CURRENT_LIST_DIR}/src/usb/zcap.c
++    ${CMAKE_CURRENT_LIST_DIR}/src/usb/msc_disk.c
+     src/scsi/virtual_disk.c
+     src/config/config_file.c
+     src/storage/storage.c
+--- a/pico/src/usb/msc_disk.c	2026-10-23 20:40:52
++++ b/pico/src/usb/msc_disk.c	2026-10-23 21:36:25
+@@ -154,8 +154,10 @@
+ }
+ 
+ // Callback invoked when received READ10 command.
++int zcap_printf(const char *fmt, ...);
+ int32_t tud_msc_read10_cb(uint8_t lun, uint32_t lba, uint32_t offset, void* buffer, uint32_t bufsize)
+ {
++  zcap_printf("  ZC R lun=%u lba=0x%lx off=%lu len=%lu\n", lun, (unsigned long)lba, (unsigned long)offset, (unsigned long)bufsize);
+   (void) lun;
+   (void) offset;
+   if ( lba >= DISK_BLOCK_NUM ) return -1;
+@@ -182,6 +184,7 @@
+ // Callback invoked when received WRITE10 command.
+ int32_t tud_msc_write10_cb(uint8_t lun, uint32_t lba, uint32_t offset, uint8_t* buffer, uint32_t bufsize)
+ {
++  zcap_printf("  ZC W lun=%u lba=0x%lx off=%lu len=%lu\n", lun, (unsigned long)lba, (unsigned long)offset, (unsigned long)bufsize);
+   (void) lun;
+   (void) offset;
+   if ( lba >= DISK_BLOCK_NUM ) return -1;
+@@ -200,6 +203,7 @@
+ // - READ10 and WRITE10 has their own callbacks
+ int32_t tud_msc_scsi_cb (uint8_t lun, uint8_t const scsi_cmd[16], void* buffer, uint16_t bufsize)
+ {
++  zcap_printf("  ZC C lun=%u cdb=%02x %02x %02x %02x %02x %02x\n", lun, scsi_cmd[0], scsi_cmd[1], scsi_cmd[2], scsi_cmd[3], scsi_cmd[4], scsi_cmd[5]);
+   (void) buffer;
+   (void) bufsize;
+   int32_t resplen = 0;
