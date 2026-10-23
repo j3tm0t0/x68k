@@ -155,7 +155,31 @@ const struct hds_backend hds_smb = { "host-dir (picosim)", f_open, f_read, f_wri
 /* smb2connect.c と、vd_command.c が使う libsmb2 / ソケット (設定画面の SMB の一覧) は、ホストでは失敗 */
 struct smb2_context *connect_smb2(const char *share) { (void)share; return NULL; }
 void disconnect_smb2(struct smb2_context *smb2) { (void)smb2; }
-struct smb2_context *connect_smb2_path(const char *path, const char **shpath) { (void)path; (void)shpath; return NULL; }
+/* storage_open.c (net_open_storage) の間だけ、SMB の代わりに smb_root の下のディレクトリを見せる (connect_smb2_path → smb2_stat)。
+   ほかの場所 (設定画面の SMB の一覧) では今までどおり失敗 */
+static int in_open_storage;
+static struct smb2_context *const host_smb2 = (struct smb2_context *)&in_open_storage;
+struct smb2_context *connect_smb2_path(const char *path, const char **shpath)
+{
+  if (!in_open_storage)
+    return NULL;
+  *shpath = path;
+  return host_smb2;
+}
+int smb2_stat(struct smb2_context *smb2, const char *path, struct smb2_stat_64 *st)
+{
+  char p[1024];
+  struct stat hs;
+  if (smb2 != host_smb2)
+    return -1;
+  snprintf(p, sizeof p, "%s/%s", smb_root, path);
+  if (stat(p, &hs) < 0)
+    return -1;
+  memset(st, 0, sizeof *st);
+  st->smb2_type = S_ISDIR(hs.st_mode) ? SMB2_TYPE_DIRECTORY : 0;
+  st->smb2_size = hs.st_size;
+  return 0;
+}
 void disconnect_smb2_all(void) {}
 int pzl_poll(struct pollfd *fds_, int nfds, int timeout) { (void)fds_; (void)nfds; (void)timeout; return -1; }
 const char *smb2_get_error(struct smb2_context *smb2) { (void)smb2; return "no SMB on the host (picosim)"; }
@@ -264,12 +288,6 @@ void pzlh_net_poll(void)
 static double t_wifi, t_smb, t_hds;
 static int opened;
 
-static int bw_read0(void *ctx, uint32_t lba, uint8_t *buf)
-{
-  (void)ctx;
-  return hds_read(0, lba, buf) < 0 ? -1 : 0;
-}
-
 uint32_t net_retry_ms(void) { return opened ? 0xffffffffu : 0; }
 /* net.c の: HDS を開こうとしている最中か / SMB の読み書きの失敗 (繋ぎ直し) / SMB を使っている最中か。ホストでは SMB が
    切れないので、開く前は pending、失敗は記録だけ */
@@ -279,35 +297,19 @@ void net_io_failed(void) { picosim_log("pzl: net_io_failed (the Pico would recon
 const char *net_hostname(void) { return "pico-host"; }
 void net_request(int mode) { (void)mode; }
 
-/* net.c の net_open_storage と同じ順 (リモートドライブの根 REMOTE0〜 → HDS0〜、HDS0 は起動待ちの控えも → diskinfo)。
-   net_open_storage そのものは net.c (cyw43 と libsmb2 の状態機械と同じファイル) にあるので、ホストでは同じ手順を写している */
+/* Charlie の storage_open.c の net_open_storage をそのまま使う。rootpath は SMB の道 (config.remote[i]) になるので、
+   ホストの remoteserv (POSIX の fileop) 向けに smb_root の下の道に置き換える */
 static void open_storage(void)
 {
   static char paths[8][1024];
-  int remoteunit = atoi(config.remoteunit);
-  for (int i = 0; i < remoteunit && i < (int)countof(config.remote); i++) {
-    struct stat st;
-    snprintf(paths[i], sizeof paths[i], "%s/%s", smb_root, config.remote[i]);
-    if (rootpath[i] || stat(paths[i], &st) < 0 || !S_ISDIR(st.st_mode)) {
-      if (!rootpath[i])
-        printf("%s is not directory.\n", config.remote[i]);
-      continue;
+  in_open_storage = 1;
+  net_open_storage();
+  in_open_storage = 0;
+  for (int i = 0; i < (int)countof(config.remote) && i < 8; i++)
+    if (rootpath[i] && rootpath[i] == config.remote[i]) {
+      snprintf(paths[i], sizeof paths[i], "%s/%s", smb_root, config.remote[i]);
+      rootpath[i] = paths[i];
     }
-    rootpath[i] = paths[i];
-    printf("REMOTE%u: %s\n", i, config.remote[i]);
-  }
-  int id = atoi(config.remoteboot) ? 1 : 0;
-  for (int i = 0; i < (int)countof(config.hds); i++, id++) {
-    if (strlen(config.hds[i]) == 0 || hds_isopen(id))
-      continue;
-    if (hds_open(id, config.hds[i]) == 0) {
-      diskinfo[id].size = hds_size(id);
-      if (id == 0)
-        bw_check(config.hds[i], hds_size(0), bw_read0, NULL);
-    }
-  }
-  for (int i = 0; i < 7; i++)
-    diskinfo[i].sects = (diskinfo[i].size + SECTOR_SIZE - 1) / SECTOR_SIZE;
   sysstatus = STAT_CONFIGURED;
   vd_mounted();
 }

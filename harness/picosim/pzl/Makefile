@@ -6,13 +6,13 @@
 PZLREPO ?= $(HOME)/Dropbox/src/github.com/j3tm0t0/x68k-zos-pzl
 # 既定は試したコミットに留める (pzl が進んでも main の make test が壊れないように)。最新に合わせるかは
 #   make -C harness/picosim pzl-latest  (PZLREV=pzl で作って試す) で確かめてから、ここを進める
-PZLREV ?= 0995be6
+PZLREV ?= 60a9db7
 B = build
 S = $(B)/src/pico
 PZLFILES = src/scsi/virtual_disk.c src/storage/storage.c src/storage/stor_ram.c \
            src/remote/vd_command.c src/remote/iconv/iconv_mini.c lib/x68kserremote/service/remoteserv.c \
            src/netpipe/netpipe.c src/accel/accel.c src/accel/accel_ops.c src/accel/monocypher/monocypher.c \
-           src/accel/monocypher/monocypher-ed25519.c src/bootwait/bootwait.c \
+           src/accel/monocypher/monocypher-ed25519.c src/bootwait/bootwait.c src/net/storage_open.c \
            $(if $(wildcard $(S)/src/tsp/tsp_svc.c),src/tsp/tsp_svc.c)
 # lwIP (netpipe のブリッジと、Wi-Fi の代わりの netif)。pico-sdk の lib/lwip (net/tistack と同じもの)
 LWIP ?= $(HOME)/src/github.com/yunkya2/x68kzremotedrv/pico-sdk/lib/lwip

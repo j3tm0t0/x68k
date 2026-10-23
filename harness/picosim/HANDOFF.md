@@ -50,7 +50,7 @@ XEiJ の 2 本 (tsptest / zostest) は試験台の排他 `tests/benchlock.sh` �
 に持ち主の名前を書き、無いか自分の名前のときだけ取り、終わったら消す (zlock と同じ決まり。XEIJLOCK_NAME で名前、
 XEIJLOCK_WAIT 秒待ってだめなら SKIP)。手で XEiJ + picosim を動かすときも同じファイルを取る。口 (SSHPORT / PICOPORT など) と
 作業場所 (WORK / TIS_OUT) は固定なので、同時に 2 つ流すとぶつかる。
-PZL の版は pzl/Makefile の `PZLREV` (既定は試したコミット。今は 0995be6)。`make -C harness/picosim pzl-latest` で branch pzl の先を
+PZL の版は pzl/Makefile の `PZLREV` (既定は試したコミット。今は 60a9db7、storage_open.c はそのままコンパイル)。`make -C harness/picosim pzl-latest` で branch pzl の先を
 試し、通ったら PZLREV を進める。
 
 FW / RS の部品の作り方は README の「ファームの部品」 (本家 3afd408 + net/x68kzremotedrv-netpipe/patches)。
