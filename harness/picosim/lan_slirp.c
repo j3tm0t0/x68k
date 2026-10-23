@@ -111,6 +111,9 @@ static void put_arp(uint8_t *f, int op, const uint8_t *smac, uint32_t sip, const
   memcpy(f + 38, &dip, 4);
 }
 
+static int dns_alias(const uint8_t *ip, int len, int to_dns);
+static void readdr(uint8_t *ip, int len, int off, uint32_t addr);
+
 static int find_att_ip(uint32_t ip)
 {
   for (int i = 0; i < natt; i++)
@@ -161,7 +164,13 @@ static void deliver(const uint8_t *f, int len, int from)
       memcpy(&dip, f + 30, 4);
       if (dip == zip) {
         st_in++;
-        np_to_z(f + 14, len - 14);
+        if (dns_alias(f + 14, len - 14, 0) && len - 14 <= 1500) {
+          uint8_t ip[1500];
+          memcpy(ip, f + 14, len - 14);
+          readdr(ip, len - 14, 12, lan_cfg.gw);
+          np_to_z(ip, len - 14);
+        } else
+          np_to_z(f + 14, len - 14);
       }
     }
     if (!to_bcast)
@@ -184,6 +193,57 @@ static slirp_ssize_t send_packet(const void *buf, size_t len, void *opaque)
   return (slirp_ssize_t)len;
 }
 
+/* IPv4 の宛先か送り元を置き換え、IP と UDP のチェックサムを付け直す */
+static uint16_t sum16(const uint8_t *b, int n, uint32_t s)
+{
+  for (int i = 0; i + 1 < n; i += 2)
+    s += (b[i] << 8) | b[i + 1];
+  if (n & 1)
+    s += b[n - 1] << 8;
+  while (s >> 16)
+    s = (s & 0xffff) + (s >> 16);
+  return (uint16_t)s;
+}
+
+static void readdr(uint8_t *ip, int len, int off, uint32_t addr)
+{
+  int hl = (ip[0] & 15) * 4;
+  memcpy(ip + off, &addr, 4);
+  ip[10] = ip[11] = 0;
+  uint16_t c = ~sum16(ip, hl, 0);
+  ip[10] = c >> 8;
+  ip[11] = c;
+  if (ip[9] == 17 && len >= hl + 8) {
+    uint8_t *u = ip + hl;
+    int ul = len - hl;
+    uint8_t ph[12];
+    memcpy(ph, ip + 12, 8);
+    ph[8] = 0;
+    ph[9] = 17;
+    ph[10] = ul >> 8;
+    ph[11] = ul;
+    u[6] = u[7] = 0;
+    c = ~sum16(u, ul, sum16(ph, 12, 0));
+    if (c == 0)
+      c = 0xffff;
+    u[6] = c >> 8;
+    u[7] = c;
+  }
+}
+
+/* ゲートウェイの DNS: 家のルーターと同じくゲートウェイ (.1) の 53 番に聞けば答える (zshrc の NETDNS の既定)。
+   slirp の DNS の口 (-D、既定 .3) に付け替え、返事の送り元をゲートウェイに戻す。
+   (slirp はゲートウェイ宛ての接続を Mac の 127.0.0.1 につなぐので、DNS の口とゲートウェイは同じにできない) */
+static int dns_alias(const uint8_t *ip, int len, int to_dns)
+{
+  int hl = (ip[0] & 15) * 4;
+  uint32_t a;
+  if (lan_cfg.dns == lan_cfg.gw || len < hl + 8 || ip[9] != 17)
+    return 0;
+  memcpy(&a, ip + (to_dns ? 16 : 12), 4);
+  return a == (to_dns ? lan_cfg.gw : lan_cfg.dns) && ((ip[hl + (to_dns ? 2 : 0)] << 8) | ip[hl + (to_dns ? 3 : 1)]) == 53;
+}
+
 void lan_from_z(const uint8_t *ip, int len)
 {
   uint8_t f[14 + 1500];
@@ -198,6 +258,8 @@ void lan_from_z(const uint8_t *ip, int len)
   f[12] = 0x08;
   f[13] = 0x00;
   memcpy(f + 14, ip, len);
+  if (dns_alias(ip, len, 1))
+    readdr(f + 14, len, 16, lan_cfg.dns);
   st_out++;
   deliver(f, 14 + len, -2);
 }
