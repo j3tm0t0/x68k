@@ -36,6 +36,7 @@ USB キーボード (0012) を入れるときは `cmake -DHID_KEYBOARD=ON ..` (�
 | `src/accel.c` / `accel_ops.c` / `accel_proto.h` / `monocypher/` | 0011: 暗号アクセラレータ (X25519 / Ed25519 を Z の代わりに計算する。[../accel](../accel)) |
 | `src/virtual_disk.c` / `driver/scsiremote.c` / `driver/settinguisub.c` | 0030: リモートドライブ (B:) の応答のページを読まれた LBA から決める (下の「B: の読み込みが 8 ページずれる」) |
 | `driver/mkbootwait.py` | 0029: 進み具合の最後の見出しを「BOOT」に |
+| `src/tsp_svc.c` / `tsp.h` / `tsp_svc.h` / `tsp_plat.h` / `tsp_lwip/lwipopts.h` | 0031 (試し、**書き込んでいない**): tis.x -p のソケット窓口 ([../tistack](../tistack))。0xA6 のレコードを np_exchange の中で答える。`-DTSP=OFF` で外す。Pico W (264KB) では RAM が足りない見込み (ヒープ 112,340 → 100,020 B、動いている Pico のヒープの最大は約 104KB) なので、Pico 2 W のファームだけに入れる方針 |
 | `driver/bootwait.S` / `driver/mkbootwait.py` | 0028: ◆ の行を本物の進み具合 (Wi-Fi → SMB → HDS → 起動) に |
 | `driver/mkbootwait.py` | 0027: ロゴの行は見た目の中央から 20 ドット左 (最終の配置) |
 | `driver/mkbootwait.py` | 0026: ロゴの行を「副題の左端にそろえる」と「見た目の中央」の中間に (既定 BW_LOGO=between) |
