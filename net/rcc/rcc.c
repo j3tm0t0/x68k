@@ -1,13 +1,15 @@
 /*
- * rcc.x -- C のソースを LAN の向こうの rccd.py (elf2x68k の gcc) に送ってコンパイル・リンクし、できた .x を受け取る
+ * rcc.x -- gcc の前置き: 入力のファイルを LAN の向こうの rccd.py (elf2x68k の gcc) に送ってコンパイルし、結果を Z の gcc と
+ * 同じ場所に書く。引数は Z の gcc と同じ (-O、-o、-c、-S、-E、-I、-D、-U、-l、-L、-g、-W など)
  *
- *   rcc.x [gcc の引数とソース ...]        例: rcc.x -O2 hello.c -o hello.x
+ *   rcc.x -O hello.c -o hello.x          zosh の gcc() から呼ぶ (/etc/zoshrc)
  *
  * 相手は環境変数 RCC_HOST (名前か a.b.c.d、":ポート" も可。既定のポートは 7790)。TCP は xip.x でも tis.x -p でも動く。
- * 送るもの: 引数のうち .c / .s / .h のファイル (名前だけにして送る) と、そのファイルと同じディレクトリの *.h 全部。
- * つながらない (RCC_HOST が無い・相手が居ない・途中で切れた) ときは Z の gcc に戻す: 環境変数 RCC_LOCAL
- * (既定 "gcc.x %s -lgcc2"、%s に引数をそのまま入れる。空にすると戻さずに 255 で終わる) を system() で動かす。
- * 戻り値: gcc の終了コード
+ * 送るもの: 引数の入力 (.c .cc .cpp .s .S .o .a)、-include のファイル、今のディレクトリ・ソースのディレクトリ・-I の
+ * ディレクトリの *.h。どのファイルも Z で書いたとおりのパスで送り、メッセージの中のパスも Z の書き方で返ってくる。
+ * つながらない (RCC_HOST が無い・相手が居ない・途中で切れた) ときは 1 行だけ知らせて Z の gcc に戻す:
+ * 環境変数 RCC_LOCAL (既定 "gcc.x %s -lgcc2"、%s に引数をそのまま入れる。空にすると戻さずに 255 で終わる) を system() で。
+ * 戻り値: コンパイラの終了コード
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,9 +23,9 @@
 #include <x68k/dos.h>
 
 #define UNREACHABLE 255
-#define MAXF        64
+#define MAXF        128
 
-static char *fname[MAXF];                   /* 送るファイルのパス */
+static char *fname[MAXF];                   /* 送るファイル (Z のパスのまま) */
 static int nf;
 static int sock = -1;
 
@@ -42,30 +44,39 @@ static int has_ext(const char *p, const char *ext)
   return n > m && strcasecmp(p + n - m, ext) == 0;
 }
 
+static int is_input(const char *p)
+{
+  static const char *ext[] = { ".c", ".cc", ".cpp", ".s", ".o", ".a", ".h", NULL };
+  for (int i = 0; ext[i]; i++)
+    if (has_ext(p, ext[i]))
+      return 1;
+  return 0;
+}
+
 static void add_file(const char *p)
 {
   for (int i = 0; i < nf; i++)
-    if (strcasecmp(base(fname[i]), base(p)) == 0)
+    if (strcasecmp(fname[i], p) == 0)
       return;
   if (nf < MAXF)
     fname[nf++] = strdup(p);
 }
 
-/* ソースと同じディレクトリの *.h を足す (#include "x.h" のため) */
-static void add_headers(const char *src)
+/* dir の先頭 dl バイト ("" なら今のディレクトリ。末尾の区切りは有っても無くてもよい) の *.h を足す */
+static void add_headers(const char *dir, size_t dl)
 {
-  char pat[256];
+  char pat[256], p[256];
   struct dos_filbuf fb;
-  size_t dl = base(src) - src;
   if (dl >= sizeof pat - 8)
     return;
-  memcpy(pat, src, dl);
+  memcpy(pat, dir, dl);
+  if (dl > 0 && pat[dl - 1] != '\\' && pat[dl - 1] != '/' && pat[dl - 1] != ':')
+    pat[dl++] = '\\';
   strcpy(pat + dl, "*.h");
   if (_dos_files(&fb, pat, 0x20) < 0)
     return;
   do {
-    char p[256];
-    memcpy(p, src, dl);
+    memcpy(p, pat, dl);
     strcpy(p + dl, fb.name);
     add_file(p);
   } while (_dos_nfiles(&fb) >= 0);
@@ -89,6 +100,11 @@ static int sendhdr(const char *kw, long n, const char *name)
   char h[300];
   int l = name ? sprintf(h, "%s %ld %s\n", kw, n, name) : sprintf(h, "%s %ld\n", kw, n);
   return sendall(h, l);
+}
+
+static int sendstr(const char *kw, const char *s)
+{
+  return sendhdr(kw, strlen(s), NULL) < 0 || sendall(s, strlen(s)) < 0 ? -1 : 0;
 }
 
 static int recvall(void *b, int n)
@@ -154,13 +170,11 @@ static int sendfile_(const char *path)
   static char buf[8192];
   int fd = open(path, O_RDONLY | O_BINARY);
   long size;
-  if (fd < 0) {
-    fprintf(stderr, "rcc: %s: cannot open\n", path);
-    return -1;
-  }
+  if (fd < 0)
+    return 0;                               /* 無いファイルは送らない (gcc が「無い」と言う) */
   size = lseek(fd, 0, SEEK_END);
   lseek(fd, 0, SEEK_SET);
-  if (sendhdr("FILE", size, base(path)) < 0)
+  if (sendhdr("FILE", size, path) < 0)
     return -1;
   while (size > 0) {
     int n = read(fd, buf, size < (long)sizeof buf ? size : (long)sizeof buf);
@@ -169,6 +183,42 @@ static int sendfile_(const char *path)
       return -1;
     }
     size -= n;
+  }
+  close(fd);
+  return 0;
+}
+
+/* n バイトを受けて fp に写す (fp が NULL なら捨てる) */
+static int copyout(FILE *fp, long n)
+{
+  static char buf[4096];
+  while (n > 0) {
+    int k = n < (long)sizeof buf ? n : (long)sizeof buf;
+    if (recvall(buf, k) < 0)
+      return -1;
+    if (fp)
+      fwrite(buf, 1, k, fp);
+    n -= k;
+  }
+  return 0;
+}
+
+static int recvfile(const char *path, long n)
+{
+  static char buf[8192];
+  int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0755);
+  if (fd < 0) {
+    fprintf(stderr, "rcc: %s: cannot create\n", path);
+    return copyout(NULL, n);
+  }
+  while (n > 0) {
+    int k = n < (long)sizeof buf ? n : (long)sizeof buf;
+    if (recvall(buf, k) < 0 || write(fd, buf, k) != k) {
+      close(fd);
+      unlink(path);
+      return -1;
+    }
+    n -= k;
   }
   close(fd);
   return 0;
@@ -187,78 +237,73 @@ static int local(int argc, char **argv)
   for (int i = 1; i < argc && n < (int)sizeof a - 2; i++)
     n += snprintf(a + n, sizeof a - n, "%s%s", i > 1 ? " " : "", argv[i]);
   snprintf(cmd, sizeof cmd, fmt, a);
-  fprintf(stderr, "rcc: compiling here: %s\n", cmd);
+  fprintf(stderr, "rcc: no compile server, compiling here\n");
   return system(cmd);
 }
 
 int main(int argc, char **argv)
 {
-  const char *out = "a.x";
-  char line[128];
-  int rc, loglen, outlen, fd;
-  static char buf[8192];
+  char line[300], cwd[256];
+  int rc, nout;
+  long outlen, errlen;
 
   for (int i = 1; i < argc; i++) {
-    if (strcmp(argv[i], "-o") == 0 && i + 1 < argc)
-      out = argv[++i];
-    else if (argv[i][0] != '-' && (has_ext(argv[i], ".c") || has_ext(argv[i], ".s") || has_ext(argv[i], ".h"))) {
-      add_file(argv[i]);
-      add_headers(argv[i]);
+    const char *a = argv[i];
+    if ((strcmp(a, "-I") == 0 || strcmp(a, "-include") == 0) && i + 1 < argc) {
+      if (a[2] == 0)
+        add_headers(argv[i + 1], strlen(argv[i + 1]));
+      else
+        add_file(argv[i + 1]);
+      i++;
+    } else if (strncmp(a, "-I", 2) == 0) {
+      add_headers(a + 2, strlen(a + 2));
+    } else if (a[0] == '-') {
+      if ((strcmp(a, "-o") == 0 || strcmp(a, "-D") == 0 || strcmp(a, "-U") == 0 || strcmp(a, "-L") == 0 ||
+           strcmp(a, "-x") == 0) && i + 1 < argc)
+        i++;
+    } else if (is_input(a)) {
+      add_file(a);
+      add_headers(a, base(a) - a);
     }
   }
-  if (dial() < 0) {
-    fprintf(stderr, "rcc: cannot reach RCC_HOST=%s\n", getenv("RCC_HOST") ? getenv("RCC_HOST") : "");
+  add_headers("", 0);
+
+  if (dial() < 0)
     return local(argc, argv);
-  }
-  if (sendall("RCC1\n", 5) < 0)
+  if (!getcwd(cwd, sizeof cwd))
+    cwd[0] = 0;
+  if (sendall("RCC2\n", 5) < 0 || sendstr("CWD", cwd) < 0)
     goto lost;
-  for (int i = 1; i < argc; i++) {
-    const char *a = argv[i];
-    if (strcmp(a, "-o") == 0 && i + 1 < argc) {
-      if (sendhdr("ARG", 2, NULL) < 0 || sendall("-o", 2) < 0)
-        goto lost;
-      a = base(argv[++i]);
-    } else if (a[0] != '-' && (has_ext(a, ".c") || has_ext(a, ".s") || has_ext(a, ".h")))
-      a = base(a);
-    if (sendhdr("ARG", strlen(a), NULL) < 0 || sendall(a, strlen(a)) < 0)
+  for (int i = 1; i < argc; i++)
+    if (sendstr("ARG", argv[i]) < 0)
       goto lost;
-  }
   for (int i = 0; i < nf; i++)
     if (sendfile_(fname[i]) < 0)
       goto lost;
   if (sendall("END\n", 4) < 0)
     goto lost;
 
-  if (recvline(line, sizeof line) < 0 || sscanf(line, "RCC1 %d %d %d", &rc, &loglen, &outlen) != 3)
+  if (recvline(line, sizeof line) < 0 || sscanf(line, "RCC2 %d %ld %ld %d", &rc, &outlen, &errlen, &nout) != 4)
     goto lost;
-  while (loglen > 0) {                      /* gcc のメッセージ (UTF-8 のまま。英語なので読める) */
-    int n = loglen < (int)sizeof buf ? loglen : (int)sizeof buf;
-    if (recvall(buf, n) < 0)
+  if (copyout(stdout, outlen) < 0 || copyout(stderr, errlen) < 0)
+    goto lost;
+  fflush(stdout);
+  for (int i = 0; i < nout; i++) {
+    long n;
+    char *p;
+    if (recvline(line, sizeof line) < 0 || strncmp(line, "OUT ", 4) != 0)
       goto lost;
-    fwrite(buf, 1, n, stderr);
-    loglen -= n;
-  }
-  if (rc == 0 && outlen > 0) {
-    if ((fd = open(out, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0755)) < 0) {
-      fprintf(stderr, "rcc: %s: cannot create\n", out);
-      return 1;
-    }
-    while (outlen > 0) {
-      int n = outlen < (int)sizeof buf ? outlen : (int)sizeof buf;
-      if (recvall(buf, n) < 0 || write(fd, buf, n) != n) {
-        close(fd);
-        unlink(out);
-        goto lost;
-      }
-      outlen -= n;
-    }
-    close(fd);
+    n = strtol(line + 4, &p, 10);
+    if (*p == ' ')
+      p++;
+    p[strcspn(p, "\n")] = 0;
+    if (recvfile(p, n) < 0)
+      goto lost;
   }
   close(sock);
   return rc;
 
 lost:
-  fprintf(stderr, "rcc: connection lost\n");
   if (sock >= 0)
     close(sock);
   return local(argc, argv);
