@@ -23,8 +23,15 @@ static int _dos_super(int x) { (void)x; return 0; }
 static void _dos_breakck(int x) { (void)x; }
 static void _iocs_b_curon(void) {}
 static void _iocs_b_curoff(void) {}
+#ifdef VT_HOSTKEYS   /* キーは試験が渡す (net/ssh/dropbear/tests/vcshim.c) */
+int vt_host_keysns(void);
+int vt_host_keyinp(void);
+#define _iocs_b_keysns vt_host_keysns
+#define _iocs_b_keyinp vt_host_keyinp
+#else
 static int _iocs_b_keysns(void) { return 0; }
 static int _iocs_b_keyinp(void) { return 0; }
+#endif
 #ifdef VT_SIM_TXRAS
 void _iocs_txrascpy(int d1, int d2, int d3);   /* 68000 シミュレータでの計測用: シミュレータが TXRASCOPY を演じる */
 #endif
@@ -174,6 +181,16 @@ static int outq_len;
 static unsigned short pal_save[16];
 static int pal_saved;
 
+/* 仮想コンソール (-DVT_VCONS、下の「仮想コンソール」): 裏の端末は VRAM に描かない (解析と論理画面だけ) */
+#ifdef VT_VCONS
+static int vt_hidden;
+#define VT_HIDDEN vt_hidden
+static int vc_inited;   /* vt_init 済み (vt_fini まで)。この間の vt_init は端末の状態だけ初期化する */
+int (*vt_keyhook)(int code);
+#else
+#define VT_HIDDEN 0
+#endif
+
 /* ---- 計測 (-DVT_PROF で数える。vtcat -b が表示する) ---- */
 #ifdef VT_PROF
 long vt_prof[8];   /* 0=blit したセル 1=scroll 呼び出し 2=TXRASCOPY 3=32bit 転送のライン 4=flush 5=vt_write 6=置いた字 7=行塗り */
@@ -311,21 +328,42 @@ static const unsigned char *kanji_glyph(unsigned short jis)
 }
 
 /* 絵文字 16x16・16色 (4bpp) を 4 プレーンに直接描く (セルの fg/bg は使わず各ピクセル自身の色)。 */
+#ifndef VT_EMOJI_SA
+#define VT_EMOJI_SA 1   /* 1: 描く前に R21 を必ず 0 に書く / 2: 同時アクセスで 1 プレーンずつ選んで書く / 0: 旧版 */
+#endif
+static int sa_ok;              /* 定義は下の「同時アクセス」の節 */
+static unsigned short sa_cur;
+static void sa_mask(int m);
 static void blit_emoji(int col, int row, int idx)
 {
   const unsigned char *bm = emojitab[idx].bm;   /* 16 行 x 8 バイト, 2px/byte, 上位ニブル = 左 */
+  unsigned char pl[16][4][2];
   int s, p, px;
   for (s = 0; s < 16; s++) {
-    unsigned char pl[4][2];
-    volatile unsigned char *v;
-    for (p = 0; p < 4; p++) { pl[p][0] = 0; pl[p][1] = 0; }
+    for (p = 0; p < 4; p++) { pl[s][p][0] = 0; pl[s][p][1] = 0; }
     for (px = 0; px < 16; px++) {
       unsigned char n = (px & 1) ? (bm[s * 8 + px / 2] & 0x0f) : (bm[s * 8 + px / 2] >> 4);
       int half = px >> 3, bit = 7 - (px & 7);
-      for (p = 0; p < 4; p++) if ((n >> p) & 1) pl[p][half] |= (unsigned char)(1 << bit);
+      for (p = 0; p < 4; p++) if ((n >> p) & 1) pl[s][p][half] |= (unsigned char)(1 << bit);
     }
-    v = TVRAM + (unsigned long)(row * CH + s) * VBYTES + col;
-    for (p = 0; p < 4; p++) { v[p * PLANE] = pl[p][0]; v[1 + p * PLANE] = pl[p][1]; }
+  }
+#if VT_EMOJI_SA == 2
+  if (sa_ok) {   /* Z 実機で sa_off 後も同時アクセスが残る疑い: 切れていなくても正しい書き方 (プレーン 0 の番地に 1 枚ずつ) */
+    for (p = 0; p < 4; p++) {
+      sa_mask(1 << p);
+      for (s = 0; s < 16; s++) {
+        volatile unsigned char *v = TVRAM + (unsigned long)(row * CH + s) * VBYTES + col;
+        v[0] = pl[s][p][0]; v[1] = pl[s][p][1];
+      }
+    }
+    return;
+  }
+#elif VT_EMOJI_SA == 1
+  CRTC_R21 = 0; sa_cur = 0;   /* 記録 (sa_cur) と実機の R21 がずれていても必ず切る */
+#endif
+  for (s = 0; s < 16; s++) {
+    volatile unsigned char *v = TVRAM + (unsigned long)(row * CH + s) * VBYTES + col;
+    for (p = 0; p < 4; p++) { v[p * PLANE] = pl[s][p][0]; v[1 + p * PLANE] = pl[s][p][1]; }
   }
 }
 
@@ -658,6 +696,16 @@ static void scroll(int n)
   /* 空く行 (上スクロールなら下端の m 行、下スクロールなら上端の m 行) の VRAM には、ずらす前のその行の絵が
    * 残る (VRAM の移動はそこを触らない)。drawn もその絵にしておけば、flush は前の絵と違うセルだけ描けばよい
    * (less の 1 行送りなど)。行ポインタを回すと drawn のその位置に別の行が来るので、絵を控えて戻す。 */
+  if (VT_HIDDEN) {   /* 裏の端末: 論理画面だけ回す (drawn と VRAM は表の端末のもの) */
+    rotate_rows(cur, rlo, rhi, top, bot, n);
+    for (r = 0; r < m; r++) {
+      int rr = n > 0 ? bot - m + 1 + r : top + r;
+      cell_u32 *l = (cell_u32 *)cur[rr];
+      for (col = 0; col < COLS; col++) l[col] = clr_cell;
+      TOUCH(rr);
+    }
+    return;
+  }
   for (r = 0; r < m; r++) {
     int rr = n > 0 ? bot - m + 1 + r : top + r;
     const cell_u32 *d = (const cell_u32 *)drawn[rr];
@@ -715,6 +763,7 @@ static NOINLINE void flush(void)
 {
   int r, c, s, i;
   static unsigned char diff[MAXCOLS];
+  if (VT_HIDDEN) return;   /* 裏の端末は描かない (表に出すとき vt_con_visible が全面を描く) */
   PROF(4, 1);
   s = sup_enter();
   if (csr_shown) { cursor_xor(csr_x, csr_y); csr_shown = 0; }   /* 先にカーソルを消す */
@@ -1307,7 +1356,7 @@ static int cp_kind(long cp, unsigned short *code, unsigned char *fl)
    * 前の文字との合成はしない。絵文字の肌色修飾 (U+1F3FB-1F3FF) は wcwidth では 2 だが、前の絵文字に
    * 重なって 1 字に見えるのが普通なので捨てる。 */
   if ((cp >= 0x1f3fb && cp <= 0x1f3ff) || in_ranges(zerotab, (int)ZEROTAB_N, (unsigned long)cp)) return K_DROP;
-  if (cp >= 0x2705) { int ei = emoji_index((unsigned long)cp);   /* 絵文字: 16x16・16色で全角 2 セル (表の最小は U+2705) */
+  if (cp >= EMOJITAB_MIN) { int ei = emoji_index((unsigned long)cp);   /* 絵文字: 16x16・16色で全角 2 セル (表の最小未満は引かない) */
     if (ei >= 0) { *code = (unsigned short)ei; *fl = F_EMOJI; return K_W2; } }
   if ((cp >= 0xff61 && cp <= 0xff9f) || cp == 0x00a5 || cp == 0x203e) { *code = (unsigned short)cp; return K_N1; }   /* CGROM の JIS X 0201 にある半角 */
   if (is_wide(cp)) {
@@ -1551,6 +1600,10 @@ void vt_get_size(int *cols, int *rows) { if (cols) *cols = COLS; if (rows) *rows
 void vt_init(int cols, int rows)
 {
   int r, c, s;
+#ifdef VT_VCONS
+  if (vc_inited) { vt_con_new(0); return; }   /* 画面は占有済み (2 つ目以降の端末の HELLO など): 端末の状態だけ初期化 */
+  vt_hidden = 0;
+#endif
   if (cols <= 0) cols = MAXCOLS;
   if (rows <= 0) rows = MAXROWS;
   if (cols > MAXCOLS) cols = MAXCOLS;
@@ -1579,6 +1632,9 @@ void vt_init(int cols, int rows)
   sa_off();
   sup_leave(s);
   _dos_breakck(0);            /* Ctrl-C ブレークを止める (キーはこちらで拾う) */
+#ifdef VT_VCONS
+  vc_inited = 1;
+#endif
 }
 
 void vt_fini(void)
@@ -1591,6 +1647,9 @@ void vt_fini(void)
   _iocs_b_curon();
   sup_leave(s);
   _dos_breakck(1);
+#ifdef VT_VCONS
+  vc_inited = 0;
+#endif
 }
 
 /* ================= キーボード ================= */
@@ -1608,6 +1667,9 @@ int vt_key(unsigned char *out, int max)
   while (k < max && _iocs_b_keysns() != 0) {
     int code = _iocs_b_keyinp();
     int scan = (code >> 8) & 0xff;
+#ifdef VT_VCONS
+    if (vt_keyhook) { int h = vt_keyhook(code); if (h == 1) continue; if (h == 2) break; }   /* 呼び出し側が使ったキー */
+#endif
     int asc = code & 0xff;
     const char *ck = decckm ? "O" : "[";
     char seq[8];
@@ -1674,3 +1736,135 @@ void vt_get_cell(int r, int c, unsigned short *cp, unsigned char *fg, unsigned c
 void vt_get_cursor(int *x, int *y) { if (x) *x = cx; if (y) *y = cy; }
 /* 絵文字インデックス -> 実際の Unicode コードポイント (F_EMOJI セルの cp を渡す)。 */
 unsigned long vt_emoji_cp(int idx) { return (idx >= 0 && idx < EMOJITAB_N) ? emojitab[idx].cp : '?'; }
+
+/* ================= 仮想コンソール (-DVT_VCONS) =================
+ * VRAM は 1 枚のまま、端末 (論理画面・カーソル・属性・モード・解析の途中・応答キュー) を複数持って切り替える
+ * (ssh.x が 1 本の接続の複数のセッションチャネルを Ctrl+F1..F4 で切り替える)。
+ * ・端末の状態 (下の VC_VARS / VC_ARRS) は vt_con_save / vt_con_load で入れ物と写し合う (~1.3 KB。解析の速い道は
+ *   大域変数のまま)。画面 2 面のセル (24 KB) は写さず、入れ物の行ポインタ表がそれぞれの置き場を指す。
+ * ・裏の端末 (vt_hidden) は解析と論理画面だけ: flush と scroll の VRAM・drawn は触らない。drawn は表の VRAM の控えのまま。
+ * ・カーソルの描画状態 (csr_*) も端末ごと。裏に回すとき csr_shown を 0 にする (表に出すとき全面を描き直すので消さなくてよい)。
+ * ・グリフ表・pm_tab・cp_kind の控え・同時アクセス・パレットの退避・drawn・rlo/rhi は共通。 */
+#ifdef VT_VCONS
+#include <string.h>
+#define VC_VARS X(cx) X(cy) X(pend_wrap) X(top) X(bot) X(c_fg) X(c_bg) X(a_bold) X(a_uline) X(a_reverse) X(cur_at) X(clr_cell) \
+  X(decckm) X(decawm) X(cur_vis) X(alt_active) X(gl) X(sv_cx) X(sv_cy) X(sv_fg) X(sv_bg) X(sv_bold) X(sv_ul) X(sv_rev) \
+  X(sv_sp0) X(sv_sp1) X(sv_gl) X(csr_shown) X(csr_x) X(csr_y) X(state) X(csi_priv) X(csi_inter) X(nparam) X(str_kind) \
+  X(str_esc) X(str_len) X(cs_which) X(u_cp) X(u_need) X(outq_len) X(vt_hidden)
+#define VC_ARRS X(g_special) X(tabstop) X(param) X(str_buf) X(outq) X(rows_main) X(rows_alt)
+typedef struct {
+#define X(v) __typeof__(v) v;
+  VC_VARS VC_ARRS
+#undef X
+} vc_state;
+
+int vt_con_size(void) { return (int)sizeof(vc_state); }
+int vt_con_scrsize(void) { return (int)(2 * sizeof store_main); }
+
+void vt_con_save(void *st)
+{
+  vc_state *s = (vc_state *)st;
+#define X(v) s->v = v;
+  VC_VARS
+#undef X
+#define X(v) memcpy(s->v, v, sizeof v);
+  VC_ARRS
+#undef X
+}
+
+void vt_con_load(const void *st)
+{
+  const vc_state *s = (const vc_state *)st;
+#define X(v) v = s->v;
+  VC_VARS
+#undef X
+#define X(v) memcpy(v, s->v, sizeof v);
+  VC_ARRS
+#undef X
+  cur = alt_active ? rows_alt : rows_main;
+}
+
+/* いまの端末を初期状態・空の画面にする。scr (vt_con_scrsize バイト) を新しい端末の画面の置き場にして裏に置く。
+ * scr が NULL なら画面の置き場と表裏はそのまま (表なら次の flush で空の画面が描かれる)。 */
+void vt_con_new(void *scr)
+{
+  int r, c;
+  if (scr) {
+    cell_t (*m)[MAXCOLS] = (cell_t (*)[MAXCOLS])scr, (*a)[MAXCOLS] = m + MAXROWS;
+    for (r = 0; r < MAXROWS; r++) { rows_main[r] = m[r]; rows_alt[r] = a[r]; }
+    vt_hidden = 1; csr_shown = 0;
+  } else if (!rows_main[0]) {
+    for (r = 0; r < MAXROWS; r++) { rows_main[r] = store_main[r]; rows_alt[r] = store_alt[r]; }
+  }
+  cx = cy = 0; top = 0; bot = ROWS - 1; pend_wrap = 0;
+  c_fg = 7; c_bg = 0; a_bold = a_uline = a_reverse = 0; attr_update();
+  decckm = 0; decawm = 1; cur_vis = 1; alt_active = 0; cur = rows_main;
+  g_special[0] = g_special[1] = 0; gl = 0; outq_len = 0; state = S_GROUND; u_need = 0;
+  sv_cx = sv_cy = 0; sv_fg = 7; sv_bg = 0; sv_bold = sv_ul = sv_rev = sv_sp0 = sv_sp1 = sv_gl = 0;
+  for (c = 0; c < MAXCOLS; c++) tabstop[c] = (c % 8 == 0) ? 1 : 0;
+  for (r = 0; r < MAXROWS; r++) {
+    for (c = 0; c < MAXCOLS; c++) { clear_cell(&rows_main[r][c]); clear_cell(&rows_alt[r][c]); }
+    TOUCH(r);
+  }
+}
+
+/* drawn を「VRAM の絵は分からない」にする (どのセルとも等しくならず、blit は全プレーンを書く) */
+static void vc_unknown(int r, int c0, int c1)
+{
+  cell_t z;
+  int c;
+  z.cp = 0xffff; z.at = F_EMOJI | F_WIDECONT;
+  for (c = c0; c <= c1; c++) drawn[r][c] = z;
+  touch_span(r, c0, c1);
+}
+
+/* 表に出す (VRAM を全部この端末の絵に描き直す) / 裏に回す (以後 VRAM に描かない) */
+void vt_con_visible(int on)
+{
+  int r, s;
+  if (!on) { vt_hidden = 1; csr_shown = 0; return; }
+  vt_hidden = 0; csr_shown = 0;   /* VRAM のカーソル (前の端末の) は全面の描き直しで消える */
+  s = sup_enter();
+  for (r = 0; r < ROWS; r++) vc_unknown(r, 0, COLS - 1);
+  flush();
+  sup_leave(s);
+}
+
+/* 状態表示: 最上行の右端に s を反転で重ねる (論理画面は変えない)。NULL で消す (その桁を論理画面の絵に戻す) */
+static int vc_st_c0 = -1;
+void vt_con_status(const char *s)
+{
+  int sup, i, n;
+  if (vt_hidden || !rows_main[0]) return;
+  sup = sup_enter();
+  if (vc_st_c0 >= 0) { vc_unknown(0, vc_st_c0, COLS - 1); vc_st_c0 = -1; }
+  if (s) {
+    if (csr_shown) { cursor_xor(csr_x, csr_y); csr_shown = 0; }
+    n = (int)strlen(s);
+    if (n > COLS) n = COLS;
+    vc_st_c0 = COLS - n;
+    if (vc_st_c0 > 0 && (cur[0][vc_st_c0].at & F_WIDECONT)) vc_unknown(0, vc_st_c0 - 1, vc_st_c0 - 1);   /* 割った全角の左も描き直す */
+    for (i = 0; i < n; i++) {
+      cell_t z;
+      z.cp = (unsigned char)s[i]; z.at = AT(0, 7, 0);
+      blit(vc_st_c0 + i, 0, &z, 0);
+    }
+    sa_off();
+    for (i = 0; i < n; i++) { cell_t z; z.cp = 0xffff; z.at = F_EMOJI | F_WIDECONT; drawn[0][vc_st_c0 + i] = z; }
+    if (cur_vis && !(cy == 0 && cx >= vc_st_c0)) { cursor_xor(cx, cy); csr_shown = 1; csr_x = cx; csr_y = cy; }
+  } else {
+    flush();
+  }
+  sup_leave(sup);
+}
+
+/* ホストへの応答 (DSR / DA など) だけを取り出す (キーボードは読まない。裏の端末の応答をそのチャネルへ返す) */
+int vt_reply(unsigned char *out, int max)
+{
+  int k = outq_len < max ? outq_len : max;
+  memcpy(out, outq, k);
+  memmove(outq, outq + k, outq_len - k);
+  outq_len -= k;
+  return k;
+}
+#endif

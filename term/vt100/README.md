@@ -36,6 +36,15 @@ vt_fini();
 スーパーバイザ切り替えはライブラリ内で完結する。クライアントはユーザモードのままでよい。
 `vt_init`〜`vt_fini` の間は DOS のコンソール出力に触れないこと。
 
+### 仮想コンソール (`-DVT_VCONS`)
+VRAM 1 枚で複数の端末を切り替える (ssh.x の Ctrl+F1..F4)。端末の状態 (カーソル・属性・モード・解析の途中・応答キュー・
+行ポインタ表、約 0.9 KB) を `vt_con_save` / `vt_con_load` で入れ物と写し合い、画面 2 面 (24 KB) は `vt_con_new` に渡した
+置き場に置く (最初の端末は内蔵)。裏の端末は `vt_write` しても `flush` と `scroll` の VRAM・`drawn` に触らない (解析と論理画面
+だけ)。`vt_con_visible(1)` で `drawn` を「分からない」にして全面を描き直す。`vt_con_status` は最上行の右端に反転の短い表示を
+重ねる (論理画面は変えない)。`vt_reply` は DSR/DA の応答だけを取り出す (裏の端末の応答をそのチャネルへ)。`vt_keyhook` は
+`vt_key` が読んだ IOCS のキーを先に見る。vt_init 済みの間の `vt_init` (zterm の HELLO) はいまの端末の状態だけ初期化する。
+`VT_VCONS` 無しのオブジェクトは変わらない。試験は `tests/vctest.c` (run.sh の 6)。
+
 ## 画面と描画
 - 既定 96x32 (768x512, 8x16 フォント)。`vt_init(cols,rows)` で指定可 (横最大 96・縦最大 32)。
 - セル (`cell_t`) は 4 バイト: コードポイント 16bit + 属性語 16bit (`fg<<12 | bg<<8 | flags`、bold/reverse 解決済み)。
@@ -59,12 +68,28 @@ vt_fini();
 ### 絵文字 (テキスト VRAM に 16x16・16色)
 絵文字は全角セル (`F_WIDE | F_EMOJI`) として 16x16・4bpp でテキスト VRAM に直接描く。cp にはコードポイントで
 なく絵文字表のインデックスを入れる (絵文字は BMP 外で 16bit に収まらないため)。異体字セレクタ VS16 (U+FE0F)・
-ZWJ (U+200D) は幅 0 として無視。表に無い絵文字は `??` フォールバック (幅 2 を保つ)。
+ZWJ (U+200D) は幅 0 として無視。表に無い全角の絵文字は `??` フォールバック (幅 2 を保つ)。
 
 - 表 `emojitab.h` は `genemoji.py` が **Twemoji 15.1.0 (CC-BY 4.0, © 2023 Twitter/X, jdecked/twemoji)** の
   72x72 PNG を 16x16 に縮小し、**16 色 (ANSI テキストパレット) に量子化**して生成 (元 PNG は含めず変換後の表のみ収録)。
 - **割り切り**: 色はテキストパレットの ANSI 8+8 色 (SGR と共用、パレットは変更しない) に量子化するので粗い。
-  透明ピクセルはパレット 0 (黒) にする (黒背景の端末前提)。重なり・透過・アニメーションは無い。現在 28 文字。
+  透明ピクセルはパレット 0 (黒) にする (黒背景の端末前提)。重なり・透過・アニメーションは無い。
+- **収録は 300 字** (1 字 128 バイト + コードポイント 4 バイト ≒ 39 KB)。`selemoji.py` が `emojilist.txt` を作る。
+  出所: 以前の 28 字 → 手で足した字 (🍣 🍺 🍻 🍶 🍜 などの飲食、顔・手・ハート、⏰ (Claude Code が出す) などの道具・記号、
+  🟢 🔴 🟥 などの色、動物、天気) → **Unicode Consortium の「Emoji Frequency」(Ranked Order by Median Frequency、
+  https://home.unicode.org/emoji/emoji-frequency/)** の上位から順に、300 字になるまで。各行の 3 列目が出所
+  (`orig` / `extra` / `rank`)。入れるのは次をすべて満たす字だけ:
+  - 1 コードポイント (U+FE0F は除いて数える)。**国旗 (🇯🇵 = 2 コードポイント)・ZWJ 合成・肌色違いは入らない**
+  - **wcwidth が 2** (`widthtab.h` の全角)。❤ ⚠ ⚙ ☀ ☁ ➡ ⬅ ⬆ ⬇ ✔ ☑ ✏ ⌨ 🖥 🗂 🗑 🕹 🌧 などテキスト表示が既定の字は
+    wcwidth 1 で、相手のアプリ・pyte・zterm の vt100 crate が 1 桁と数える (後ろの U+FE0F で 2 桁にする扱いは端末ごとに
+    違い、ここでは U+FE0F を捨てる)。2 桁の絵文字として描くと桁がずれるので入れず、従来どおり 1 桁の代用字 (`?` `!` `v` など)
+  - JIS X 0208 に無い (`kanjitab.h` にある字は CGROM の漢字で描く)
+- 引き方: `emoji_index` は昇順の表の二分探索 (300 字で最大 9 回)。表の最小 (`EMOJITAB_MIN` = U+231B) 未満は引かないので、
+  Claude Code が多用する ← → … などは探索しない。
+- 作り直し: `python3 selemoji.py <emoji-frequency.html> <twemoji>/assets/72x72 300 > emojilist.txt` →
+  `python3 genemoji.py <twemoji>/assets/72x72 emojilist.txt > emojitab.h` (Pillow が要る。PNG はコミットしない)。
+  zterm のサーバは `build.rs` が `emojitab.h` を読むので、作り直せば番号がそろう (番号 256 以上は `0x10 EMOJI16`)。
+- 一覧の画面: `tests/fixtures/emoji_grid.rec` (`tests/gen_emoji_grid.py`、96x32)。`tests/run.sh emoji_grid` の PNG で見られる。
 - PCG スプライトを使わない理由: スプライト/BG は 256x256・512x512 モード専用で、CLI の 768x512 高解像度テキスト
   (CRTMOD 16) では `_iocs_sp_init()` が **-1** を返し使えない (`tests/pcgtest.c` で XEiJ 確認。4/6/8/12 のモードなら 0)。
   512x512 に落とせば使えるがテキストが 64 桁に半減する。テキスト VRAM 直描きなら高解像度のままスクロールにも乗る。

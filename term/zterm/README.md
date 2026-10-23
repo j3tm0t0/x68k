@@ -83,6 +83,7 @@ Z は `ZTERM ` で始まらない行 (.bashrc の出力など) を読み飛ば�
 | 0x0c CLEAR | bg | 全面を空白 (7,bg) に (帯域の節約。描画は差分なので変わらない) |
 | 0x0d BYE | code | シェルが終わった (終了コード) |
 | 0x0e SIZE | cols rows | 寸法が変わった |
+| 0x10 EMOJI16 | idx16 | 番号が 256 以上の絵文字 (0x05 EMOJI と同じ)。2 桁 |
 
 **Z → サーバ**: `type` u8, `len` u8, 本体。`k` キー (vt_key が作った VT バイト列そのまま)、`a` ACK (1 フレーム描き終えた)、
 `r` 寸法 (cols rows)、`f` 全部描き直して、`q` 終わり (シェルに SIGHUP)。
@@ -116,6 +117,9 @@ ssh.x (`net/ssh/dropbear`、`ZTERM=1`):
   「読める」にする。HELLO で画面を占有したら DOS コンソールには触らない。
 - `cli-chansession.c` のパッチ: チャネルが閉じたとき zterm が始まっていなければ、同じ接続で `wantpty=1` のセッションを
   開き直す (`-t` と同じ VT100)。
+- 仮想コンソール (Ctrl+F1..F4、net/ssh/dropbear/README.md): チャネルごとに `ztclient.c` / `ztdraw.c` の状態を持つ
+  (`zc_ctx_use` / `ztd_ctx_use`。名前は #define でそのまま)。裏のチャネルもフレームを置いて ACK を返す (描かない)。
+  試験は `client/ztvctest.c` (tests/replay.sh)。
 
 ## 試験 (Mac)
 

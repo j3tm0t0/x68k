@@ -8,6 +8,7 @@ app_lessu8 96 32
 app_tmux 96 32
 app_top 96 32
 app_vimjp 96 32
+emoji_grid 96 32
 syn_altscreen 96 32
 syn_edge 96 32
 syn_lines 96 32
