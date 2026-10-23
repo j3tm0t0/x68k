@@ -20,6 +20,8 @@
  *  - 端末まわり (x68k_vcons.c を #include): x68k_tty_setup/cleanup (VT100 の画面の占有・復帰)、
  *    x68k_chan_write/read (チャネルの stdout/stderr を VT100 / zterm へ、stdin はキー)、zterm (-Z)、
  *    仮想コンソール (Ctrl+F1..F4 で同じ接続の別のシェル: x68k_vc_initchan / x68k_vc_loop / x68k_vc_closed)。
+ *  - x68k_readpass (x68k_pass.c を #include): パスワード / keyboard-interactive の入力 (エコー無し、BS・ESC・Ctrl-C)。
+ *    cli-auth.c / cli-authinteract.c (DROPBEAR_X68K) から getpass / get_response の代わりに呼ぶ。
  */
 #include <sys/types.h>
 #include <pwd.h>
@@ -79,6 +81,9 @@ struct passwd *getpwnam(const char *name) { (void)name; return fill_pw(); }
 
 /* --- 端末 (term/vt100・zterm・仮想コンソール): x68k_vcons.c --- */
 #include "x68k_vcons.c"
+
+/* --- パスワードの入力: x68k_pass.c --- */
+#include "x68k_pass.c"
 
 /* --- ソケットへの write は 1 回 4096 バイトまで (xip の不具合よけ) ---
    xip は**ノンブロッキング**のソケットに 4096 バイトを超えて write すると、全部送ったのに -1 を返す

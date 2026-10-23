@@ -36,6 +36,7 @@ fi
 cp "$HERE/localoptions.h" "$SRC/localoptions.h"
 cp "$HERE/x68k_shim.c"    "$SRC/x68k_shim.c"
 cp "$HERE/x68k_vcons.c"   "$SRC/x68k_vcons.c"   # x68k_shim.c が #include する
+cp "$HERE/x68k_pass.c"    "$SRC/x68k_pass.c"    # 同上 (パスワードの入力)
 
 EXTRA_DEF="" ; EXTRA_OBJ=""
 [ "$DEBUG" = "1" ] && EXTRA_DEF="-DX68K_SSH_DEBUG"

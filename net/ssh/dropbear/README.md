@@ -8,6 +8,7 @@ dropbear の `dbclient` を X68000 (Human68k) 用にクロスビルドして `ss
   `libsocket.a` (xip.x / inetd.x 経由の BSD ソケット、`poll()` が `_CHANGE_PR`
   で CPU を譲る)。
 - アルゴリズム: 鍵交換 curve25519、暗号 chacha20-poly1305、公開鍵 ed25519 のみ。
+- 認証: ed25519 の公開鍵、通らなければ keyboard-interactive、password (下の「パスワード認証」)。
   RSA/DSS/ECDSA/AES を落として小さくしてある (`localoptions.h`)。
 
 ## ビルド
@@ -48,6 +49,8 @@ sshd (例 ~/sshtest の :2222) が要る。
 | `x68k_shim.c` | Human68k/newlib/libsocket に無い関数の補完 (下記) |
 | `x68k_vcons.c` | 端末まわり: VT100 画面の占有・復帰、チャネルの読み書き、zterm (-Z)、仮想コンソール (x68k_shim.c が #include) |
 | `tests/vcshim.sh` | 仮想コンソールのホスト試験 (`tests/vcshim.c`: dropbear のチャネルと IOCS のキーを真似て x68k_vcons.c を動かす) |
+| `x68k_pass.c` | パスワード / keyboard-interactive の入力 (エコー無し、x68k_shim.c が #include) |
+| `tests/passtest.sh` | パスワードの入力のホスト試験 (`tests/passtest.c`: DOS のキー入力を真似て x68k_pass.c を動かす) |
 | `x68kinc/` | newlib に無いヘッダの最小スタブ (sys/ioctl.h, sys/un.h, sys/uio.h, syslog.h, termios.h, netinet/ip.h, netinet/tcp.h) と `x68k_compat.h` (AF_UNSPEC 等 + `FD_SETSIZE` 拡張) |
 | `patches/` | dropbear 本体への最小パッチ (下記) |
 | `fetch.sh` / `build.sh` | 取得・ビルド |
@@ -100,8 +103,37 @@ sshd (例 ~/sshtest の :2222) が要る。
 - `common-channel.c` : チャネルの fd への write / read を `x68k_chan_write` / `x68k_chan_read` に (チャネル番号付き)。
 - `x68kinc/termios.h` : `tcgetattr` は cooked な既定値 (ECHO/ICANON/ISIG/ICRNL/OPOST/ONLCR、VERASE=0x7f …)
   を返す。pty-req の termcodes はこれをそのまま sshd に送るので、全部 0 だとエコー無しの pty になる。
+- `cli-auth.c` : `getpass_or_cancel` の `getpass` を `x68k_readpass` (エコー無し) に。password と、実際に聞いた
+  keyboard-interactive の失敗を数え、3 回目で "Permission denied (3 incorrect password attempts)" で終わる
+  (素の dbclient はサーバが切るまで聞き直す)。2 回目までは "Permission denied, please try again."。
+- `cli-authinteract.c` : エコー付きのプロンプト (`get_response`) も /dev/tty ではなく `x68k_readpass` (エコー付き) で読む。
 - `common-kex.c` / `cli-kex.c` / `cli-auth.c` / `cli-authpubkey.c` / `cli-chansession.c` /
   `cli-session.c` : 位相の印 `x68dbg("...")` (既定ビルドでは no-op)。
+
+## パスワード認証
+
+公開鍵 (`-i`) が無い・通らないとき、サーバが許していれば keyboard-interactive、password の順に聞く (dbclient の既定の順)。
+
+```
+b:ssh.x moto@192.168.1.108
+moto@192.168.1.108's password:          (keyboard-interactive なら "Login for ..." と "Password: ")
+```
+
+- 入力は `x68k_pass.c`: プロンプトは fd 2 (CTTY に従う)、キーは DOS の `_INPOUT(0xFF)` で 1 字ずつ。エコー無し。
+  Enter で確定、BS / DEL で 1 字消す、Ctrl-U で全部消す、ESC / Ctrl-C で取り消し ("Interrupted." で終わる)。
+  入力中は `_BREAKCK` を 0 にする (Ctrl-C で DOS がプロセスを止めて xip のソケットが残らないように)。
+- IOCS の `_B_KEYINP` で直接読むと、プロンプトや "Permission denied" を DOS で書いている間に打ったキーを DOS が先読みに
+  移してしまい、そのキーが抜けて ssh.x の終了後のコマンドラインに出た (XEiJ で確認)。DOS 経由なら先打ちも抜けない。
+- 認証は端末の層 (`-t` / `-Z` の vt_init、仮想コンソール) が画面を取る前に終わる。仮想コンソールの 2 本目以降は同じ接続の
+  チャネルなので聞き直さない。
+- 3 回まちがえると終わる。パスワードは環境変数 (DROPBEAR_PASSWORD) からは取らない (`localoptions.h`)。
+- sshd の LoginGraceTime (既定 120 秒) は鍵交換の時間も含む。Z 単体の鍵交換は約 60 秒かかるので、プロンプトが出たら
+  早めに打つ (`-oAccel=...` なら鍵交換は約 12 秒)。
+- 試験 (XEiJ、2026-10-23): asyncssh の使い捨てサーバ (user test、password / keyboard-interactive / 公開鍵を切り替え) に
+  SLIP (XEiJ の RS-232C ⇔ Pi の pty + slattach) で接続。公開鍵 (従来どおり聞かない)、公開鍵が拒否 → keyboard-interactive、
+  password のみ、keyboard-interactive のみ、3 回まちがい、ESC / Ctrl-C の取り消し、`-t`、`-Z` (ヘルパが無いので -t に切り替え)、
+  パスワードで入った後の Ctrl+F2 / Ctrl+F1 (仮想コンソール) を確認。打っている間のテキスト VRAM にプロンプト以外の字が無いこと、
+  BS で直した入力がサーバに正しく届くことも確かめた。
 
 ## 現状と性能 (2026-10-22 実機)
 
