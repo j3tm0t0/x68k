@@ -1,0 +1,148 @@
+From ac0b1028f20597bcf4c9cab502e99fa6227d5ae8 Mon Sep 17 00:00:00 2001
+From: moto <j3tm0t0@gmail.com>
+Date: Fri, 23 Oct 2026 19:25:14 +0900
+Subject: [PATCH] Pico 2 W build: -DPICO_BOARD=pico2_w -DPICO_PLATFORM=rp2350
+ (RP2350_ARM_NTZ FreeRTOS port, 1 core by default)
+
+PICO_SDK_PATH / FREERTOS_KERNEL_PATH can be given on the command line (pico-sdk 2.1.1 and
+raspberrypi/FreeRTOS-Kernel 4f7299d; the SD card patches need pico-sdk 2.x for pico/aon_timer).
+P2W_CORES=1 (default, PICO_FLASH_ASSUME_CORE1_SAFE so flash writes don't fail with -4) or 2 (SMP).
+TSP gets its full-size tables on the RP2350 (40 sockets, 12KB TX pool, lwIP MEM_SIZE 20KB).
+The default stays pico_w.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PrGdt1XK1exBgERrMmLA1u
+---
+ .gitignore              |  2 +-
+ CMakeLists.txt          | 31 ++++++++++++++++++++++++++-----
+ src/FreeRTOSConfig.h    | 20 +++++++++++++++++++-
+ src/tsp_lwip/lwipopts.h |  4 ++++
+ 4 files changed, 50 insertions(+), 7 deletions(-)
+
+diff --git a/.gitignore b/.gitignore
+index 69ef23e..f7dede2 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -8,4 +8,4 @@ build/
+ *.inc
+ *.uf2
+ *.HDS
+-*.xdf
+\ No newline at end of file
++*.xdfbuild-*/
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 26991c9..6c08e28 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -2,19 +2,35 @@ cmake_minimum_required(VERSION 3.24)
+ 
+ # Get the Pico SDK from https://github.com/raspberrypi/pico-sdk.git tested on TAG 1.4.0
+ # Get FreeRTOS from https://github.com/FreeRTOS/FreeRTOS-Kernel.git tested on TAG V10.5.0
+-set(PICO_SDK_PATH ${CMAKE_CURRENT_LIST_DIR}/pico-sdk)
+-set(FREERTOS_KERNEL_PATH ${CMAKE_CURRENT_LIST_DIR}/FreeRTOS-Kernel)
++# Pico 2 W (-DPICO_BOARD=pico2_w) と SD カード (lib/FatFs_SD の pico/aon_timer) は pico-sdk 2.x が要る:
++# -DPICO_SDK_PATH=<pico-sdk 2.1.1> -DFREERTOS_KERNEL_PATH=<raspberrypi/FreeRTOS-Kernel 4f7299d (RP2350 の port)>
++set(PICO_SDK_PATH ${CMAKE_CURRENT_LIST_DIR}/pico-sdk CACHE PATH "pico-sdk")
++set(FREERTOS_KERNEL_PATH ${CMAKE_CURRENT_LIST_DIR}/FreeRTOS-Kernel CACHE PATH "FreeRTOS-Kernel")
+ set(LIBSMB2_PATH ${CMAKE_CURRENT_LIST_DIR}/libsmb2)
+ 
+ # Name the project and prepare it to be a pico_w project, using FreeRTOS and lwip
+ set(PROJECT_NAME x68kzremotedrv)
+-set(PICO_BOARD pico_w)
++set(PICO_BOARD pico_w CACHE STRING "pico_w or pico2_w")
+ include(${PICO_SDK_PATH}/pico_sdk_init.cmake)
+-include(${FREERTOS_KERNEL_PATH}/portable/ThirdParty/GCC/RP2040/FreeRTOS_Kernel_import.cmake)
++if(PICO_BOARD STREQUAL "pico2_w")
++    include(${FREERTOS_KERNEL_PATH}/portable/ThirdParty/GCC/RP2350_ARM_NTZ/FreeRTOS_Kernel_import.cmake)
++else()
++    include(${FREERTOS_KERNEL_PATH}/portable/ThirdParty/GCC/RP2040/FreeRTOS_Kernel_import.cmake)
++endif()
+ project(${PROJECT_NAME} C CXX ASM)
+ pico_sdk_init()
+ 
+ # Add a couple of definitions that all projects/libraries can/should use
++# Pico 2 W (RP2350): FreeRTOS のコア数 (-DP2W_CORES=1|2)。1 コアなら、フラッシュの書き込み (flash_safe_execute) が
++# コア 1 を止めようとして NOT_PERMITTED (-4) にならないよう、コア 1 は安全と宣言する
++if(PICO_PLATFORM MATCHES "rp2350")
++    set(P2W_CORES 1 CACHE STRING "FreeRTOS cores on the RP2350 (1 or 2)")
++    add_compile_definitions(P2W_CORES=${P2W_CORES})
++    if(P2W_CORES EQUAL 1)
++        add_compile_definitions(PICO_FLASH_ASSUME_CORE1_SAFE=1)
++    endif()
++endif()
++
+ add_definitions(-DPICO_PLATFORM=${PICO_PLATFORM})
+ add_definitions(-DHAVE_CONFIG_H)
+ 
+@@ -97,7 +113,12 @@ if(TSP)
+     target_sources(${PROJECT_NAME} PRIVATE src/tsp_svc.c)
+     target_include_directories(${PROJECT_NAME} BEFORE PRIVATE ${CMAKE_CURRENT_LIST_DIR}/src/tsp_lwip)
+     # Pico W (264KB) に合わせて表を小さく: Pico 側ソケット 20 (Z の 32 番号を全部同時には使わない)、送信の合計 4KB
+-    target_compile_definitions(${PROJECT_NAME} PRIVATE TSP_ENABLE=1 TSP_NPS=20 TSP_TXPOOL=4096)
++    if(PICO_PLATFORM MATCHES "rp2350")
++        # Pico 2 W (520KB): 本来の大きさ (x68k net/tistack/README.md「Pico の RAM」)
++        target_compile_definitions(${PROJECT_NAME} PRIVATE TSP_ENABLE=1 TSP_NPS=40 TSP_TXPOOL=12288 TSP_MEM_SIZE=20480)
++    else()
++        target_compile_definitions(${PROJECT_NAME} PRIVATE TSP_ENABLE=1 TSP_NPS=20 TSP_TXPOOL=4096)
++    endif()
+ endif()
+ 
+ # HDS が開けるまで Z の読み書きに NOT READY (04/01) を返して待たせ、接続は裏で繰り直し続ける (0 埋めを返さない)。
+diff --git a/src/FreeRTOSConfig.h b/src/FreeRTOSConfig.h
+index b61854e..c8dcc3d 100644
+--- a/src/FreeRTOSConfig.h
++++ b/src/FreeRTOSConfig.h
+@@ -101,9 +101,17 @@
+ #define configMAX_API_CALL_INTERRUPT_PRIORITY   [dependent on processor and application]
+ */
+ 
+-#if FREE_RTOS_KERNEL_SMP // set by the RP2040 SMP port of FreeRTOS
++#ifndef P2W_CORES
++#define P2W_CORES                               1   /* RP2350: 1 = 1 コア (RP2040 版と同じ動き)、2 = SMP */
++#endif
++#if FREE_RTOS_KERNEL_SMP && PICO_RP2350 && P2W_CORES == 1
++/* RP2350 の port は FREE_RTOS_KERNEL_SMP を立てるが、1 コアで動かす (タスクが本当に同時に動く前提のコードではない) */
++#define configNUMBER_OF_CORES                   1
++#define configNUM_CORES                         1
++#elif FREE_RTOS_KERNEL_SMP // set by the RP2040 SMP port of FreeRTOS
+ /* SMP port only */
+ #define configNUM_CORES                         2
++#define configNUMBER_OF_CORES                   2   /* FreeRTOS 11 の名前 */
+ #define configTICK_CORE                         0
+ #define configRUN_MULTIPLE_PRIORITIES           1
+ #define configUSE_CORE_AFFINITY                 1
+@@ -138,5 +146,15 @@ to exclude the API function. */
+ 
+ /* A header file that defines trace macro can be included here. */
+ 
++#if PICO_RP2350
++/* RP2350 (Cortex-M33, TrustZone なし) の port が求める設定 */
++#define configENABLE_MPU                        0
++#define configUSE_PASSIVE_IDLE_HOOK             0
++#define configENABLE_TRUSTZONE                  0
++#define configRUN_FREERTOS_SECURE_ONLY          1
++#define configENABLE_FPU                        1
++#define configMAX_SYSCALL_INTERRUPT_PRIORITY    16
++#endif
++
+ #endif /* FREERTOS_CONFIG_H */
+ 
+diff --git a/src/tsp_lwip/lwipopts.h b/src/tsp_lwip/lwipopts.h
+index ec93da8..a05653c 100644
+--- a/src/tsp_lwip/lwipopts.h
++++ b/src/tsp_lwip/lwipopts.h
+@@ -11,7 +11,11 @@
+ #include "../../libsmb2/include/picow/lwipopts.h"
+ 
+ #undef MEM_SIZE
++#ifdef TSP_MEM_SIZE
++#define MEM_SIZE                TSP_MEM_SIZE    /* Pico 2 W */
++#else
+ #define MEM_SIZE                8192
++#endif
+ #undef MEMP_NUM_TCP_SEG
+ #define MEMP_NUM_TCP_SEG        40
+ #undef MEMP_NUM_TCP_PCB
+-- 
+2.54.0 (Apple Git-157)
+
