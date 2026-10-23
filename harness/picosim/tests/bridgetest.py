@@ -145,6 +145,17 @@ for _ in range(20):
 check("accel ping", res is not None and res[1] == 0 and res[2:4] == b"\x00\x07" and res[4] == 0,
       "caps=0x%02x" % res[5] if res else "")
 
+# サービス (picosim-echo の 0xA6): 要求のレコードがそのまま、その交換の応答に載る。'M' なら more が立つ
+if "echo" in os.path.basename(PICOSIM):
+    body = bytes([0xa6, ord("M")]) + b"tistack-seam"
+    (n, more, _), data = xchg(zrec(body))
+    r = [x for x in recs(data) if x and x[0] == 0xa6]
+    check("service 0xA6 echoed in the same exchange", r == [body], "more=%d" % more)
+    check("service more -> header more", more >= 1)
+    (n, more, _), data = xchg(zrec(bytes([0xa6, 0]) + b"x" * 3001))
+    r = [x for x in recs(data) if x and x[0] == 0xa6]
+    check("service 3003-byte reply", len(r) == 1 and len(r[0]) == 3003 and more == 0)
+
 # Mac -> Z の転送 (rcmd.x の 2323): SYN が Z に届く
 c = socket.socket()
 c.setblocking(False)

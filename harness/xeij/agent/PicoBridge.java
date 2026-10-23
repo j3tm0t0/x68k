@@ -15,6 +15,8 @@
 //   -Dpicosim.ids=6            SPC で picosim に渡す ID (例 "0,6")。XEiJ の -si<n> の HDS の代わりになる
 //   -Dpicosim.mailbox=on       メールボックス 0xEA0060 を模倣する (off で切る)
 //   -Dpicosim.log=1            命令ごとに標準出力に出す
+//   -Dpicosim.timeout=5000     応答を待つ ms。過ぎたら切ってつなぎ直す (だめなら NOT READY)。止まった picosim で
+//                              SPC の道 (MPU のスレッド) が固まらないように
 //
 // XEiJ には手を入れない。SPC.spcUnitArray[id] を PicoUnit に差し替え (spcReset は配列の中身の scuReset を呼ぶので
 // リセット後も残る)、0xEA0000-0xEA0FFF のページを主記憶 (MMD_MMR、mmrM8 のその番地) にする (spcReset が拡張 SCSI の
@@ -41,6 +43,7 @@ public class PicoBridge {
   static String host;
   static int port;
   static boolean log;
+  static int timeout;
   static Socket sock;
   static DataInputStream in;
   static DataOutputStream out;
@@ -66,6 +69,7 @@ public class PicoBridge {
     host = c < 0 ? "127.0.0.1" : p.substring (0, c);
     port = Integer.parseInt (c < 0 ? p : p.substring (c + 1));
     log = !"0".equals (System.getProperty ("picosim.log", "0"));
+    timeout = Integer.parseInt (System.getProperty ("picosim.timeout", "5000"));
     String ids = System.getProperty ("picosim.ids", "6");
     boolean mailbox = !"off".equals (System.getProperty ("picosim.mailbox", "on"));
     Thread t = new Thread (() -> {
@@ -108,6 +112,7 @@ public class PicoBridge {
           Socket s = new Socket ();
           s.setTcpNoDelay (true);
           s.connect (new InetSocketAddress (host, port), 1000);
+          s.setSoTimeout (timeout);
           sock = s;
           in = new DataInputStream (new BufferedInputStream (s.getInputStream (), 65536));
           out = new DataOutputStream (new BufferedOutputStream (s.getOutputStream (), 65536));

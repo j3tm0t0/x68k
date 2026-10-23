@@ -22,7 +22,7 @@ XEiJ の SCSI を Java エージェント (`harness/xeij/agent/PicoBridge.java`)
 
 ```sh
 make -C harness/picosim                      # 初回は libslirp 4.8.0 を取ってきてビルドする (glib は Homebrew のもの)
-make -C harness/picosim test                 # XEiJ なしの試験 (tests/bridgetest.py)
+make -C harness/picosim test                 # XEiJ なしの試験 (tests/bridgetest.py、0xA6 をそのまま返す試験用サービス入りの build/picosim-echo で)
 
 # イメージ (npd 入り、起動すると netup → npd.x → rcmd -d -v まで自動)
 (cd x68kcli && make image NET=npd NETZIP=192.168.1.68 IMG=build/picosim.hds && make agent)
@@ -49,6 +49,7 @@ X68_HOST=127.0.0.1 X68_PORT=23268 harness/raspi/x68.sh 'ping.x -c 4 192.168.1.1'
 | `picosim.ids` | `6` | SPC (IOCS `_SCSIDRV`) で picosim に渡す SCSI ID。`0,6` など |
 | `picosim.mailbox` | `on` | Z のメールボックス 0xEA0060 を模倣する |
 | `picosim.log` | `0` | 1 で命令ごとに XEiJ の標準出力へ |
+| `picosim.timeout` | `5000` | 応答を待つ ms。過ぎたら切ってつなぎ直し、だめなら NOT READY (止まった picosim で XEiJ が固まらない) |
 
 数は `xeijcmd.sh get xeij.PicoBridge stCmds` (ほかに `stMailbox` `stFails` `stNanos`) で読める。
 
@@ -157,7 +158,8 @@ uint64_t picosim_now_us(void);                                                  
 - ID 0: `-0 id0.hds -N 15` で XEiJ の ROM は 15 秒 TEST UNIT READY を繰り返し (約 5000 回)、準備ができたら picosim の
   HDS から起動し、そのまま npd・rcmd まで動いた
 - 速度 (XEiJ の中、rcmd のデータだけ): Z → Mac 11.9KB/s (77,628 バイト 6.5 秒)、Mac → Z 5.4〜5.7KB/s (x68put 全体)。
-  実機の Z (40〜56KB/s) より遅いのは XEiJ の 68000 10MHz が律速 (picosim の 1 命令は XEiJ 側から見て平均 0.12ms)
+  実機の Z (40〜56KB/s) より遅い。picosim の 1 命令は XEiJ 側から見て平均 0.12ms、Z → Mac の送りの間の交換は約 37 回/秒 × 約 340 バイトで、
+  Z 側 (XEiJ の 68000 10MHz、または XEiJ の実時間への合わせ方) が律速と見ているが、確かめていない
 - Z のキャッシュ: npd.x の読みのうち 4 割前後がキャッシュに当たる (先読みした 16KB の残りなど)。古い応答は番号で弾かれる
 
 ## 限り
