@@ -45,6 +45,8 @@ int remote_request(uint8_t *c, uint8_t *r)
      (ユニット 2 に見えるが、remoteserv.c は fcb で探すので困らない) */
   int op = (c[0] & 0x1f) | 0x40, unit = c[0] >> 5;
   int n = remote_serv(c, r);
+  if (op == 0x40)
+    pz_remote_init_seen();
   st_req++;
   if (picosim_verbose >= 2) {
     static const char *names[] = { "INIT", "CHDIR", "MKDIR", "RMDIR", "RENAME", "DELETE", "CHMOD", "FILES", "NFILES",

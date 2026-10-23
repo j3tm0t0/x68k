@@ -178,18 +178,40 @@ static void hds_open(void)
 }
 
 /* ---- ID 1〜5: データの HDS (ファームの HDS1〜3 と同じく、接続が済む (sysstatus 5) まで NOT READY) ---- */
-static struct { const char *path; int fd; } xhds[8];
+/* hold: 0 = 接続が済んだら開く / 1 = 制御 ("hds N ready") まで NOT READY / 2 = Z のリモートドライブの INIT
+   (scsiremote.sys の組み込み) まで NOT READY。Human68k の起動時の SCSI の走査でドライブにさせず、あとから組み込む試し */
+static struct { const char *path; int fd, hold; } xhds[8];
 
 void pz_hds_add(int id, const char *path)
 {
-  xhds[id].path = path;
+  static char buf[8][1024];
+  const char *c = strrchr(path, ':');
   xhds[id].fd = -1;
+  xhds[id].hold = 0;
+  if (c && (!strcmp(c, ":hold") || !strcmp(c, ":after-remote"))) {
+    snprintf(buf[id], sizeof buf[id], "%.*s", (int)(c - path), path);
+    xhds[id].hold = !strcmp(c, ":hold") ? 1 : 2;
+    path = buf[id];
+  }
+  xhds[id].path = path;
+}
+
+const char *pz_hds_path(int id) { return xhds[id].path; }
+
+/* Z が B: (scsiremote.sys) を組み込んだ (remote.c の INIT から) */
+void pz_remote_init_seen(void)
+{
+  for (int id = 1; id < 6; id++)
+    if (xhds[id].hold == 2) {
+      xhds[id].hold = 0;
+      picosim_log("pz: remote drive INIT seen, HDS%d becomes ready\n", id);
+    }
 }
 
 static void xhds_open(void)
 {
   for (int id = 1; id < 6; id++)
-    if (xhds[id].path && xhds[id].fd < 0) {
+    if (xhds[id].path && xhds[id].fd < 0 && !xhds[id].hold) {
       xhds[id].fd = open(xhds[id].path, O_RDWR);
       picosim_log("pz: HDS%d %s %s\n", id, xhds[id].path, xhds[id].fd >= 0 ? "open" : "cannot open");
       if (xhds[id].fd < 0)
@@ -252,6 +274,14 @@ static void control(void)
       forced = -1;
       boot_us = picosim_now_us();
       picosim_cache_clear();
+    } else if (!strncmp(line, "hds ", 4) && line[4] >= '1' && line[4] <= '5' && !strcmp(line + 5, " ready")) {
+      xhds[line[4] - '0'].hold = 0;     /* hds N ready: 止めていたデータの HDS を開く */
+    } else if (!strncmp(line, "hds ", 4) && line[4] >= '1' && line[4] <= '5' && !strcmp(line + 5, " hold")) {
+      int id = line[4] - '0';
+      xhds[id].hold = 1;
+      if (xhds[id].fd >= 0)
+        close(xhds[id].fd);
+      xhds[id].fd = -1;
     } else if (!strncmp(line, "hds ", 4)) {
       hds_close();
       pz.hds_path = strdup(line + 4);
@@ -563,13 +593,17 @@ static void vd_read(uint32_t lba, uint8_t *buf)
 }
 
 /* ---- ID 6 ---- */
-int pz_id6_read(uint32_t lba, uint8_t *buf)
+/* リモートドライブの「顔」(LBA 0 の署名、LBA 4 の分割表、LBA 6〜 のドライバ) を出す ID。既定は 6 (ファームと同じ)。
+   -Q N で ID N に移す (Human68k は SCSI を ID の順に組み込むので、データの HDS より小さい ID にすれば B: になる)。
+   運ぶ道 (vdbuf、netpipe) は ID 6 のまま (scsiremote.sys の SCSICOMMID) */
+int pz_face_id = 6;
+
+static int face_read(uint32_t lba, uint8_t *buf)
 {
-  memset(buf, 0, 512);
-  if (lba == 0 && pz.signature) {
+  if (lba == 0) {
     memcpy(buf, "X68SCSI1", 8);
     memcpy(buf + 16, "X68000ZRemoteDrv", 16);
-  } else if (lba == 4 && pz.signature) {
+  } else if (lba == 4) {
     memcpy(buf, "X68K", 4);             /* 分割表: リモートドライブの数 (-R) だけ "Human68k" */
     for (int i = 0; i < nunits(); i++)
       memcpy(buf + 16 + i * 16, "Human68k", 8);
@@ -578,6 +612,21 @@ int pz_id6_read(uint32_t lba, uint8_t *buf)
     uint32_t off = (lba - 6) * 512;
     if (scsirem && nunits() && off < (uint32_t)scsirem_len)
       memcpy(buf, scsirem + off, scsirem_len - off < 512 ? scsirem_len - off : 512);
+  }
+  return PS_OK;
+}
+
+int pz_face_read(uint32_t lba, uint8_t *buf)
+{
+  memset(buf, 0, 512);
+  return pz.signature ? face_read(lba, buf) : PS_OK;
+}
+
+int pz_id6_read(uint32_t lba, uint8_t *buf)
+{
+  memset(buf, 0, 512);
+  if (lba < 0x20 && pz.signature && pz_face_id == 6) {
+    face_read(lba, buf);
   } else if (lba < 0x20) {
   } else if (np_read(lba, buf) == 0) {
   } else if (lba >= BW_STAGE2 && lba < BW_STAGE2 + BW_STAGE2_SECTS) {

@@ -110,6 +110,15 @@ cfg = b"".join(d[i * 512 + 16:(i + 1) * 512] for i in range(4))
 check("vdbuf GETCONFIG (4 pages, ssid and hds0)", d[13] == 3 and cfg[:7] == b"picosim" and cfg[1160:1160 + len(HDS)] == HDS.encode())
 sim.close()
 
+# 5. -Q 1: リモートドライブの顔 (署名・分割表・ドライバ) を ID 1 に。ID 6 は顔を出さない (運ぶ道はそのまま)
+sim = Sim("0,0,0", ["-Q", "1"])
+st, _, d1 = sim.read(1, 0)
+st6, _, d6 = sim.read(6, 0)
+check("-Q 1: the remote-drive face is on ID1, not on ID6", d1[:8] == b"X68SCSI1" and d6[:8] == bytes(8))
+st, _, d = sim.read(6, 0x80, 1)
+check("-Q 1: ID6 still serves the rest (stage 2)", d[:4] == b"BW2!")
+sim.close()
+
 # 3. HDS が変わった
 img[20 * 512 + 100] ^= 0xff
 open(HDS, "wb").write(img)
