@@ -34,10 +34,12 @@ USB キーボード (0012) を入れるときは `cmake -DHID_KEYBOARD=ON ..` (�
 | `src/virtual_disk.c` | ID 6 の読み書きを netpipe に回す |
 | `src/connect.c` | Wi-Fi の省電力を切る (応答が 50〜300ms 遅れて TCP が遅くなるため) |
 | `src/accel.c` / `accel_ops.c` / `accel_proto.h` / `monocypher/` | 0011: 暗号アクセラレータ (X25519 / Ed25519 を Z の代わりに計算する。[../accel](../accel)) |
+| `src/virtual_disk.c` | 0034: 古い driver の数え方でも vdbuf_read の外を読まない (ID6 を別の機械が覗くと止まった。Pico 2 W で見つかった) |
 | `src/virtual_disk.c` | 0032: 0030 の続き。範囲外のページを捨てさせるのは新しい driver (bit7) にだけ (古い driver は読み直し続けて固まるので、今までどおりに) |
 | `src/virtual_disk.c` / `driver/scsiremote.c` / `driver/settinguisub.c` | 0030: リモートドライブ (B:) の応答のページを読まれた LBA から決める (下の「B: の読み込みが 8 ページずれる」) |
 | `driver/mkbootwait.py` | 0029: 進み具合の最後の見出しを「BOOT」に |
 | `src/tsp_svc.c` / `tsp.h` / `tsp_svc.h` / `tsp_plat.h` / `tsp_lwip/lwipopts.h` | 0031 (試し、**書き込んでいない**): tis.x -p のソケット窓口 ([../tistack](../tistack))。0xA6 のレコードを np_exchange の中で答える。`-DTSP=OFF` で外す。Pico W (264KB) では RAM が足りない見込み (ヒープ 112,340 → 100,020 B、動いている Pico のヒープの最大は約 104KB) なので、Pico 2 W のファームだけに入れる方針 |
+| `src/msc_disk.c` | 0033: INQUIRY の文字列を欄 (8 / 16 / 4 バイト) に収める。上流から product id が 9 バイトはみ出していて、pico-sdk 2.1 の TinyUSB (Pico 2 W) では tud_task のスタックを壊し、USB ホストが INQUIRY を送った途端に落ちていた (Z にディスクが見えない) |
 | `driver/bootwait.S` / `driver/mkbootwait.py` | 0028: ◆ の行を本物の進み具合 (Wi-Fi → SMB → HDS → 起動) に |
 | `driver/mkbootwait.py` | 0027: ロゴの行は見た目の中央から 20 ドット左 (最終の配置) |
 | `driver/mkbootwait.py` | 0026: ロゴの行を「副題の左端にそろえる」と「見た目の中央」の中間に (既定 BW_LOGO=between) |
