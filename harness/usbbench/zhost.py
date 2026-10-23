@@ -47,8 +47,17 @@ detach()
 if not args.no_reset:
     # Z に挿した直後と同じに: バスリセットから (Linux が触った後の data toggle や途中の命令を持ち越さない)。
     # リセットのあと Linux の usb-storage / usbhid がまたつくので、もう一度外す
-    dev.reset(); time.sleep(0.5)
-    dev = usb.core.find(idVendor=vid, idProduct=pid)
+    try:
+        dev.reset()
+    except usb.core.USBError as e:     # 記述子が変わって (HID の数など) 作り直しになったとき: 探し直す
+        log("INFO", "bus reset: %s (re-enumerated)" % e)
+    for _ in range(20):
+        time.sleep(0.5)
+        dev = usb.core.find(idVendor=vid, idProduct=pid)
+        if dev is not None:
+            break
+    else:
+        sys.exit("zhost: %s gone after the bus reset" % args.vidpid)
     detach()
     log("INFO", "bus reset")
 cfg0 = dev.get_active_configuration()

@@ -23,7 +23,7 @@ LINE = re.compile(r"^(?:\d\d:\d\d:\d\d )?\[(\d+)\] (.*)$")
 NAMES = {"Test Unit Ready": "tur", "Inquiry": "inquiry", "Read Capacity10": "read_capacity", "Mode_Sense 6": "mode_sense",
          "Request Sense": "request_sense", "Read10": "read10", "Write10": "write10", "Read Format Capacity": "read_format_capacity"}
 enum, msc = [], []
-mix, writes, boot = Counter(), 0, None
+mix, writes, boot, bad = Counter(), 0, None, 0
 cur = None
 for raw in open(args.log, errors="replace"):
     m = LINE.match(raw.rstrip("\n"))
@@ -62,10 +62,13 @@ for raw in open(args.log, errors="replace"):
                 cur["cdb"] = ["1e", "00", "00", "00", "00", "00"]
         msc.append(cur)
     elif s.startswith("ZC R") and cur is not None and cur["op"] == "read10":
-        kv = dict(x.split("=") for x in s.split()[2:])
-        if int(kv["off"]) == 0:
-            cur["lba"] = int(kv["lba"], 16)
-        cur["n"] = cur.get("n", 0) + int(kv["len"]) // 512
+        # 別のタスクの printf と混ざった行は読み飛ばす (fork は複数のタスクが UART に書く)
+        mm = re.match(r"ZC R lun=\d+ lba=0x([0-9a-f]+) off=(\d+) len=(\d+)$", s)
+        if not mm:
+            bad += 1; continue
+        if int(mm.group(2)) == 0:
+            cur["lba"] = int(mm.group(1), 16)
+        cur["n"] = cur.get("n", 0) + int(mm.group(3)) // 512
     elif s.startswith("ZC C") and cur is not None and cur["op"] == "scsi":
         cur["cdb"] = s.split("cdb=")[1].split()
 for c in [c for c in msc if c["op"] == "scsi" and "cdb" not in c]:
@@ -81,6 +84,6 @@ prof = {"comment": "zcap2profile.py %s: %d enum requests, %d MSC commands (%d WR
         "enum": enum, "msc": msc, "timed": True, "tail_s": 3}
 out = open(args.out, "w") if args.out else sys.stdout
 json.dump(prof, out, indent=1)
-print("zcap2profile: %d enum, %d msc over %.1f s; writes %d" % (len(enum), len(msc), (msc[-1]["t"] / 1000) if msc else 0, writes), file=sys.stderr)
+print("zcap2profile: %d enum, %d msc over %.1f s; writes %d; garbled ZC lines %d" % (len(enum), len(msc), (msc[-1]["t"] / 1000) if msc else 0, writes, bad), file=sys.stderr)
 for k, v in mix.most_common():
     print("   %5d  %s" % (v, k), file=sys.stderr)

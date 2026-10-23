@@ -37,11 +37,31 @@ sudo ~/venv-usbbench/bin/python zhost.py -p profiles/<記録>.json -t 5
 - raspi3 の /tmp は 453MB の tmpfs。いっぱいになると UART の記録係 (picouart-*.service、uartlog.py) が落ちる (10/23 21:06 に p2w の係が落ちていた)。採取の前に `systemctl is-active picouart-sd` を確かめる。
 - p2w のフラッシュの控えを openocd で取るとき、`flash read_bank` や 4MB 一度の `dump_image` は途中の番地で読み損なうことがある。256KB ずつ、読み損ねた塊だけ読み直すと揃う (`reset run; sleep 2000; halt` のあと)。
 
+## Z で採ったもの (2026-10-23 22:05〜22:25、profiles/z-*.json)
+
+| 記録 | ファーム | Z での結果 (dir b:\ /w + ver を繰り返す) | p2w で送り直し |
+|---|---|---|---|
+| z-fork | fork 670fb84 (fw-fork-4fb2a2f5 の設定) | 8 回とも通る | OK |
+| z-pzl60 | PZL 60a9db7、UDP_KEYS、マウス無し | **10 回とも通る** (素のビルドは Charlie の試験で固まる) | OK |
+| z-pzl35m | PZL 35fd5d8、UDP_KEYS + マウス | **12 回とも通る** | OK |
+
+分かったこと:
+- **Z の Linux の列挙** (電源投入ごとに 2 回、約 15 秒あけて): Device (64) → Set Address → Device (18) → Device Qualifier ×3 (STALL が正しい) →
+  Config (9 → 全部) → String 0/2/1/3 → SET_CONFIGURATION 1 → GET_MAX_LUN → HID ごとに **SET_IDLE(0) → Report 記述子** →
+  キーボードに **SET_REPORT (LED、1 バイト)**。**SET_PROTOCOL も GET_REPORT も来ない** (boot protocol に切り替えない = report protocol のまま)。
+  マウスがあると、マウスにも SET_IDLE と Report 記述子 (0x4d バイト)。fork と PZL で同じ。
+- **TEST UNIT READY が約 2.1〜2.5 秒ごと** に来るのは fork でも同じ (正常に動いている間も)。固まった印ではない。
+- MSC の命令の種類も fork と PZL で同じ (MODE SENSE(6) は短い返事 + STALL が 12 回、Prevent/Allow、READ CAPACITY、INQUIRY)。
+- **採取用ビルドでは PZL が固まらなかった**。違いは返事の遅さだけ (ログの行ごとに UART で 3 ms ほど)。返事が速すぎるときだけ起きる、
+  時間に敏感な不具合を疑う材料。
+- PZL の記録に `smb2_connect_share ... share:sd: STATUS_BAD_NETWORK_NAME`: sd 基板の設定の REMOTE1 = `sd:/` (fork の SD の
+  リモートドライブ) を PZL は SMB の共有として開こうとしている。
+
 ## 状態 (2026-10-23 22:10)
 
 - p2w で一巡を確認: 採取用 PZL (35fd5d8) と採取用 fork (670fb84 = 0043、build-p2w と同じ設定) がどちらも起動し、zhost.py の z-guess で OK、
   記録 → zcap2profile.py → 送り直しで OK。
-- Z の記録はまだ。raspi3 に置いたもの: `/tmp/pzlcap-35fd5d8-mouse.elf` (悪い方の候補)、`/tmp/pzlcap-35fd5d8-nomouse.elf`、
+- (済) Z の記録。raspi3 に置いたもの: `/tmp/pzlcap-35fd5d8-mouse.elf` (悪い方の候補)、`/tmp/pzlcap-35fd5d8-nomouse.elf`、
   `/tmp/zcap-fork-670fb84.elf` (良い方、Z に今入っている fork と同じ設定)。Z の順番は Bravo → Charlie (PZL の 2 つ) → Alpha → Delta (fork)。
 - 次: 記録から profiles/z-*.json を作り、p2w で「悪い方だけ HANG」になるかを確かめる。ならなければ、Z の操作 (dir の中断キーの確認) を
   HID の側で真似る (GET_REPORT / SET_REPORT の頻度) ところを足す。
