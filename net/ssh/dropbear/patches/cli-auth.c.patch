@@ -12,26 +12,48 @@
  void recv_msg_userauth_failure() {
  
  	char * methods = NULL;
-@@ -202,6 +207,18 @@
+@@ -161,6 +166,9 @@
+ 	unsigned int methlen = 0;
+ 	unsigned int partial = 0;
+ 	unsigned int i = 0;
++#if DROPBEAR_X68K
++	int pass_failed = 0;
++#endif
+ 
+ 	TRACE(("<- MSG_USERAUTH_FAILURE"))
+ 	TRACE(("enter recv_msg_userauth_failure"))
+@@ -202,6 +210,12 @@
  			cli_ses.auth_interact_failed = 1;
  		}
  #endif
 +#if DROPBEAR_X68K
-+		/* x68k: パスワード (keyboard-interactive で実際に聞いたもの含む) の失敗は 3 回まで。
-+		   dbclient は自分では数えず、サーバが切るまで聞き直す */
-+		if (cli_ses.lastauthtype == AUTH_TYPE_PASSWORD
++		/* x68k: パスワード (keyboard-interactive で実際に聞いたもの含む) だったか。数えるのは partial を読んでから */
++		pass_failed = cli_ses.lastauthtype == AUTH_TYPE_PASSWORD
 +				|| (cli_ses.lastauthtype == AUTH_TYPE_INTERACT
-+					&& cli_ses.interact_request_received)) {
-+			if (++x68k_pass_fails >= X68K_PASS_TRIES) {
-+				dropbear_exit("Permission denied (%d incorrect password attempts)", x68k_pass_fails);
-+			}
-+			fprintf(stderr, "Permission denied, please try again.\n");
-+		}
++					&& cli_ses.interact_request_received);
 +#endif
  		cli_ses.state = USERAUTH_FAIL_RCVD;
  		cli_ses.lastauthtype = AUTH_TYPE_NONE;
  	}
-@@ -262,6 +279,7 @@
+@@ -216,6 +230,17 @@
+ 		ses.authstate.failcount++;
+ 	}
+ 
++#if DROPBEAR_X68K
++	/* x68k: パスワードの失敗は 3 回まで。dbclient は自分では数えず、サーバが切るまで聞き直す。
++	   partial (パスワードは通ったが別の方法も要る) は失敗ではない */
++	if (pass_failed && !partial) {
++		if (++x68k_pass_fails >= X68K_PASS_TRIES) {
++			dropbear_exit("Permission denied (%d incorrect password attempts)", x68k_pass_fails);
++		}
++		fprintf(stderr, "Permission denied, please try again.\n");
++	}
++#endif
++
+ 	TRACE(("Methods (len %d): '%s'", methlen, methods))
+ 
+ 	ses.authstate.authdone=0;
+@@ -262,6 +287,7 @@
  }
  
  void recv_msg_userauth_success() {
@@ -39,7 +61,7 @@
  	/* This function can validly get called multiple times
  	if DROPBEAR_CLI_IMMEDIATE_AUTH is set */
  
-@@ -348,7 +366,12 @@
+@@ -348,7 +374,12 @@
  	}
  #endif
  
