@@ -57,6 +57,10 @@ VRAM 1 枚で複数の端末を切り替える (ssh.x の Ctrl+F1..F4)。端末�
 - 枠の左端は 4 桁の倍数のときだけ枠と見なす (32bit の写しがはみ出すのは右の仕切りの桁で、どの行も同じ)
 - パレットは全面のときと同じく 16 色を設定する (zos.x のほかのペインの色も変わる。zos.x 側で合わせる)
 - 試験: run.sh の 7 (vthost `-P 桁,行,幅,高さ` で枠を与え、全面で描いた VRAM をずらしたものと一致し、枠の外に描かないこと。`tests/panecmp.py`)
+- **表の端末を何枚も並べる** (`-DVT_VCONS`、zos.x が自分のペインを描くとき): 枠 (`vt_base`・桁数・行数) と VRAM の控え (`drawn`) を
+  端末ごとの状態に入れた (`vt_con_scrsize` は main・alt・drawn の 3 面)。`vt_con_rect(桁,行,幅,高さ)` でいまの端末を枠に置き、
+  `vt_con_visible(1)` で描く。表の端末どうしは drawn が別なので干渉しない。`vt_jis_ucs` は JIS → Unicode (Shift_JIS の出力を UTF-8 にする)。
+  試験: run.sh の 8 (`tests/mptest.c` 4 枚に混ぜて流し途中で枠を入れ替え、`tests/mpcmp.py` で各枠 = 単独の結果)
 
 ## 画面と描画
 - 既定 96x32 (768x512, 8x16 フォント)。`vt_init(cols,rows)` で指定可 (横最大 96・縦最大 32)。

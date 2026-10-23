@@ -1816,8 +1816,9 @@ unsigned long vt_emoji_cp(int idx) { return (idx >= 0 && idx < EMOJITAB_N) ? emo
 #define VC_VARS X(cx) X(cy) X(pend_wrap) X(top) X(bot) X(c_fg) X(c_bg) X(a_bold) X(a_uline) X(a_reverse) X(cur_at) X(clr_cell) \
   X(decckm) X(decawm) X(cur_vis) X(alt_active) X(gl) X(sv_cx) X(sv_cy) X(sv_fg) X(sv_bg) X(sv_bold) X(sv_ul) X(sv_rev) \
   X(sv_sp0) X(sv_sp1) X(sv_gl) X(csr_shown) X(csr_x) X(csr_y) X(state) X(csi_priv) X(csi_inter) X(nparam) X(str_kind) \
-  X(str_esc) X(str_len) X(cs_which) X(u_cp) X(u_need) X(outq_len) X(vt_hidden)
-#define VC_ARRS X(g_special) X(tabstop) X(param) X(str_buf) X(outq) X(rows_main) X(rows_alt)
+  X(str_esc) X(str_len) X(cs_which) X(u_cp) X(u_need) X(outq_len) X(vt_hidden) \
+  X(vt_base) X(COLS) X(ROWS) X(vt_pane) X(pane_x) X(pane_y) X(pane_w) X(pane_h)
+#define VC_ARRS X(g_special) X(tabstop) X(param) X(str_buf) X(outq) X(rows_main) X(rows_alt) X(drawn)
 typedef struct {
 #define X(v) __typeof__(v) v;
   VC_VARS VC_ARRS
@@ -1825,7 +1826,7 @@ typedef struct {
 } vc_state;
 
 int vt_con_size(void) { return (int)sizeof(vc_state); }
-int vt_con_scrsize(void) { return (int)(2 * sizeof store_main); }
+int vt_con_scrsize(void) { return (int)(3 * sizeof store_main); }   /* main・alt・drawn (VRAM の控え) */
 
 void vt_con_save(void *st)
 {
@@ -1856,8 +1857,8 @@ void vt_con_new(void *scr)
 {
   int r, c;
   if (scr) {
-    cell_t (*m)[MAXCOLS] = (cell_t (*)[MAXCOLS])scr, (*a)[MAXCOLS] = m + MAXROWS;
-    for (r = 0; r < MAXROWS; r++) { rows_main[r] = m[r]; rows_alt[r] = a[r]; }
+    cell_t (*m)[MAXCOLS] = (cell_t (*)[MAXCOLS])scr, (*a)[MAXCOLS] = m + MAXROWS, (*d)[MAXCOLS] = a + MAXROWS;
+    for (r = 0; r < MAXROWS; r++) { rows_main[r] = m[r]; rows_alt[r] = a[r]; drawn[r] = d[r]; }
     vt_hidden = 1; csr_shown = 0;
   } else if (!rows_main[0]) {
     for (r = 0; r < MAXROWS; r++) { rows_main[r] = store_main[r]; rows_alt[r] = store_alt[r]; }
@@ -1894,6 +1895,44 @@ void vt_con_visible(int on)
   for (r = 0; r < ROWS; r++) vc_unknown(r, 0, COLS - 1);
   flush();
   sup_leave(s);
+}
+
+/* いまの端末を画面の枠 (桁 col・行 row から w x h) に置き直す (Z-OS の zos.x がペインごとに 1 つの端末を持ち、
+ * 割り方を変えたときに呼ぶ)。drawn は端末ごとなので、表の端末が何枚あっても互いに干渉しない。
+ * 論理画面のセルはそのまま (枠の外になった分は見えなくなるだけ)。VRAM は描かない (表なら vt_con_visible(1) で描き直す)。
+ * 左端 col は偶数 (スクロールの 32bit 転送)。 */
+void vt_con_rect(int col, int row, int w, int h)
+{
+  int r;
+  if (w > MAXCOLS) w = MAXCOLS;
+  if (h > MAXROWS) h = MAXROWS;
+  pane_x = col; pane_y = row; pane_w = w; pane_h = h;
+  vt_pane = (col != 0 || w < MAXCOLS || row != 0 || h < MAXROWS);
+  vt_base = TVRAM_PHYS + (unsigned long)row * CH * VBYTES + col;
+  COLS = w; ROWS = h;
+  top = 0; bot = ROWS - 1; pend_wrap = 0;
+  clamp_cursor();
+  csr_shown = 0;
+  for (r = 0; r < ROWS; r++) vc_unknown(r, 0, COLS - 1);
+}
+
+/* JIS X 0208 -> Unicode (kanjitab の逆。最初の呼び出しで 94x94 の表を作る)。見つからなければ 0。
+ * Shift_JIS を出す Human68k のプログラムの出力を UTF-8 にして vt_write に渡すため (zos.x) */
+unsigned short vt_jis_ucs(unsigned short jis)
+{
+  static unsigned short *rev;
+  static unsigned short revtab[94 * 94];
+  int ku = (jis >> 8) - 0x21, ten = (jis & 0xff) - 0x21;
+  if (!rev) {
+    int i;
+    for (i = 0; i < KANJITAB_N; i++) {
+      int k = (kanjitab[i].jis >> 8) - 0x21, t = (kanjitab[i].jis & 0xff) - 0x21;
+      if (k >= 0 && k < 94 && t >= 0 && t < 94 && !revtab[k * 94 + t]) revtab[k * 94 + t] = kanjitab[i].ucs;
+    }
+    rev = revtab;
+  }
+  if (ku < 0 || ku >= 94 || ten < 0 || ten >= 94) return 0;
+  return rev[ku * 94 + ten];
 }
 
 /* 状態表示: 最上行の右端に s を反転で重ねる (論理画面は変えない)。NULL で消す (その桁を論理画面の絵に戻す) */

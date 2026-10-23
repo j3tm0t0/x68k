@@ -114,5 +114,25 @@ for spec in "shell 48 0 48 31" "app_vimjp 48 0 48 31" "app_lessu8 0 0 47 31" "ap
   elif ! msg=$(./vthost ${CGOPT[@]+"${CGOPT[@]}"} -V -c 64 -P $px,$py,$pw,$ph -s 96x32 "$rec" /dev/null 2>&1); then fail "pane $name (VRAM != 論理画面)"; echo "$msg" | head -5
   else pass "pane $name ($pw x $ph @ $px,$py)"; fi
 done
+# ---- 8. 表の端末を何枚も並べる (vt_con_rect、zos.x のペイン): 4 枚に混ぜて流し、途中で枠を入れ替え、最後の VRAM が
+#         各フィクスチャを単独で流した VRAM を枠に置いたものと同じか (tests/mptest.c、tests/mpcmp.py) ----
+if cc -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=undefined -DVT_HOSTTEST -DVT_VCONS -I. -o "$OUT/mptest" tests/mptest.c vt100.c 2>/dev/null ||
+   cc -O2 -DVT_HOSTTEST -DVT_VCONS -I. -o "$OUT/mptest" tests/mptest.c vt100.c 2>/dev/null; then
+  F=tests/fixtures
+  for set in "shell:0,1,48,15 app_vimjp:48,1,48,15 jp_less:0,17,48,15 app_lessu8:48,17,48,15" "app_top:0,0,47,32 syn_region:48,0,48,32"; do
+    a=(); c=()
+    for spec in $set; do
+      n=${spec%%:*}; r=${spec#*:}; IFS=, read -r x y w h <<< "$r"
+      a+=("$F/$n.rec:$r")
+      ./vthost ${CGOPT[@]+"${CGOPT[@]}"} -s ${w}x${h} -v "$OUT/mp_$n.vram" "$F/$n.rec" /dev/null > /dev/null 2>&1
+      c+=("$OUT/mp_$n.vram" "$r")
+    done
+    if msg=$("$OUT/mptest" ${CGOPT[@]+"${CGOPT[@]}"} -o "$OUT/mp.vram" "${a[@]}" 2>&1) &&
+       msg2=$($PY tests/mpcmp.py "$OUT/mp.vram" "${c[@]}" 2>&1); then pass "multipane ($set)"
+    else fail "multipane ($set)"; echo "$msg" | tail -5; echo "${msg2:-}" | tail -5; fi
+  done
+else
+  fail "multipane (mptest をコンパイルできない)"
+fi
 echo "---- $npass PASS, $nfail FAIL  (PNG: $OUT/*.png)"
 [ $nfail = 0 ]
