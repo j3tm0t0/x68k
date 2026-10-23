@@ -4,9 +4,18 @@
 SLIRP_VER = 4.8.0
 SLIRP_SHA = 2a98852e65666db313481943e7a1997abff0183bd9bea80caec1b5da89fda28c
 SLIRP_DIR = build/libslirp-v$(SLIRP_VER)
+UNAME := $(shell uname)
+ifeq ($(UNAME),Darwin)
 GLIB ?= $(shell brew --prefix glib 2>/dev/null || echo /opt/homebrew/opt/glib)
 GLIB_CFLAGS = -I$(GLIB)/include/glib-2.0 -I$(GLIB)/lib/glib-2.0/include
 GLIB_LIBS = -L$(GLIB)/lib -lglib-2.0
+LIBICONV = -liconv
+else
+# Linux (Docker): glib は pkg-config、iconv と resolv は glibc に入っている
+GLIB_CFLAGS = $(shell pkg-config --cflags glib-2.0)
+GLIB_LIBS = $(shell pkg-config --libs glib-2.0) -lpthread
+LIBICONV =
+endif
 ACCEL = ../../net/accel
 # B: (リモートドライブ): フォークの x68kserremote (サブモジュール) の remoteserv.c をそこからコンパイルする (写さない)。
 # 無ければ B: 無しでビルドする
@@ -29,7 +38,7 @@ all: build/picosim
 build/picosim: picosim.c netpipe.c lan_slirp.c bootwait.c picosim.h build/libslirp.a $(SVC) $(REMOTE_SRC) $(TSP)
 	cc $(CFLAGS) -I$(SLIRP_DIR)/src -I$(ACCEL) -I$(ACCEL)/monocypher $(GLIB_CFLAGS) $(SVCFLAGS) -o $@ \
 	  picosim.c netpipe.c lan_slirp.c bootwait.c $(SVC) $(REMOTE_SRC) $(TSP) $(ACCEL)/accel_ops.c $(ACCEL)/monocypher/monocypher.c \
-	  $(ACCEL)/monocypher/monocypher-ed25519.c build/libslirp.a $(GLIB_LIBS) -lresolv -liconv
+	  $(ACCEL)/monocypher/monocypher-ed25519.c build/libslirp.a $(GLIB_LIBS) -lresolv $(LIBICONV)
 
 $(TSPDIR)/build/tsp_all.o: $(TSPDIR)/tsp_glue.c $(wildcard $(TSPDIR)/../tsp_svc.c $(TSPDIR)/../tsp_svc.h)
 	$(MAKE) -C $(TSPDIR) build/tsp_all.o LWIP=$(LWIP)
@@ -43,10 +52,10 @@ build/remoteserv.o: $(RS)/service/remoteserv.c remote/config.h
 PZLREPO ?= $(HOME)/Dropbox/src/github.com/j3tm0t0/x68k-zos-pzl
 # Pico Z Loader (x68k-zos の branch pzl) の SCSI の層入り: picosim --pzl=config.txt (pzl/Makefile、PZLREPO= PZLREV=)
 build/picosim-pzl: picosim.c netpipe.c lan_slirp.c bootwait.c picosim.h build/libslirp.a $(REMOTE_SRC) FORCE
-	$(MAKE) -C pzl PZLREPO=$(PZLREPO) $(if $(PZLREV),PZLREV=$(PZLREV))
+	$(MAKE) -C pzl PZLREPO=$(PZLREPO) $(if $(PZLREV),PZLREV=$(PZLREV)) $(if $(PZLSRC),PZLSRC=$(PZLSRC))
 	cc $(CFLAGS) -I$(SLIRP_DIR)/src -I$(ACCEL) -I$(ACCEL)/monocypher $(GLIB_CFLAGS) -o $@ \
 	  picosim.c netpipe.c lan_slirp.c bootwait.c $(REMOTE_SRC) pzl/build/pzl_all.o $(ACCEL)/accel_ops.c $(ACCEL)/monocypher/monocypher.c \
-	  $(ACCEL)/monocypher/monocypher-ed25519.c build/libslirp.a $(GLIB_LIBS) -lresolv -liconv
+	  $(ACCEL)/monocypher/monocypher-ed25519.c build/libslirp.a $(GLIB_LIBS) -lresolv $(LIBICONV)
 FORCE:
 
 # 試験用: 0xA6 をそのまま返すサービス入り
@@ -66,7 +75,7 @@ build/libslirp.a: build/libslirp.tar.gz
 	tar xzf $< -C build
 	# macOS: get_dns_addr_libresolv が res_ninit に初期化していない __res_state を渡し、DNS の口が見つからない
 	# (Z の DNS が "net unreachable" になった)。0 にしてから呼ぶ
-	sed -i '' 's/    if (res_ninit(&state) != 0) {/    memset(\&state, 0, sizeof(state));\n    if (res_ninit(\&state) != 0) {/' $(SLIRP_DIR)/src/slirp.c
+	perl -0pi -e 's/    if \(res_ninit\(&state\) != 0\) \{/    memset(&state, 0, sizeof(state));\n    if (res_ninit(&state) != 0) {/' $(SLIRP_DIR)/src/slirp.c
 	grep -q 'memset(&state, 0' $(SLIRP_DIR)/src/slirp.c
 	sed -e 's/@SLIRP_MAJOR_VERSION@/4/;s/@SLIRP_MINOR_VERSION@/8/;s/@SLIRP_MICRO_VERSION@/0/;s/@SLIRP_VERSION_STRING@/"$(SLIRP_VER)"/' \
 	  $(SLIRP_DIR)/src/libslirp-version.h.in > $(SLIRP_DIR)/src/libslirp-version.h
@@ -81,16 +90,27 @@ pzl-latest:
 	rm -f build/picosim-pzl && $(MAKE) build/picosim-pzl PZLREPO=$(PZLREPO) PZLREV=pzl
 	python3 -I tests/pzltest.py build/picosim-pzl
 
-test: build/picosim build/picosim-echo
+# test = test-host (ホストだけ、数秒) + test-xeij (XEiJ を動かす 2 本、GUI のセッションか Xvfb が要る)
+test: test-host test-xeij
+
+test-host: build/picosim build/picosim-echo
 	python3 -I tests/bridgetest.py build/picosim-echo
 	python3 -I tests/bootwaittest.py build/picosim $(FW)
 	python3 -I tests/remotetest.py build/picosim $(FW)
-	@if [ -d "$(PZLREPO)" ]; then $(MAKE) build/picosim-pzl PZLREPO=$(PZLREPO) && python3 -I tests/pzltest.py build/picosim-pzl; \
-	  else echo "SKIP pzltest: no PZL repo ($(PZLREPO))"; fi
+	@if [ -d "$(PZLREPO)" ] || [ -n "$(PZLSRC)" ]; then $(MAKE) build/picosim-pzl PZLREPO=$(PZLREPO) PZLSRC=$(PZLSRC) && \
+	  python3 -I tests/pzltest.py build/picosim-pzl; else echo "SKIP pzltest: no PZL repo ($(PZLREPO))"; fi
+
+test-xeij: test-tsp test-zos
+test-tsp: build/picosim
 	tests/tsptest.sh
+test-zos: build/picosim
 	tests/zostest.sh
+
+# Docker の中で流す (docker/README.md)。SUITES="host tsp zos" JOBS=2
+docker-test:
+	docker/docker-test.sh $(SUITES)
 
 clean:
 	rm -f build/picosim build/picosim-echo
 
-.PHONY: all test clean
+.PHONY: all test test-host test-xeij test-tsp test-zos docker-test pzl-latest clean

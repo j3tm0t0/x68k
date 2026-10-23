@@ -307,7 +307,10 @@ static int dns_answer(const uint8_t *ip, int len)
   } else if (qtype == 12) {             /* PTR: a.b.c.d.in-addr.arpa */
     unsigned b[4];
     char host[256];
-    struct sockaddr_in sa = { .sin_family = AF_INET, .sin_len = sizeof sa };
+    struct sockaddr_in sa = { .sin_family = AF_INET };
+#ifdef __APPLE__
+    sa.sin_len = sizeof sa;
+#endif
     if (sscanf(name, "%u.%u.%u.%u.in-addr.arpa", &b[3], &b[2], &b[1], &b[0]) == 4) {
       sa.sin_addr.s_addr = htonl(b[0] << 24 | b[1] << 16 | b[2] << 8 | b[3]);
       /* 仮想の LAN のアドレスは Mac に聞かない (家の LAN の同じアドレスの名前が返ってしまう) */

@@ -36,6 +36,9 @@ OUT=$WORK/out; mkdir -p "$OUT"
 
 # ---- 試験用の sshd (ssh_test.sh と同じ形、ユーザ権限で 127.0.0.1 だけ) と dropbear 形式の鍵 ----
 D=$WORK/sshd; mkdir -p "$D"
+if [ ! -x "$WORK/dropbearkey" ] && command -v dropbearkey >/dev/null; then
+  ln -sf "$(command -v dropbearkey)" "$WORK/dropbearkey"     # Linux (Docker) の dropbear-bin
+fi
 if [ ! -x "$WORK/dropbearkey" ]; then
   TB=$(ls "$SRC"/x68k*/net/ssh/dropbear/work/dropbear-*.tar.bz2 2>/dev/null | head -1)
   [ -n "$TB" ] || skip "no dropbear tarball for dropbearkey (net/ssh/dropbear/fetch.sh)"
@@ -111,7 +114,7 @@ echo "     terminal size seen by the sshd: ${sz:-?} (screen: $OUT/zos.txt)"
 grep -q "tsp: first 0xA6" "$WORK/picosim.log" && echo "     picosim: lwIP joined the LAN on the first 0xA6"
 # 鍵交換の時間: ssh.x を打ち終えた時刻から、画面に "type something" が出た時刻まで (keys.log の xeijkeys の記録)
 t0=$(grep -m1 "type ssh.x" "$OUT/keys.log" 2>/dev/null | cut -c1-8); t1=$(grep -m1 "waittext 'type something' True" "$OUT/keys.log" 2>/dev/null | cut -c1-8)
-[ -n "$t0" ] && [ -n "$t1" ] && echo "     ssh.x connect + kex + login: $(( $(date -j -f %T "$t1" +%s) - $(date -j -f %T "$t0" +%s) )) s${ACCEL:+ (accel)}"
+[ -n "$t0" ] && [ -n "$t1" ] && echo "     ssh.x connect + kex + login: $(python3 -c "import sys;f=lambda s:sum(int(x)*m for x,m in zip(s.split(':'),(3600,60,1)));print(f(sys.argv[2])-f(sys.argv[1]))" "$t0" "$t1") s${ACCEL:+ (accel)}"
 if [ $fails -gt 0 ]; then
   cat "$OUT/zos.txt"; tail -5 "$WORK/sshd.log"
   # 落ちたときの記録を残す (次の回に上書きされないように。TSP のたまの失敗を x68k-tistack-2 が調べる)

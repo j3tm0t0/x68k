@@ -29,6 +29,16 @@ INC = -Ishim -I$(S)/include -I$(S)/src/net -I$(S)/lib/x68kserremote/include -I$(
 
 all: $(B)/pzl_all.o
 
+ifneq ($(PZLSRC),)
+# PZLSRC=DIR: 写し出し済みの pico/ (この Makefile の build/src、driver/*.inc 入り) を使う (Docker の中など、git や elf2x68k が無い所)
+$(B)/rev: FORCE
+	@mkdir -p $(B)
+	@r=$$(cat $(PZLSRC)/../rev 2>/dev/null || echo $(PZLSRC)); [ "$$(cat $@ 2>/dev/null)" = "$$r" ] || echo $$r > $@
+$(B)/src/.done: $(B)/rev
+	rm -rf $(B)/src && mkdir -p $(B)/src && cp -R $(PZLSRC) $(B)/src/pico
+	@echo "pzl: from $(PZLSRC) ($$(cat $(B)/rev))"
+	touch $@
+else
 $(B)/rev: FORCE
 	@mkdir -p $(B)
 	@r=$$(git -C $(PZLREPO) rev-parse $(PZLREV)); [ "$$(cat $@ 2>/dev/null)" = "$$r" ] || echo $$r > $@
@@ -42,6 +52,7 @@ $(B)/src/.done: $(B)/rev Makefile
 	$(MAKE) -s -C $(S)/driver scsiremote.inc bootloader.inc hdsboot.inc settingui.inc bootwait.inc bootwait1.inc
 	@echo "pzl: $(PZLREV) = $$(cat $(B)/rev)"
 	touch $@
+endif
 
 $(B)/config_file_host.c: $(B)/src/.done host_config.py
 	python3 -I host_config.py $(S)/src/config/config_file.c $(S)/config.tmpl.txt $@
@@ -49,9 +60,9 @@ $(B)/config_file_host.c: $(B)/src/.done host_config.py
 $(B)/pzl_all.o: $(B)/rev $(B)/src/.done $(B)/config_file_host.c pzl_host.c $(wildcard shim/*/*.h)
 	rm -rf $(B)/o && mkdir -p $(B)/o
 	for f in $(addprefix $(S)/,$(PZLFILES)) $(B)/config_file_host.c pzl_host.c $(LWIPSRC); do \
-	  cc -O1 -g -w -fno-common -DPZL_HOST -DPZL_BOARD='"host"' -DGIT_REPO_VERSION='"picosim"' -DHID_KEYBOARD=0 $(INC) -c $$f -o $(B)/o/$$(basename $${f%.c}).o || exit 1; done
-	printf '_pzlh_init\n_pzlh_poll\n_pzlh_read\n_pzlh_write\n_pzlh_present\n_pzlh_sects\n_pzlh_sysstatus\n_pzlh_ready\n_pzlh_rebooted\n' > $(B)/exports
-	ld -r -o $@ $(B)/o/*.o -exported_symbols_list $(B)/exports
+	  cc -O1 -g -w -fno-common -fPIC -DPZL_HOST -DPZL_BOARD='"host"' -DGIT_REPO_VERSION='"picosim"' -DHID_KEYBOARD=0 $(INC) -c $$f -o $(B)/o/$$(basename $${f%.c}).o || exit 1; done
+	printf 'pzlh_init\npzlh_poll\npzlh_read\npzlh_write\npzlh_present\npzlh_sects\npzlh_sysstatus\npzlh_ready\npzlh_rebooted\n' > $(B)/exports
+	../tools/ld-hide.sh $@ $(B)/exports $(B)/o/*.o
 
 clean:
 	rm -rf $(B)
