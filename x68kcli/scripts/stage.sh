@@ -58,7 +58,7 @@ if [ "${PROFILE:-cli}" = dev ]; then
 fi
 crlf work/AUTOEXEC.BAT stage/AUTOEXEC.BAT
 crlf templates/STARTUP.ENV  stage/STARTUP.ENV
-for f in zshenv zshrc fishrc profile kshrc; do sjis templates/etc/$f stage/ETC/$f; done
+for f in zshenv zshrc fishrc profile kshrc zoshrc; do sjis templates/etc/$f stage/ETC/$f; done
 # ホームディレクトリのサンプル (hello.c など)
 for f in templates/home/*; do crlf "$f" "stage/HOME/$(basename "$f")"; done
 

@@ -162,6 +162,10 @@ static int decawm = 1;        /* 自動折り返し (既定 ON) */
 static int cur_vis = 1;       /* カーソル表示 */
 static int csr_ok = 1;        /* この端末のカーソルを描いてよい (zos.x は前面のペインだけ 1。vt_con_cursor) */
 static int alt_active;        /* 代替画面を表示中か */
+#ifdef VT_VCONS
+static vt_sb *sb;             /* スクロールバックの置き場 (端末ごと。NULL なら取らない) */
+static int view_off;          /* 0 = いまの画面、n = n 行さかのぼって見ている (vt_view) */
+#endif
 static int g_special[2];      /* G0/G1 が DEC 特殊グラフィックか */
 static int gl;                /* いま GL に割り当てている G 番号 (0/1) */
 
@@ -918,6 +922,17 @@ static void scroll(int n)
   if (-n > bot - top + 1) n = -(bot - top + 1);
   m = n > 0 ? n : -n;
   keep = (bot - top + 1) - m;
+#ifdef VT_VCONS
+  if (sb && n > 0 && top == 0 && bot == ROWS - 1 && !alt_active) {   /* 画面の上から流れ出る行をスクロールバックへ */
+    for (r = 0; r < m; r++) {
+      const cell_u32 *l = (const cell_u32 *)cur[r];
+      int k = COLS;
+      while (k > 0 && l[k - 1] == clr_cell) k--;   /* 行の終わりの空白は落とす */
+      sb->push(sb, (const unsigned int *)l, k);
+    }
+    if (view_off) view_off += m;   /* 見ている所はそのまま (流れた分だけ遠くなる) */
+  }
+#endif
   /* 空く行 (上スクロールなら下端の m 行、下スクロールなら上端の m 行) の VRAM には、ずらす前のその行の絵が
    * 残る (VRAM の移動はそこを触らない)。drawn もその絵にしておけば、flush は前の絵と違うセルだけ描けばよい
    * (less の 1 行送りなど)。行ポインタを回すと drawn のその位置に別の行が来るので、絵を控えて戻す。 */
@@ -1006,6 +1021,9 @@ static NOINLINE void flush(void)
   int r, c, s, i;
   static unsigned char diff[MAXCOLS];
   if (VT_HIDDEN) return;   /* 裏の端末は描かない (表に出すとき vt_con_visible が全面を描く) */
+#ifdef VT_VCONS
+  if (view_off) return;   /* さかのぼって見ている間は描かない (書き換え範囲は残す。戻ったときに描く) */
+#endif
   PROF(4, 1);
   s = sup_enter();
   if (vs_pend) vs_apply();
@@ -1978,6 +1996,9 @@ void vt_init(int cols, int rows)
   cx = cy = 0; top = 0; bot = ROWS - 1; pend_wrap = 0;
   c_fg = 7; c_bg = 0; a_bold = a_uline = a_reverse = 0; attr_update();
   decckm = 0; decawm = 1; cur_vis = 1; alt_active = 0; cur = rows_main;
+#ifdef VT_VCONS
+  sb = 0; view_off = 0;
+#endif
   for (r = 0; r < MAXROWS; r++) { rows_main[r] = store_main[r]; rows_alt[r] = store_alt[r]; drawn[r] = store_drawn[r]; }
   g_special[0] = g_special[1] = 0; gl = 0; outq_len = 0; state = S_GROUND; u_need = 0;
   csr_shown = 0;
@@ -2117,7 +2138,7 @@ unsigned long vt_emoji_cp(int idx) { return (idx >= 0 && idx < EMOJITAB_N) ? emo
   X(decckm) X(decawm) X(cur_vis) X(alt_active) X(gl) X(sv_cx) X(sv_cy) X(sv_fg) X(sv_bg) X(sv_bold) X(sv_ul) X(sv_rev) \
   X(sv_sp0) X(sv_sp1) X(sv_gl) X(csr_shown) X(csr_x) X(csr_y) X(state) X(csi_priv) X(csi_inter) X(nparam) X(str_kind) \
   X(str_esc) X(str_len) X(cs_which) X(u_cp) X(u_need) X(outq_len) X(vt_hidden) \
-  X(vt_base) X(COLS) X(ROWS) X(vt_pane) X(pane_x) X(pane_y) X(pane_w) X(pane_h) X(pane_px) X(pane_py) X(csr_ok)
+  X(vt_base) X(COLS) X(ROWS) X(vt_pane) X(pane_x) X(pane_y) X(pane_w) X(pane_h) X(pane_px) X(pane_py) X(csr_ok) X(sb) X(view_off)
 #define VC_ARRS X(g_special) X(tabstop) X(param) X(str_buf) X(outq) X(rows_main) X(rows_alt) X(drawn)
 typedef struct {
 #define X(v) __typeof__(v) v;
@@ -2252,6 +2273,47 @@ unsigned short vt_jis_ucs(unsigned short jis)
 
 /* 状態表示: 最上行の右端に s を反転で重ねる (論理画面は変えない)。NULL で消す (その桁を論理画面の絵に戻す) */
 static int vc_st_c0 = -1;
+/* スクロールバック: いまの端末の置き場を決める (NULL で取らない) */
+void vt_con_set_sb(vt_sb *s) { sb = s; view_off = 0; }
+int vt_view_off(void) { return view_off; }
+/* delta 行さかのぼる (正) / 戻る (負)。0 に戻ったらいまの画面を描き直す。新しい位置を返す */
+int vt_view(int delta)
+{
+  static unsigned int line[MAXCOLS];
+  int n, r, c, sup;
+  if (!sb) return 0;
+  n = view_off + delta;
+  if (n < 0) n = 0;
+  if (n > sb->count(sb)) n = sb->count(sb);
+  if (n == view_off) return n;
+  sup = sup_enter();
+  if (csr_shown) { cursor_xor(csr_x, csr_y); csr_shown = 0; }
+  view_off = n;
+  if (n == 0) {   /* いまの画面へ: 全部描き直す */
+    for (r = 0; r < ROWS; r++) vc_unknown(r, 0, COLS - 1);
+    sup_leave(sup);
+    flush();
+    return 0;
+  }
+  if (!VT_HIDDEN) {
+    for (r = 0; r < ROWS; r++) {
+      const cell_t *row;
+      int k;
+      if (r >= n) row = cur[r - n];
+      else {
+        k = sb->get(sb, n - r, line, COLS);
+        for (c = k; c < COLS; c++) line[c] = clr_cell;
+        row = (const cell_t *)line;
+      }
+      for (c = 0; c < COLS; c++) blit(c, r, &row[c], 0);
+      for (c = 0; c < COLS; c++) { cell_t z; z.cp = 0xffff; z.at = F_EMOJI | F_WIDECONT; drawn[r][c] = z; }
+    }
+    sa_off();
+  }
+  sup_leave(sup);
+  return n;
+}
+
 void vt_con_status(const char *s)
 {
   int sup, i, n;
