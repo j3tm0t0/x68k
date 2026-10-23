@@ -27,7 +27,10 @@ skip() { echo "SKIP zostest: $*"; exit 0; }
 [ -f "$SSH_X" ] || skip "no ssh.x (SSH_X=)"
 [ -f "$XEIJ/XEiJ.jar" ] && [ -f "$AGENT" ] || skip "no XEiJ / agent in x68kcli/tools"
 strings build/picosim 2>/dev/null | grep -q "socket service for tis.x" || skip "build/picosim has no TSP (lwIP)"
-make -s -C "$TOP/net/npd" && make -s -C "$TOP/net/tistack" || { echo "FAIL build npd / tis.x"; exit 1; }
+. "$(dirname "$0")/benchlock.sh"
+benchlock_take zostest || skip "bench locked by $(cat "$XEIJLOCK")"
+trap benchlock_release EXIT
+make -s -C "$TOP/net/npd" && make -s -C "$TOP/net/tistack" || { echo "FAIL build npd / tis.x"; benchlock_release; exit 1; }
 rm -rf "$WORK/t" && mkdir -p "$WORK/t" && cp "$ZOS"/tests/{xeij_run.sh,xeijkeys.py,tvram2txt.py,env.bat.txt} "$WORK/t/"
 OUT=$WORK/out; mkdir -p "$OUT"
 
@@ -67,6 +70,7 @@ KbdInteractiveAuthentication no
 UsePAM no
 StrictModes no
 PidFile $D/sshd.pid
+LoginGraceTime 600
 ForceCommand $D/demo.sh
 AllowUsers $(whoami)
 EOF
@@ -76,13 +80,15 @@ cp "$D/idzos" "$WORK/IDZOS"
 SPID=$!
 TSP_DNS=192.168.1.3 build/picosim -l 127.0.0.1:$PICOPORT -L none -s 30 > "$WORK/picosim.log" 2>&1 &
 PPID_=$!
-trap 'kill $SPID $PPID_ 2>/dev/null || true' EXIT
+trap 'kill $SPID $PPID_ 2>/dev/null || true; benchlock_release' EXIT
 sleep 1
 
 IFS=$'\n' ENVL=($(cat "$WORK/t/env.bat.txt") 'SET SHELL=A:/usr/bin/ksh.x' 'TIS.X -p > TIS.TXT' 'NPD.X 192.168.1.68 > NPD.TXT'); unset IFS
 U=$(whoami)
 # ksh の起動 (XEiJ 10MHz で 2〜3 秒) を待ってから。F10 = 次のペイン、OPT.1+Q = Z-OS を終える
-KEYS="sleep 12;key f10;type ssh.x -t -y -y -i a:/idzos -p $SSHPORT $U@192.168.1.1\\n;waittext type something 240"
+# ACCEL=1: 鍵交換を picosim の暗号アクセラレータで (-oAccel=all)
+SSHOPT=; [ -n "${ACCEL:-}" ] && SSHOPT="-oAccel=all "
+KEYS="sleep 12;key f10;type ssh.x -t -y -y ${SSHOPT}-i a:/idzos -p $SSHPORT $U@192.168.1.1\\n;waittext type something 240"
 KEYS="$KEYS;key f10;type echo left pane while ssh waits\\n;key f10;type abc\\n;waittext got: abc 60;sleep 3"
 KEYS="$KEYS;dump zos.bin 0xE00000 0x80000;sleep 2;type exit\\n;sleep 2;key opt1 q"
 AGENTJAR=$AGENT XEIJ=$XEIJ ZOS_OUT=$OUT ZOS_JAVA_OPTS="-Dpicosim=127.0.0.1:$PICOPORT -Dpicosim.ids=6" \
@@ -103,6 +109,9 @@ ok "sshd accepted the ssh.x key" "grep -q 'Accepted publickey' '$WORK/sshd.log'"
 sz=$(echo "$right" | grep -o '^size [0-9]*x[0-9]*' | head -1)
 echo "     terminal size seen by the sshd: ${sz:-?} (screen: $OUT/zos.txt)"
 grep -q "tsp: first 0xA6" "$WORK/picosim.log" && echo "     picosim: lwIP joined the LAN on the first 0xA6"
+# 鍵交換の時間: ssh.x を打ち終えた時刻から、画面に "type something" が出た時刻まで (keys.log の xeijkeys の記録)
+t0=$(grep -m1 "type ssh.x" "$OUT/keys.log" 2>/dev/null | cut -c1-8); t1=$(grep -m1 "waittext 'type something' True" "$OUT/keys.log" 2>/dev/null | cut -c1-8)
+[ -n "$t0" ] && [ -n "$t1" ] && echo "     ssh.x connect + kex + login: $(( $(date -j -f %T "$t1" +%s) - $(date -j -f %T "$t0" +%s) )) s${ACCEL:+ (accel)}"
 if [ $fails -gt 0 ]; then
   cat "$OUT/zos.txt"; tail -5 "$WORK/sshd.log"
   # 落ちたときの記録を残す (次の回に上書きされないように。TSP のたまの失敗を x68k-tistack-2 が調べる)

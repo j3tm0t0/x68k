@@ -12,6 +12,9 @@ if ! nm build/picosim 2>/dev/null | grep -q "tsp\|lwip" && ! strings build/picos
   echo "SKIP tsptest: build/picosim has no TSP (lwIP not found; make LWIP=...)"; exit 0; fi
 if [ ! -f "$TOP/x68kcli/tools/xeij/XEiJ.jar" ] || [ ! -f "$TOP/x68kcli/tools/xeijagent.jar" ]; then
   echo "SKIP tsptest: no XEiJ / agent in x68kcli/tools (make -C x68kcli tools agent)"; exit 0; fi
+. "$(dirname "$0")/benchlock.sh"
+benchlock_take tsptest || { echo "SKIP tsptest: bench locked by $(cat "$XEIJLOCK")"; exit 0; }
+trap benchlock_release EXIT
 OUT=${TIS_OUT:-${TMPDIR:-/tmp}/picosim-tsptest}
 log=$OUT.log
 mkdir -p "$(dirname "$log")"

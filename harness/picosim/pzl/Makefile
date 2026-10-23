@@ -4,7 +4,9 @@
 # (書きかけの作業木に左右されないように)。サブモジュール x68kserremote も記録されたコミットで。
 # Z 側の 68000 のバイナリ (driver/*.inc: hdsboot・scsiremote・settingui など) は elf2x68k でここで作る
 PZLREPO ?= $(HOME)/Dropbox/src/github.com/j3tm0t0/x68k-zos-pzl
-PZLREV ?= pzl
+# 既定は試したコミットに留める (pzl が進んでも main の make test が壊れないように)。最新に合わせるかは
+#   make -C harness/picosim pzl-latest  (PZLREV=pzl で作って試す) で確かめてから、ここを進める
+PZLREV ?= 5c87bd6
 B = build
 S = $(B)/src/pico
 PZLFILES = src/scsi/virtual_disk.c src/storage/storage.c src/storage/stor_ram.c \
@@ -31,7 +33,7 @@ $(B)/rev: FORCE
 	@mkdir -p $(B)
 	@r=$$(git -C $(PZLREPO) rev-parse $(PZLREV)); [ "$$(cat $@ 2>/dev/null)" = "$$r" ] || echo $$r > $@
 
-$(B)/src/.done: $(B)/rev
+$(B)/src/.done: $(B)/rev Makefile
 	rm -rf $(B)/src && mkdir -p $(B)/src
 	git -C $(PZLREPO) archive $$(cat $(B)/rev) pico | tar x -C $(B)/src
 	for m in x68kserremote libsmb2; do \
@@ -44,7 +46,7 @@ $(B)/src/.done: $(B)/rev
 $(B)/config_file_host.c: $(B)/src/.done host_config.py
 	python3 -I host_config.py $(S)/src/config/config_file.c $(S)/config.tmpl.txt $@
 
-$(B)/pzl_all.o: $(B)/src/.done $(B)/config_file_host.c pzl_host.c $(wildcard shim/*/*.h)
+$(B)/pzl_all.o: $(B)/rev $(B)/src/.done $(B)/config_file_host.c pzl_host.c $(wildcard shim/*/*.h)
 	rm -rf $(B)/o && mkdir -p $(B)/o
 	for f in $(addprefix $(S)/,$(PZLFILES)) $(B)/config_file_host.c pzl_host.c $(LWIPSRC); do \
 	  cc -O1 -g -w -fno-common -DPZL_HOST -DPZL_BOARD='"host"' -DGIT_REPO_VERSION='"picosim"' -DHID_KEYBOARD=0 $(INC) -c $$f -o $(B)/o/$$(basename $${f%.c}).o || exit 1; done
