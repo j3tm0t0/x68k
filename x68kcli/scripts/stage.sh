@@ -226,6 +226,7 @@ for f in build/x/sed.x build/x/grep.x; do [ -s "$f" ] && cp "$f" stage/USR/BIN/;
 [ -s build/x/npd.x ] && cp build/x/npd.x stage/USR/BIN/npd.x
 [ -s build/x/contee.sys ] && cp build/x/contee.sys stage/SYS/contee.sys
 [ -s build/x/rsspeed.x ] && cp build/x/rsspeed.x stage/USR/BIN/rsspeed.x
+[ -s build/x/clear.x ] && cp build/x/clear.x stage/USR/BIN/clear.x
 
 # --- ITA TOOLBOX ---
 mkdir -p stage/USR/DOC/ITA
