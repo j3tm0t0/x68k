@@ -60,6 +60,7 @@ build/libslirp.a: build/libslirp.tar.gz
 test: build/picosim-echo
 	python3 -I tests/bridgetest.py build/picosim-echo
 	python3 -I tests/bootwaittest.py build/picosim $(FW)
+	python3 -I tests/remotetest.py build/picosim $(FW)
 
 clean:
 	rm -f build/picosim build/picosim-echo

@@ -366,6 +366,7 @@ static void bw_reply(uint32_t lba, uint8_t *buf)
 #define VD_PAGE 496
 static uint8_t vd_hdr[16], vd_wr[VD_PAGE * 32], vd_rd[VD_PAGE * 32];
 static int vd_rpages, vd_rcnt;
+static int64_t vd_base = -1;            /* -P: この応答で最初に読まれた LBA の 8 の倍数 */
 
 static int vd_command(const uint8_t *c, uint8_t *r)
 {
@@ -456,20 +457,40 @@ static void vd_write(const uint8_t *b)
     return;
   memcpy(vd_hdr, b, 16);
   memcpy(vd_wr + page * VD_PAGE, b + 16, VD_PAGE);
+  if (picosim_verbose >= 3)
+    picosim_log("pz: vdbuf write session %08x seq %u page %d/%d cmd %02x%02x\n", g32(b + 4), g32(b + 8), page, maxpage,
+                b[16], b[17]);
   if (page == maxpage) {
     int n = vd_command(vd_wr, vd_rd);
     vd_rpages = n < 0 ? 0 : (n - 1) / VD_PAGE;
     vd_rcnt = 0;
+    vd_base = -1;
   }
 }
+
+/* ファームと同じ (既定): page = vdbuf_rcnt + lba % 8、lba % 8 == 7 を読むたびに vdbuf_rcnt += 8。
+ * Z の Linux の先読みが、ドライバの読まない上の 8 セクタ (前の応答が 8 ページの倍数で終わると 1 組飛ばされる) を
+ * 読むと vdbuf_rcnt が余分に進み、ページ 8 以降が 8 ずれる (B: の _EXEC で再配置表が壊れて落ちた原因)。
+ * -P: ページを LBA から決める。ドライバは 8 ページごとに 8 セクタ下へ進むので、この応答で最初に読まれた
+ *     LBA の組 (先読みはそれより上だけを読む) からの距離で決まる */
+int pz_vd_page_by_lba;
 
 static void vd_read(uint32_t lba, uint8_t *buf)
 {
   int page = vd_rcnt + (lba % 8);
+  if (pz_vd_page_by_lba) {
+    if (vd_base < 0)
+      vd_base = lba & ~7u;
+    int64_t g = (vd_base - (int64_t)(lba & ~7u)) / 8;
+    page = g < 0 ? 31 : (int)(g * 8 + (lba % 8));   /* 上 (先読み) は使われないので空のページ */
+  }
   memcpy(buf, vd_hdr, 16);
   buf[13] = vd_rpages;
   buf[12] = page;
-  memcpy(buf + 16, vd_rd + (page < 32 ? page : 0) * VD_PAGE, VD_PAGE);
+  if (page < 32)
+    memcpy(buf + 16, vd_rd + page * VD_PAGE, VD_PAGE);
+  else
+    memset(buf + 16, 0, VD_PAGE);
   if (lba % 8 == 7)
     vd_rcnt += 8;
 }

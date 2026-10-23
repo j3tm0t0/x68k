@@ -66,6 +66,8 @@ X68_HOST=127.0.0.1 X68_PORT=23268 harness/raspi/x68.sh 'ping.x -c 4 192.168.1.1'
 | `-B file` | `<HDS>.bootsnap` | 起動の控え (フラッシュ 0x1E0000 の代わり: 見出し 4KB + HDS の LBA 0-31) |
 | `-F dir` | | フォークの `driver/` (bootwait1.bin・bootwait.bin・hdsboot.bin・settingui.bin を読む)。付けると ID 6 の LBA 0 に署名 |
 | `-C file` | | 制御: 1 行 1 命令を書くと実行して消す。`ready` `close` `status N` `auto` `powercycle` `hds PATH` |
+| `-R dir` | | B: (リモートドライブ) にする Mac のディレクトリ。何度でも (B:, C:, ...)。下記 |
+| `-P` | | vdbuf のページを LBA から決める (ファームの不具合の直し方の試し。下記) |
 | `-K file` | | 設定画面の設定 (config_data) を保存するファイル (FLASHCONFIG で書き、起動時に読む) |
 | `-c MB` `-r KB` | 64, 16 | Z の Linux の読み込みキャッシュの大きさ (0 で無し) / 先読み (4KB ページ単位) |
 | `-d µs` | 0 | 命令ごとの遅れ (USB の往復の真似。メールボックスの道では Z の CPU は待ちの間も動く。SPC の道では XEiJ ごと止まる) |
@@ -104,6 +106,37 @@ IMG=build/picosim.hds XEIJ_JAVA_OPTS="-Dpicosim=127.0.0.1:6868 -Dpicosim.ids=0,6
   まとめて入る。その後の読み込み (待ち IPL のあとの分割表・ドライバ) はキャッシュ (= 控え) から。Z で見えた
   「電源投入で 16KB を一括で読み、ソフトリセットでは読み直さない」の真似になっている。電源の入れ直しは picosim と
   XEiJ の両方を起動し直す (`-C` の `powercycle` は picosim 側だけ)
+
+## B: (リモートドライブ、remote.c)
+
+`-R DIR` で Mac のディレクトリを Z の B: (と続くドライブ) にする。ファームと同じく、ID 6 の分割表 (LBA 4) に
+"Human68k" を数だけ並べ、SCSI のドライバ (LBA 6〜、`-F` の scsiremote.bin) を渡す。Human68k が起動時に組み込み、
+vdbuf ("X68Z" を LBA 0x20 に書き、応答を 0x200000〜0x3fffff の帯から 8 ページずつ下へ読む) で要求してくる。
+要求はフォークの x68kserremote (サブモジュール) の `service/remoteserv.c` に渡す。これは写さず、ビルド時にそこから
+コンパイルする (`make RS=.../x68kserremote`、ファイル操作は同じ所の POSIX の fileop.h)。設定はファームの
+include/config.h と同じ値 (`remote/config.h`: 1 回の READ / WRITE は 15KB、FILES は 10 件)。
+`-vv` で要求ごとに記録する (`B: READ fcb=... pos=... len=... -> 返した長さ`)。`-vvv` で、Z が帯のどの LBA の
+どのページを Pico から / キャッシュから受け取ったかも記録する。
+
+**見つけた不具合 (2026-10-23)**: Z の実機で、ある ssh.x を B: から起動すると _EXEC の中で落ちた (同じファイルが A: からは
+動き、CRC も合う)。picosim で再現した (PC $3E7D0、実機は $3E7D2)。原因は、ファームの vdbuf のページの決め方
+(`page = vdbuf_rcnt + lba % 8`、lba % 8 == 7 を読むたびに vdbuf_rcnt += 8) と、ドライバの com_cmdres と、Z の Linux の
+16KB 先読みの組み合わせ:
+1. ドライバは応答の 8 ページごとに 8 セクタ下へ進み、命令の始めにもさらに 8 下げる。前の応答が 8 ページの倍数
+   (例 24 ページ = 11,409〜11,904 バイト) で終わると、2 回続けて下げるので、次の命令の始まりのすぐ上の 8 セクタは誰も読まない
+2. 次の命令の最初の読み込みで Linux が上へ 16KB 先読みし、その空いた 8 セクタも Pico から読む。Pico はそこにページ 8〜15 を
+   渡して vdbuf_rcnt を余分に 8 進める
+3. ドライバが 2 組目 (8 下) を読むと、ページ 16〜23 が来る。見出しの比較は署名・session・seqno だけなので気づかず、
+   ページ 8 以降が 8 ずれたまま使われる
+_EXEC では text+data の最後のかけら ((text+data−15,296) mod 15,360 バイト) の応答の次が再配置表の読み込みになる。
+問題の ssh.x は 11,612 バイト → 24 ページで、再配置表の 3,966 バイト目 (= ページ 8 の頭) から先が壊れ、再配置が
+ずれて落ちた。リリースの ssh.x は 10,252 バイト → 21 ページで無事。`cat` など別の大きさで読むと正しい中身になる
+(CRC が合ったのはこのため)。ファイルの大きさしだいでどのプログラムでも起きる。
+
+`-P` はページを LBA から決める (その応答で最初に読まれた 8 セクタの組からの距離。先読みはそれより上しか読まない)。
+-P では同じ ssh.x が B: から起動した。`tests/remotetest.py` が com_cmdres と同じ手順で、既定 (ファームと同じ) で
+壊れることと -P で直ることを確かめる。直し方の候補: ファームで -P と同じ計算をする / ドライバが 2 回続けて下げない
+(scsiremote.bin はファームに入っているので、どちらもファームの更新だけで済む) / ドライバが見出しのページ番号も比べる。
 
 ## 横取りの仕方 (XEiJ には手を入れない)
 
@@ -232,7 +265,7 @@ netpipe など (最初の日):
 
 - XEiJ の CPU が Z より遅く、USB の往復 (実機で 1 命令 0.2〜2.5ms) は -d で足さないと 0 に近い。速度の数字は実機と比べない
 - SPC の道の書き込みの失敗は Z に伝わらない。メールボックスは READ(10)/WRITE(10) だけ
-- ID 6 の scsiremote.sys (リモートドライブ) と、ファームの起動ローダ (LBA 2 の bootloader、remoteboot) は無い。
+- ファームの起動ローダ (LBA 2 の bootloader、remoteboot) は無い。
   NOT READY の前のファームの 5 秒の保留 (TinyUSB に呼び直させる) は真似ていない (XEiJ の ROM はすぐ NOT READY を見る)。
   Wi-Fi / SMB は時間で進むだけで、設定画面で変えた SSID などは効かない (HDS0 のパスだけ効く)
 - XEiJ の ROM の起動は Z の Linux の起動と違う (Z は Linux が USB の HDS を読んでから X68000 の ROM が動く)。

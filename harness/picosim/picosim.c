@@ -35,6 +35,7 @@
 
 extern double np_accel_scale;
 extern FILE *lan_pcap;
+extern int pz_vd_page_by_lba;
 void remote_add(const char *dir) __attribute__((weak));
 int picosim_verbose;
 static uint64_t t0_us;
@@ -160,6 +161,8 @@ static int z_read(int id, uint32_t lba, uint8_t *buf)
   if ((d = cache_find(k)) != NULL) {
     st_hit++;
     memcpy(buf, d, 512);
+    if (picosim_verbose >= 3 && id == 6 && lba >= 0x200000)
+      picosim_log("vdbuf: Z reads 0x%x from its cache: seq %u page %d/%d\n", lba, g32(buf + 8), buf[12], buf[13]);
     return PS_OK;
   }
   st_miss++;
@@ -175,6 +178,9 @@ static int z_read(int id, uint32_t lba, uint8_t *buf)
     int r = t_read(id, l, tmp);
     if (r == PS_OK)
       cache_put(kk, tmp);
+    if (picosim_verbose >= 3 && id == 6 && l >= 0x200000)
+      picosim_log("vdbuf: %s 0x%x from the Pico: seq %u page %d/%d\n", l == lba ? "Z reads" : "readahead", l, g32(tmp + 8),
+                  tmp[12], tmp[13]);
     if (l == lba) {
       memcpy(buf, tmp, 512);
       rc = r;
@@ -457,7 +463,7 @@ int main(int argc, char **argv)
   lan_cfg.net = ip_arg("192.168.1.0");
   lan_cfg.gw = ip_arg("192.168.1.1");
   lan_cfg.dns = 0;
-  while ((o = getopt(argc, argv, "l:n:g:D:L:0:N:T:B:F:C:K:R:c:r:d:a:s:p:vh")) != -1) {
+  while ((o = getopt(argc, argv, "l:n:g:D:L:0:N:T:B:F:C:K:R:Pc:r:d:a:s:p:vh")) != -1) {
     switch (o) {
     case 'l': listen_spec = optarg; break;
     case 'n': {
@@ -499,6 +505,7 @@ int main(int argc, char **argv)
     case 'F': pz.fw_dir = optarg; pz.signature = 1; break;
     case 'C': pz.ctl_file = optarg; break;
     case 'K': pz_set_config_file(optarg); break;
+    case 'P': pz_vd_page_by_lba = 1; break;
     case 'R':
       if (!remote_add) {
         fprintf(stderr, "picosim: built without the remote drive (make RS=.../x68kserremote)\n");

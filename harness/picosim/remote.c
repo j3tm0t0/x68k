@@ -41,24 +41,33 @@ static uint16_t be16(uint16_t v) { return __builtin_bswap16(v); }
 /* 要求 1 個 (vdbuf の中身)。戻り値は応答の長さ (-1 = 知らない命令) */
 int remote_request(uint8_t *c, uint8_t *r)
 {
+  /* 上位 3 ビットはユニット。ただし remotedrv.c の send_read / send_write は 0x4c / 0x4d をそのまま入れる
+     (ユニット 2 に見えるが、remoteserv.c は fcb で探すので困らない) */
   int op = (c[0] & 0x1f) | 0x40, unit = c[0] >> 5;
   int n = remote_serv(c, r);
   st_req++;
   if (picosim_verbose >= 2) {
+    static const char *names[] = { "INIT", "CHDIR", "MKDIR", "RMDIR", "RENAME", "DELETE", "CHMOD", "FILES", "NFILES",
+                                   "CREATE", "OPEN", "CLOSE", "READ", "WRITE", "?4e", "FILEDATE", "DSKFRE" };
+    const char *nm = op - 0x40 < (int)(sizeof names / sizeof names[0]) ? names[op - 0x40] : "?";
     if (op == 0x4c) {
       struct cmd_read *q = (struct cmd_read *)c;
       struct res_read *a = (struct res_read *)r;
-      picosim_log("B%d: READ  fcb=%08x pos=%u len=%u -> %d\n", unit, be32(q->fcb), be32(q->pos), be16(q->len),
-                  (int16_t)be16(a->len));
-    } else if (op == 0x4a) {
+      picosim_log("B: READ   fcb=%08x pos=%u len=%u -> %d (reply %d bytes)\n", be32(q->fcb), be32(q->pos),
+                  be16(q->len), (int16_t)be16(a->len), n);
+    } else if (op == 0x4d) {
+      struct cmd_write *q = (struct cmd_write *)c;
+      picosim_log("B: WRITE  fcb=%08x pos=%u len=%u -> reply %d bytes\n", be32(q->fcb), be32(q->pos),
+                  be16(q->len), n);
+    } else if (op == 0x4a || op == 0x49) {
       struct cmd_open *q = (struct cmd_open *)c;
       struct res_open *a = (struct res_open *)r;
-      picosim_log("B%d: OPEN  fcb=%08x mode=%d %.8s.%.3s -> %d size=%u\n", unit, be32(q->fcb), q->mode, q->path.name1,
-                  q->path.ext, a->res, be32(a->size));
+      picosim_log("B%d: %-6s fcb=%08x mode=%d %.8s.%.3s -> %d size=%u\n", unit, nm, be32(q->fcb), q->mode,
+                  q->path.name1, q->path.ext, a->res, be32(a->size));
     } else if (op == 0x4b)
-      picosim_log("B%d: CLOSE fcb=%08x\n", unit, be32(((struct cmd_close *)c)->fcb));
+      picosim_log("B%d: CLOSE  fcb=%08x\n", unit, be32(((struct cmd_close *)c)->fcb));
     else
-      picosim_log("B%d: op 0x%02x -> %d bytes\n", unit, op, n);
+      picosim_log("B%d: %-6s (op 0x%02x) -> reply %d bytes\n", unit, nm, op, n);
   }
   return n;
 }
