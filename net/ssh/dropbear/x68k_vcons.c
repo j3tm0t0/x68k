@@ -358,7 +358,7 @@ void x68k_tty_cleanup(void)
   if (vc[vc_act].used) vc_use(vc_act);   /* 残すのは表のコンソールの画面 */
   vt_get_cursor(&x, &y);
   vt_get_size(&cols, &rows);
-  vt_get_origin(&ox, &oy);   /* Z-OS のペインの中なら、その枠だけを潰す (ほかのペインに触らない) */
+  vt_get_origin_px(&ox, &oy);   /* Z-OS のペインの中なら、その枠だけを潰す (ほかのペインに触らない)。ドット */
   vt_fini();
   vt_active = 0;
   row = (x > 0) ? y + 1 : y;
@@ -366,7 +366,7 @@ void x68k_tty_cleanup(void)
   _iocs_b_locate(0, row < CON_ROWS ? row : CON_ROWS - 1); return;
 #endif
   s = _dos_super(0);
-  base = TVRAM_BASE + (unsigned long)oy * 16 * 128 + ox;
+  base = TVRAM_BASE + (unsigned long)oy * 128 + ox / 8;
   for (line = 0; line < rows * 16; line++) {
     volatile unsigned char *p0 = base + (unsigned long)line * 128;
     volatile unsigned char *p1 = p0 + TVRAM_PLANE, *p2 = p0 + 2 * TVRAM_PLANE, *p3 = p0 + 3 * TVRAM_PLANE;

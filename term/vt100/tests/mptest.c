@@ -44,6 +44,7 @@ int main(int argc, char **argv)
       if (!g || fread(vt_host_cgrom, 1, 0xC0000, g) != 0xC0000) { fprintf(stderr, "cgrom\n"); return 2; }
       fclose(g);
     } else if (!strcmp(argv[i], "-o") && i + 1 < argc) out = argv[++i];
+    else if (!strcmp(argv[i], "-F")) vt_set_small(1);   /* 小さい字 (6x12)。枠の左端は 4 桁の倍数 */
     else if (ncon < NC) {
       char name[512]; FILE *f;
       if (sscanf(argv[i], "%511[^:]:%d,%d,%d,%d", name, &rx[ncon], &ry[ncon], &rw[ncon], &rh[ncon]) != 5) { fprintf(stderr, "spec %s\n", argv[i]); return 2; }
@@ -57,7 +58,7 @@ int main(int argc, char **argv)
     }
   }
   if (!ncon || !out) { fprintf(stderr, "usage: mptest [-g CGROM] -o OUT spec...\n"); return 2; }
-  vt_init(96, 32);
+  vt_init(0, 0);
   for (k = 0; k < ncon; k++) { st[k] = calloc(1, vt_con_size()); scr[k] = calloc(1, vt_con_scrsize()); }
   /* 端末 0 は vt_init のもの (置き場は内蔵)。1.. は vt_con_new。どれも自分の枠に置いて表に */
   vt_con_rect(rx[0], ry[0], rw[0], rh[0]); vt_con_visible(1);

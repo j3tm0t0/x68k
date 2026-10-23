@@ -84,6 +84,7 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[i], "-r") && i + 1 < argc) replyfile = argv[++i];
 #ifdef VT_HOSTTEST
     else if (!strcmp(argv[i], "-V")) verify = 1;
+    else if (!strcmp(argv[i], "-F")) vt_set_small(1);   /* 小さい字 (6x12、128x42) */
     else if (!strcmp(argv[i], "-P") && i + 1 < argc) {   /* Z-OS のペインのまね: -P 桁,行,幅,高さ (_B_CONSOL の代わり) */
       int px, py, pw, ph;
       if (sscanf(argv[++i], "%d,%d,%d,%d", &px, &py, &pw, &ph) == 4) vt_host_pane(px, py, pw, ph);

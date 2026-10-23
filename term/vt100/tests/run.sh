@@ -144,5 +144,24 @@ if cc -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=undefined -DVT_H
 else
   fail "pane follow (dyntest をコンパイルできない)"
 fi
+# ---- 10. 小さい字 (6x12、128x42、vt_set_small): 全面で VRAM = 論理画面 (-V)、枠を並べても各枠 = 単独 (mptest -F) ----
+for n in shell app_vimjp jp_less app_top app_emoji syn_region; do
+  if msg=$(./vthost ${CGOPT[@]+"${CGOPT[@]}"} -F -V -c 64 -s 128x42 tests/fixtures/$n.rec /dev/null 2>&1); then pass "small $n (128x42)"
+  else fail "small $n"; echo "$msg" | head -5; fi
+done
+if [ -x "$OUT/mptest" ]; then
+  F=tests/fixtures
+  set="shell:0,1,64,20 app_vimjp:64,1,64,20 jp_less:0,22,64,20 app_lessu8:64,22,64,20"
+  a=(); c=()
+  for spec in $set; do
+    n=${spec%%:*}; r=${spec#*:}; IFS=, read -r x y w h <<< "$r"
+    a+=("$F/$n.rec:$r")
+    ./vthost ${CGOPT[@]+"${CGOPT[@]}"} -F -s ${w}x${h} -v "$OUT/mps_$n.vram" "$F/$n.rec" /dev/null > /dev/null 2>&1
+    c+=("$OUT/mps_$n.vram" "$r")
+  done
+  if msg=$("$OUT/mptest" ${CGOPT[@]+"${CGOPT[@]}"} -F -o "$OUT/mps.vram" "${a[@]}" 2>&1) &&
+     msg2=$($PY tests/mpcmp.py -F "$OUT/mps.vram" "${c[@]}" 2>&1); then pass "small multipane"
+  else fail "small multipane"; echo "$msg" | tail -5; echo "${msg2:-}" | tail -5; fi
+fi
 echo "---- $npass PASS, $nfail FAIL  (PNG: $OUT/*.png)"
 [ $nfail = 0 ]

@@ -51,10 +51,15 @@ unsigned short vt_host_r21;             /* CRTC R21 (68000 シミュレータは
 #include "widthtab.h"   /* 全角・幅 0 の範囲表 (genwidth.py 生成、wcwidth 由来) */
 
 /* ---- 画面の寸法 ---- */
-#define MAXCOLS 96
-#define MAXROWS 32
-#define CW      8          /* セル幅 (ドット) */
-#define CH      16         /* セル高 (ドット) */
+#define MAXCOLS 128        /* 置き場の大きさ (小さい字のモードの 128x42 まで) */
+#define MAXROWS 42
+#define CW      8          /* _B_CONSOL のやり取りの単位 (8x16 のセル)。描くセルの高さは vch */
+#define CH      16
+/* 小さい字のモード (vt_set_small): 6x12 ドットの字で 768x512 に 128x42。ふだんは 8x16 で 96x32 */
+static int vt_small;
+static int vch = 16;
+#define SCRCOLS (vt_small ? 128 : 96)
+#define SCRROWS (vt_small ? 42 : 32)
 #define VBYTES  128        /* 1 ライン 128 バイト (1 プレーン) */
 #define PLANE   0x20000UL  /* プレーン間の距離 */
 typedef unsigned int u32;  /* 32bit 転送用 (ホストの long は 8 バイトなので int) */
@@ -79,6 +84,8 @@ typedef unsigned int u32;  /* 32bit 転送用 (ホストの long は 8 バイト
 static volatile unsigned char *vt_base = TVRAM_PHYS;
 static int vt_pane;            /* 枠の中に描いている */
 static int pane_x, pane_y, pane_w, pane_h;   /* 枠 (桁・行) */
+static int pane_px, pane_py;                 /* 枠の左上 (ドット)。_B_CONSOL の枠はドットで来る (zos.x の小さい字の
+                                              * ペインは 12 ドットの行なので、16 の倍数とは限らない) */
 static int pane_dyn;           /* 起動時に枠だった: vt_write のたびに枠を見直す (-DVT_VCONS のとき) */
 static int pane_dynhid;        /* 枠が見えていないので、こちらで裏にしている */
 static int pane_read(int *px, int *py, int *pw, int *ph);
@@ -126,7 +133,7 @@ static cell_t *rows_main[MAXROWS], *rows_alt[MAXROWS];
 static cell_t *drawn[MAXROWS];
 static cell_t **cur = rows_main;   /* いま表示している面 */
 
-static int COLS = MAXCOLS, ROWS = MAXROWS;
+static int COLS = 96, ROWS = 32;
 
 /* 行ごとの「論理画面を書き換えた」桁の範囲 [rlo, rhi]。flush はその範囲だけ drawn と比べる
  * (全 3072 セルの走査を避ける。Claude Code の入力行のように 1 行の数桁だけ変わる場面が多い)。rlo > rhi は無傷 */
@@ -472,8 +479,10 @@ static int sa_probe(void)
  * old はいま VRAM に描いてあるセル (drawn。NULL なら分からない): 前も今も同じ値で塗りつぶしのプレーンは書かない。
  * 空白 (下線なし) の字形は 0 なので、前景色に依らず背景色で塗るのと同じ (same_look が前景色だけ違う空白を描かずに
  * 済ませるので、drawn の空白の前景色は VRAM と関係ない。空白は前も今も背景色だけで見る)。 */
+static void blit_small(int col, int row, const cell_t *c);
 static void blit(int col, int row, const cell_t *c, const cell_t *old)
 {
+  if (vt_small) { blit_small(col, row, c); return; }
 #ifdef VT_PROF_NOBLIT
   (void)col; (void)row; (void)c; (void)old; PROF(0, 1); return;   /* 計測: 描画を抜いた版 (解析・差分走査だけの時間) */
 #endif
@@ -508,7 +517,7 @@ static void blit(int col, int row, const cell_t *c, const cell_t *old)
     m1 &= ~(ofg & obg);
     m0 &= ofg | obg;
   }
-  v0 = TVRAM + (unsigned long)row * CH * VBYTES + col;
+  v0 = TVRAM + (unsigned long)row * vch * VBYTES + col;
   if (m0) PASS(m0, { pl_fill(v, 0); if (wide) pl_fill(v + 1, 0); });
   if (m1) PASS(m1, { pl_fill(v, 0xff); if (wide) pl_fill(v + 1, 0xff); });
   if (mg) PASS(mg, { if (wide) { pl_copy2(v, gp); pl_copy2(v + 1, gp + 1); } else pl_copy1(v, gp); });
@@ -616,9 +625,149 @@ __asm__(
 #define BLIT_ASM 1
 #endif
 
+
+/* ================= 小さい字 (6x12、vt_set_small) =================
+ * 768x512 に 128x42。セルは 6 ドット幅なのでバイトの境目をまたぐ: 1 行ごとに 16 ビットの窓 (左詰め) を
+ * ずらして 2〜3 バイトを読み書きする。字形は ANK 6x12 (IPL ROM、IOCS _FNTADR の大きさ 6 で番地を聞く) と
+ * 全角 12x12 (_FNTADR が作業域に組み立てて返す。よく使う字は控える)。DEC 罫線・ブロック要素・~ は 8x16 の
+ * 自前の字形を縮めて使う。ホスト試験では CGROM の 8x16 / 16x16 を縮めて作る (実機の字形とは違うが、描画の
+ * 道筋は同じ)。描くのはいつも C の 1 セルずつ (同時アクセス・手書きの版は使わない)。 */
+static const unsigned char *ank6;           /* 256 字 x 12 バイト */
+static unsigned char ank6_buf[256][12];
+static void down8(const unsigned char *g, unsigned char *o)   /* 8x16 -> 6x12 (近い点を拾う) */
+{
+  int y, x;
+  for (y = 0; y < 12; y++) {
+    unsigned char b = g[y * 4 / 3], r = 0;
+    for (x = 0; x < 6; x++) if (b & (0x80 >> (x * 4 / 3))) r |= 0x80 >> x;
+    o[y] = r;
+  }
+}
+#ifdef VT_HOSTTEST
+static void down16(const unsigned char *g, unsigned char *o)   /* 16x16 (2 バイト/行) -> 12x12 (2 バイト/行) */
+{
+  int y, x;
+  for (y = 0; y < 12; y++) {
+    unsigned short b = (unsigned short)(g[(y * 4 / 3) * 2] << 8 | g[(y * 4 / 3) * 2 + 1]), r = 0;
+    for (x = 0; x < 12; x++) if (b & (0x8000 >> (x * 4 / 3))) r |= 0x8000 >> x;
+    o[y * 2] = (unsigned char)(r >> 8); o[y * 2 + 1] = (unsigned char)r;
+  }
+}
+#endif
+#ifndef VT_HOSTTEST
+static long fntadr(int code, int size)   /* IOCS _FNTADR: d0 = 字形の番地 */
+{
+  register long d0 __asm__("d0") = 0x16;
+  register long d1 __asm__("d1") = code;
+  register long d2 __asm__("d2") = size;
+  __asm__ volatile ("trap #15" : "+r"(d0), "+r"(d1), "+r"(d2) : : "a0", "a1", "cc", "memory");
+  return d0;
+}
+#endif
+static void small_fonts(void)
+{
+#ifndef VT_HOSTTEST
+  long sp = fntadr(' ', 6), a = fntadr('A', 6);
+  if (sp > 0 && a == sp + ('A' - ' ') * 12) { ank6 = (const unsigned char *)(sp - ' ' * 12); return; }
+#endif
+  {
+    int c;
+    for (c = 0; c < 256; c++) down8(CGROM16 + c * 16, ank6_buf[c]);
+    ank6 = &ank6_buf[0][0];
+  }
+}
+static const unsigned char *kanji12(unsigned short jis)   /* 12x12 (2 バイト/行) */
+{
+  static unsigned short ck[32];
+  static unsigned char cg[32][24];
+  int h = (jis ^ (jis >> 5)) & 31, i;
+  if (ck[h] == jis && jis) return cg[h];
+#ifndef VT_HOSTTEST
+  {
+    const unsigned char *g = (const unsigned char *)fntadr(jis, 6);   /* JIS でも Shift_JIS でも引ける */
+    for (i = 0; i < 24; i++) cg[h][i] = g[i];
+  }
+#else
+  (void)i;
+  down16(kanji_glyph(jis), cg[h]);
+#endif
+  ck[h] = jis;
+  return cg[h];
+}
+/* 行 line (枠の原点から) の px ドット目から、左詰め 16 ビットの bits (mask の範囲) を色 fg / bg で書く。xr = 1 なら XOR (カーソル) */
+static void put_bits(int line, int px, unsigned short bits, unsigned short mask, int fg, int bg, int xr)
+{
+  volatile unsigned char *v = TVRAM + (unsigned long)line * VBYTES + (px >> 3);
+  int sh = px & 7, p;
+  unsigned long m = ((unsigned long)mask << 8) >> sh;
+  unsigned char m0 = (unsigned char)(m >> 16), m1 = (unsigned char)(m >> 8), m2 = (unsigned char)m;
+  for (p = 0; p < 4; p++, v += PLANE) {
+    unsigned long w;
+    if (xr) w = m;
+    else {
+      unsigned short val = (unsigned short)((((fg >> p) & 1) ? bits : 0) | (((bg >> p) & 1) ? (~bits & mask) : 0));
+      w = ((unsigned long)val << 8) >> sh;
+    }
+    if (xr) { v[0] ^= m0; if (m1) v[1] ^= m1; if (m2) v[2] ^= m2; continue; }
+    v[0] = (unsigned char)((v[0] & ~m0) | (w >> 16));
+    if (m1) v[1] = (unsigned char)((v[1] & ~m1) | ((w >> 8) & m1));
+    if (m2) v[2] = (unsigned char)((v[2] & ~m2) | (w & m2));
+  }
+}
+static void blit_small(int col, int row, const cell_t *c)
+{
+  int fg = AT_FG(c->at), bg = AT_BG(c->at), fl = AT_FL(c->at), s;
+  unsigned short g[12], mask = 0xfc00;
+  if (fl & F_WIDECONT) return;
+  sa_off();
+  if (fl & F_EMOJI) {   /* 絵文字は描けない: ?? */
+    for (s = 0; s < 12; s++) g[s] = (unsigned short)(ank6['?' * 12 + s] << 8 | ank6['?' * 12 + s] << 2);
+    mask = 0xfff0;
+  } else if (fl & F_WIDE) {
+    unsigned short jis = jis_of(c->cp);
+    const unsigned char *k = jis ? kanji12(jis) : 0;
+    for (s = 0; s < 12; s++) g[s] = k ? (unsigned short)((k[s * 2] << 8 | k[s * 2 + 1]) & 0xfff0) : 0;
+    mask = 0xfff0;
+  } else {
+    const unsigned char *a = 0;
+    unsigned char t[12];
+    if ((fl & F_SPECIAL) && c->cp >= 0x60 && c->cp <= 0x7f) { down8(sg_glyph[c->cp - 0x60], t); a = t; }
+    else if (c->cp >= 0x2580 && c->cp <= 0x259f) { down8(blk_glyph[c->cp - 0x2580], t); a = t; }
+    else if (c->cp == 0x7e) { down8(tilde_glyph, t); a = t; }
+    else if (c->cp == 0x5c) a = ank6 + 0x80 * 12;
+    else if (c->cp >= 0x20 && c->cp < 0x7f) a = ank6 + c->cp * 12;
+    else if (c->cp >= 0xff61 && c->cp <= 0xff9f) a = ank6 + (c->cp - 0xff61 + 0xa1) * 12;
+    else if (c->cp == 0x00a5) a = ank6 + 0x5c * 12;
+    else if (c->cp == 0x203e) a = ank6 + 0x7e * 12;
+    for (s = 0; s < 12; s++) g[s] = a ? (unsigned short)((a[s] << 8) & 0xfc00) : 0;
+    if (BLANKCELL(c)) fg = bg;
+  }
+  if (fl & F_UNDERLINE) g[11] = mask;
+  for (s = 0; s < 12; s++) put_bits(row * 12 + s, col * 6, g[s], mask, fg, bg, 0);
+}
+static void cursor_small(int col, int row)
+{
+  int s;
+  for (s = 0; s < 12; s++) put_bits(row * 12 + s, col * 6, 0, 0xfc00, 0, 0, 1);
+}
+static void row_fill_small(int row, int bg)
+{
+  int s, p, k, nb = COLS * 6 / 8, rem = COLS * 6 % 8;
+  sa_off();
+  for (s = 0; s < 12; s++) {
+    volatile unsigned char *v = TVRAM + (unsigned long)(row * 12 + s) * VBYTES;
+    for (p = 0; p < 4; p++, v += PLANE) {
+      unsigned char b = ((bg >> p) & 1) ? 0xff : 0;
+      for (k = 0; k < nb; k++) v[k] = b;
+      if (rem) { unsigned char m = (unsigned char)(0xff << (8 - rem)); v[nb] = (unsigned char)((v[nb] & ~m) | (b & m)); }
+    }
+  }
+}
+
 /* カーソルセルを反転する (XOR なので同じ呼び出しで消える) */
 static void cursor_xor(int col, int row)
 {
+  if (vt_small) { cursor_small(col, row); return; }
   int s;
   for (s = 0; s < CH; s++) {
     volatile unsigned char *v = TVRAM + (unsigned long)(row * CH + s) * VBYTES + col;
@@ -647,6 +796,24 @@ static void vram_move_lines(int dst_line, int src_line, int nlines)
   }
 #endif
   PROF(3, nlines);   /* 32bit 転送で動かしたライン数 (TXRASCOPY の分は数えない) */
+  if (vt_small) {   /* 6 ドットのセル: 枠の左端はバイト境界 (4 セルごと)。右端の端数のバイトは仕切りのセルと同じ */
+    int nb = (COLS * 6 + 7) / 8;
+    for (p = 0; p < 4; p++) {
+      volatile unsigned char *base = TVRAM + (unsigned long)p * PLANE;
+      if (dst_line <= src_line) {
+        for (y = 0; y < nlines; y++) {
+          volatile unsigned char *d = base + (long)(dst_line + y) * VBYTES, *q = base + (long)(src_line + y) * VBYTES;
+          for (k = 0; k < nb; k++) d[k] = q[k];
+        }
+      } else {
+        for (y = nlines - 1; y >= 0; y--) {
+          volatile unsigned char *d = base + (long)(dst_line + y) * VBYTES, *q = base + (long)(src_line + y) * VBYTES;
+          for (k = 0; k < nb; k++) d[k] = q[k];
+        }
+      }
+    }
+    return;
+  }
   for (p = 0; p < 4; p++) {
     volatile unsigned char *base = TVRAM + (unsigned long)p * PLANE;
     if (dst_line <= src_line) {
@@ -715,7 +882,7 @@ static void vs_apply(void)
 {
   int n = vs_pend, h = vs_bot - vs_top + 1;
   vs_pend = 0;
-  if (n > 0 && n < h) vram_move_lines(vs_top * CH, (vs_top + n) * CH, (h - n) * CH);
+  if (n > 0 && n < h) vram_move_lines(vs_top * vch, (vs_top + n) * vch, (h - n) * vch);
 }
 
 static void scroll(int n)
@@ -766,8 +933,8 @@ static void scroll(int n)
   rotate_rows(cur, rlo, rhi, top, bot, n);
   rotate_rows(drawn, 0, 0, top, bot, n);
   if (keep > 0) {
-    if (n > 0) vram_move_lines(top * CH, (top + n) * CH, keep * CH);   /* VRAM を上へ */
-    else vram_move_lines((top + m) * CH, top * CH, keep * CH);         /* 下へ */
+    if (n > 0) vram_move_lines(top * vch, (top + n) * vch, keep * vch);   /* VRAM を上へ */
+    else vram_move_lines((top + m) * vch, top * vch, keep * vch);         /* 下へ */
   }
   for (r = 0; r < m; r++) {
     int rr = n > 0 ? bot - m + 1 + r : top + r;
@@ -803,7 +970,8 @@ static void row_fill1(volatile unsigned char *base, unsigned char b)
 }
 static void row_fill(int row, int bg)
 {
-  volatile unsigned char *v0 = TVRAM + (unsigned long)row * CH * VBYTES;
+  if (vt_small) { row_fill_small(row, bg); return; }
+  volatile unsigned char *v0 = TVRAM + (unsigned long)row * vch * VBYTES;
   if (bg & 15) PASS(bg & 15, row_fill1(v, 0xff));
   if (~bg & 15) PASS(~bg & 15, row_fill1(v, 0));
 }
@@ -863,10 +1031,10 @@ static NOINLINE void flush(void)
       }
     }
     {
-      volatile unsigned char *rv = TVRAM + (unsigned long)r * CH * VBYTES;
+      volatile unsigned char *rv = TVRAM + (unsigned long)r * vch * VBYTES;
       for (i = 0; i < nd; i++) {
 #ifdef BLIT_ASM
-        if (sa_ok && !(AT_LO(&lrow[diff[i]]) & 0x1f)) {   /* ASCII・下線なしのセルは手書きの版でまとめて (止まったセルだけ下の C で) */
+        if (sa_ok && !vt_small && !(AT_LO(&lrow[diff[i]]) & 0x1f)) {   /* ASCII・下線なしのセルは手書きの版でまとめて (止まったセルだけ下の C で) */
           int k = vt_blitrow(rv, lrow, drow, diff + i, nd - i, pm_tab, CGROM16, &CRTC_R21, &sa_cur);
           PROF(0, k);
           i += k;
@@ -874,7 +1042,7 @@ static NOINLINE void flush(void)
         }
 #endif
         c = diff[i];
-        if (!sa_ok || (AT_LO(&lrow[c]) & (F_UNDERLINE | F_SPECIAL | F_WIDE | F_WIDECONT | F_EMOJI))) blit(c, r, &lrow[c], &drow[c]);
+        if (!sa_ok || vt_small || (AT_LO(&lrow[c]) & (F_UNDERLINE | F_SPECIAL | F_WIDE | F_WIDECONT | F_EMOJI))) blit(c, r, &lrow[c], &drow[c]);
         else blit_plain(rv + c, &lrow[c], &drow[c]);
         drow[c] = lrow[c];
       }
@@ -1582,14 +1750,16 @@ void vt_con_rect(int col, int row, int w, int h);
 void vt_con_visible(int on);
 static void pane_follow(void)
 {
-  int x = pane_x, y = pane_y, w = pane_w, h = pane_h, r;
+  int x = pane_px, y = pane_py, w = pane_w, h = pane_h, r;
   if (vt_hidden && !pane_dynhid) return;
   r = pane_read(&x, &y, &w, &h);
   if (r == 2) { if (!pane_dynhid) { vt_hidden = 1; pane_dynhid = 1; csr_shown = 0; } return; }
   if (r != 1) return;
-  if (pane_dynhid || x != pane_x || y != pane_y || w != pane_w || h != pane_h) {
+  if (pane_dynhid || x != pane_px || y != pane_py || w != pane_w || h != pane_h) {
     pane_dynhid = 0;
-    vt_con_rect(x, y, w, h);
+    vt_con_rect(x / CW, y / CH, w, h);
+    pane_px = x; pane_py = y;
+    vt_base = TVRAM_PHYS + (unsigned long)y * VBYTES + x / 8;   /* 行が 16 ドットの倍数とは限らない */
     vt_con_visible(1);
   }
 }
@@ -1681,7 +1851,9 @@ void vt_write(const unsigned char *p, int n)
 }
 
 /* ================= 初期化・終了 ================= */
-void vt_default_size(int *cols, int *rows) { if (cols) *cols = MAXCOLS; if (rows) *rows = MAXROWS; }
+/* 小さい字のモード (6x12、128x42)。vt_init の前に呼ぶ。全体で 1 つ (端末ごとではない) */
+void vt_set_small(int on) { vt_small = on ? 1 : 0; vch = vt_small ? 12 : 16; }
+void vt_default_size(int *cols, int *rows) { if (cols) *cols = SCRCOLS; if (rows) *rows = SCRROWS; }
 static int vt_up;   /* vt_init 済み (vt_fini で 0) */
 static void pane_probe(void);
 /* vt_init の前 (ssh.x の pty 要求は画面を切り替える前) は、これから描く枠の大きさを返す */
@@ -1689,13 +1861,15 @@ void vt_get_size(int *cols, int *rows)
 {
   if (!vt_up) {
     pane_probe();
-    if (cols) *cols = vt_pane ? pane_w : MAXCOLS;
-    if (rows) *rows = vt_pane ? pane_h : MAXROWS;
+    if (cols) *cols = vt_pane ? pane_w : SCRCOLS;
+    if (rows) *rows = vt_pane ? pane_h : SCRROWS;
     return;
   }
-  if (cols) *cols = COLS; if (rows) *rows = ROWS;
+  if (cols) *cols = COLS;
+  if (rows) *rows = ROWS;
 }
 void vt_get_origin(int *col, int *row) { if (col) *col = vt_pane ? pane_x : 0; if (row) *row = vt_pane ? pane_y : 0; }
+void vt_get_origin_px(int *x, int *y) { if (x) *x = vt_pane ? pane_px : 0; if (y) *y = vt_pane ? pane_py : 0; }
 
 #ifdef VT_HOSTTEST
 static int host_pane_x = -1, host_pane_y, host_pane_w, host_pane_h;
@@ -1721,17 +1895,21 @@ static int pane_read(int *px, int *py, int *pw, int *ph)
     register long d2 __asm__("d2") = -1;
     __asm__ volatile ("trap #15" : "+r"(d0), "+r"(d1), "+r"(d2) : : "cc", "memory");
     org = d1; size = d2;
+    if (d0 == 0x5a363132L) {   /* 'Z612': zos.x の小さい字 (6x12) のペイン。大きさはそのセルなので、8x16 で入る分に直す */
+      int w6 = ((size >> 16) & 0xffff) + 1, h6 = (size & 0xffff) + 1;
+      size = ((long)(w6 * 6 / 8 - 1) << 16) | (h6 * 12 / 16 - 1);
+    }
   }
 #endif
   w = ((size >> 16) & 0xffff) + 1; h = (size & 0xffff) + 1;
   if (org == -1L) {
-    if (w >= 8 && w <= MAXCOLS && h >= 4 && h <= MAXROWS) { *pw = w; *ph = h; return 2; }
+    if (w >= 8 && w <= 96 && h >= 4 && h <= 32) { *pw = w; *ph = h; return 2; }
     return 0;
   }
-  x = ((org >> 16) & 0xffff) / CW; y = (org & 0xffff) / CH;
-  if (w < MAXCOLS || x != 0 || y != 0) {   /* zos.x のペインはいちばん上の行 (タブの列) より下 */
-    /* 枠らしいものだけ (左端が 4 桁の倍数、画面に収まる) */
-    if ((x & 3) == 0 && w >= 8 && h >= 4 && x + w <= MAXCOLS && y + h <= MAXROWS) {
+  x = (org >> 16) & 0xffff; y = org & 0xffff;   /* ドット */
+  if (w < 96 || x != 0 || y != 0) {   /* zos.x のペインはいちばん上の行 (タブの列) より下 */
+    /* 枠らしいものだけ (左端が 16 ドットの倍数 = 偶数バイト、画面に収まる) */
+    if ((x & 15) == 0 && w >= 8 && h >= 4 && x / CW + w <= 96 && y + h * CH <= 512) {
       *px = x; *py = y; *pw = w; *ph = h; return 1;
     }
   }
@@ -1739,9 +1917,12 @@ static int pane_read(int *px, int *py, int *pw, int *ph)
 }
 static void pane_probe(void)
 {
-  int x = 0, y = 0, w = MAXCOLS, h = MAXROWS, r = pane_read(&x, &y, &w, &h);
+  int x = 0, y = 0, w = 96, h = 32, r = pane_read(&x, &y, &w, &h);
   vt_pane = 0; pane_dyn = 0; pane_dynhid = 0;
-  if (r) { vt_pane = 1; pane_x = x; pane_y = y; pane_w = w; pane_h = h; pane_dyn = 1; pane_dynhid = (r == 2); }
+  if (r) {
+    vt_pane = 1; pane_px = x; pane_py = y; pane_x = x / CW; pane_y = y / CH; pane_w = w; pane_h = h;
+    pane_dyn = 1; pane_dynhid = (r == 2);
+  }
 }
 
 void vt_init(int cols, int rows)
@@ -1751,10 +1932,10 @@ void vt_init(int cols, int rows)
   if (vc_inited) { vt_con_new(0); return; }   /* 画面は占有済み (2 つ目以降の端末の HELLO など): 端末の状態だけ初期化 */
   vt_hidden = 0;
 #endif
-  if (cols <= 0) cols = MAXCOLS;
-  if (rows <= 0) rows = MAXROWS;
-  if (cols > MAXCOLS) cols = MAXCOLS;
-  if (rows > MAXROWS) rows = MAXROWS;
+  if (cols <= 0) cols = SCRCOLS;
+  if (rows <= 0) rows = SCRROWS;
+  if (cols > SCRCOLS) cols = SCRCOLS;
+  if (rows > SCRROWS) rows = SCRROWS;
   pane_probe();
 #if defined(VT_VCONS) && !defined(VT_ZOS)
   if (pane_dynhid) vt_hidden = 1;
@@ -1763,13 +1944,14 @@ void vt_init(int cols, int rows)
 #endif
   vt_base = TVRAM_PHYS;
   if (vt_pane) {
-    vt_base = TVRAM_PHYS + (unsigned long)pane_y * CH * VBYTES + pane_x;
+    vt_base = TVRAM_PHYS + (unsigned long)pane_py * VBYTES + pane_px / 8;   /* ssh.x などは 8x16 だけ。行はドットで */
     if (cols > pane_w) cols = pane_w;
     if (rows > pane_h) rows = pane_h;
   }
   COLS = cols; ROWS = rows;
   vt_up = 1;
   if (!sg_ready) { sg_build(); pm_build(); }
+  if (vt_small && !ank6) { int s_ = sup_enter(); small_fonts(); sup_leave(s_); }
   cx = cy = 0; top = 0; bot = ROWS - 1; pend_wrap = 0;
   c_fg = 7; c_bg = 0; a_bold = a_uline = a_reverse = 0; attr_update();
   decckm = 0; decawm = 1; cur_vis = 1; alt_active = 0; cur = rows_main;
@@ -1875,7 +2057,7 @@ int vt_host_verify(void)
     for (c = 0; c < COLS; c++) blit(c, r, &cur[r][c], 0);
   if (csr_shown) cursor_xor(csr_x, csr_y);
   for (p = 0; p < 4 && ok; p++)
-    for (r = 0; r < ROWS * CH && ok; r++)
+    for (r = 0; r < ROWS * vch && ok; r++)
       for (c = 0; c < COLS; c++) {
         long o = (long)(vt_base - TVRAM_PHYS) + (long)p * PLANE + (long)r * VBYTES + c;
         if (save[o] != vt_host_vram[o]) { ok = 0; break; }
@@ -1912,7 +2094,7 @@ unsigned long vt_emoji_cp(int idx) { return (idx >= 0 && idx < EMOJITAB_N) ? emo
   X(decckm) X(decawm) X(cur_vis) X(alt_active) X(gl) X(sv_cx) X(sv_cy) X(sv_fg) X(sv_bg) X(sv_bold) X(sv_ul) X(sv_rev) \
   X(sv_sp0) X(sv_sp1) X(sv_gl) X(csr_shown) X(csr_x) X(csr_y) X(state) X(csi_priv) X(csi_inter) X(nparam) X(str_kind) \
   X(str_esc) X(str_len) X(cs_which) X(u_cp) X(u_need) X(outq_len) X(vt_hidden) \
-  X(vt_base) X(COLS) X(ROWS) X(vt_pane) X(pane_x) X(pane_y) X(pane_w) X(pane_h)
+  X(vt_base) X(COLS) X(ROWS) X(vt_pane) X(pane_x) X(pane_y) X(pane_w) X(pane_h) X(pane_px) X(pane_py)
 #define VC_ARRS X(g_special) X(tabstop) X(param) X(str_buf) X(outq) X(rows_main) X(rows_alt) X(drawn)
 typedef struct {
 #define X(v) __typeof__(v) v;
@@ -2002,11 +2184,12 @@ void vt_con_rect(int col, int row, int w, int h)
 {
   int r;
   vs_pend = 0;
-  if (w > MAXCOLS) w = MAXCOLS;
-  if (h > MAXROWS) h = MAXROWS;
+  if (w > SCRCOLS) w = SCRCOLS;
+  if (h > SCRROWS) h = SCRROWS;
   pane_x = col; pane_y = row; pane_w = w; pane_h = h;
-  vt_pane = (col != 0 || w < MAXCOLS || row != 0 || h < MAXROWS);
-  vt_base = TVRAM_PHYS + (unsigned long)row * CH * VBYTES + col;
+  pane_px = col * (vt_small ? 6 : 8); pane_py = row * vch;
+  vt_pane = (col != 0 || w < SCRCOLS || row != 0 || h < SCRROWS);
+  vt_base = TVRAM_PHYS + (unsigned long)row * vch * VBYTES + (vt_small ? col * 6 / 8 : col);   /* 小さい字: col は 4 の倍数 */
   COLS = w; ROWS = h;
   top = 0; bot = ROWS - 1; pend_wrap = 0;
   clamp_cursor();

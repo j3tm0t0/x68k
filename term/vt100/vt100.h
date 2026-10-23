@@ -45,6 +45,11 @@ void vt_get_size(int *cols, int *rows);
 /* 描いている枠の原点 (桁・行)。全面なら 0,0。Z-OS (zos.x) のペインの中では、_B_CONSOL が返したペインの左上。
  * vt_init のときに _B_CONSOL を読み、幅 96 桁未満か原点が左端でなければ枠の中だけに描く (vt_get_size はその枠の大きさ)。 */
 void vt_get_origin(int *col, int *row);
+void vt_get_origin_px(int *x, int *y);   /* 同じ原点をドットで (zos.x の小さい字のペインは行が 12 ドット) */
+
+/* 小さい字のモード: 6x12 ドットの字で 128x42 (既定は 8x16 で 96x32)。vt_init の前に呼ぶ。全体で 1 つ。
+ * 字形は ANK 6x12 と全角 12x12 (IOCS _FNTADR)。絵文字は描けない (??)。 */
+void vt_set_small(int on);
 
 /* 既定の桁数・行数 (96x32)。 */
 void vt_default_size(int *cols, int *rows);
