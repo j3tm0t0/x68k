@@ -115,7 +115,7 @@ Z 側の 59 秒に対して 100 倍以上速い。Monocypher の公式ページ�
 
 ## 実機でやること (まだ何もしていない)
 
-1. **Pico** (2 台目、netpipe 用): BOOTSEL で `picotool load -x /Users/moto/Dropbox/src/github.com/yunkya2/x68kzremotedrv-accel/build/x68kzremotedrv.uf2`。
+1. **Pico** (2 台目、netpipe 用): BOOTSEL で `picotool load -x <x68kzremotedrv の作業木>/build/x68kzremotedrv.uf2`。
    設定 (フラッシュ 0x1F0000) は残る。
 2. **Z**: CONFIG.SYS が読み込む npd.sys を `net/npd/npd.sys` (1.1、起動時に `npd.sys 1.1 (accel)` と出る) に置き換える
    (A: の HDS イメージなら書き直し。npd.sys 1.0 のままだと ETD 20 が -1 を返し `accel_open` が -1 になる)。
