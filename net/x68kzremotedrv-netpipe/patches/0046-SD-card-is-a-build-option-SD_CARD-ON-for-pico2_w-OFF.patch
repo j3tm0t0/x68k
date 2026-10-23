@@ -1,0 +1,212 @@
+From 4fd57c36943dac5b3e15dbc8f03035c473595af0 Mon Sep 17 00:00:00 2001
+From: moto <j3tm0t0@gmail.com>
+Date: Fri, 23 Oct 2026 23:53:42 +0900
+Subject: [PATCH] SD card is a build option: SD_CARD (ON for pico2_w, OFF for
+ pico_w); no sdcopy / fetch on the RP2040
+
+-DSD_CARD=OFF leaves out FatFs and hw_config.c; sdhds.c / sdfs.c then build stubs (sd: paths
+fail to open, no SD unit, sdcopy answers "err sdcopy not in this build"). On the RP2040 an
+SD_CARD=ON build has HDS / remote-unit support but no sdcopy and no boot-time fetch (RAM).
+Free heap at boot: Pico W without SD 112,136 B, Pico W with SD 107,872 B (each open SD file
++608 B), Pico 2 W 343,952 B.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PrGdt1XK1exBgERrMmLA1u
+---
+ CMakeLists.txt | 25 +++++++++++++++++++------
+ src/connect.c  |  4 ++++
+ src/sdfs.c     | 28 ++++++++++++++++++++++++++++
+ src/sdhds.c    | 27 +++++++++++++++++++++++----
+ 4 files changed, 74 insertions(+), 10 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 6c08e28..85ed1bb 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -36,10 +36,18 @@ add_definitions(-DHAVE_CONFIG_H)
+ 
+ # Build libsmb2 as a library
+ add_subdirectory(${LIBSMB2_PATH} libsmb2)
+-# SD カード (SPI) と FatFs: HDS を SD に置く (config の HDS を "sd:/ファイル名" にする)
+-add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/lib/FatFs_SD/src FatFs_SD)
+-# file_stream.c は fopencookie (GNU 拡張) を使う。使わないが、ライブラリがまとめて入れるのでここだけ GNU にする
+-set_source_files_properties(${CMAKE_CURRENT_LIST_DIR}/lib/FatFs_SD/src/src/file_stream.c PROPERTIES COMPILE_DEFINITIONS _GNU_SOURCE)
++# SD カード (SPI) と FatFs: HDS を SD に置く (config の HDS を "sd:/ファイル名" にする)、リモートドライブのユニット (REMOTEn = sd:/)。
++# 既定は Pico 2 W だけ。Pico W は RAM が少ないので -DSD_CARD=ON で入れる (sdcopy と起動時の fetch は入らない)
++if(PICO_PLATFORM MATCHES "rp2350")
++    option(SD_CARD "microSD on SPI0 (FatFs)" ON)
++else()
++    option(SD_CARD "microSD on SPI0 (FatFs)" OFF)
++endif()
++if(SD_CARD)
++    add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/lib/FatFs_SD/src FatFs_SD)
++    # file_stream.c は fopencookie (GNU 拡張) を使う。使わないが、ライブラリがまとめて入れるのでここだけ GNU にする
++    set_source_files_properties(${CMAKE_CURRENT_LIST_DIR}/lib/FatFs_SD/src/src/file_stream.c PROPERTIES COMPILE_DEFINITIONS _GNU_SOURCE)
++endif()
+ 
+ # Application, including in the FreeRTOS-Kernel
+ add_executable(
+@@ -55,7 +63,6 @@ add_executable(
+         src/netpipe.c
+         src/sdhds.c
+         src/sdfs.c
+-        src/hw_config.c
+         src/usb_descriptors.c
+         x68kserremote/service/remoteserv.c
+         iconv/iconv_mini.c
+@@ -168,7 +175,13 @@ target_link_libraries(${PROJECT_NAME}
+         FreeRTOS-Kernel-Heap3
+         tinyusb_device
+         tinyusb_board
+-        no-OS-FatFS-SD-SDIO-SPI-RPi-Pico
+ )
++if(SD_CARD)
++    target_sources(${PROJECT_NAME} PRIVATE src/hw_config.c)
++    target_compile_definitions(${PROJECT_NAME} PRIVATE SD_CARD=1)
++    target_link_libraries(${PROJECT_NAME} no-OS-FatFS-SD-SDIO-SPI-RPi-Pico)
++else()
++    target_compile_definitions(${PROJECT_NAME} PRIVATE SD_CARD=0)
++endif()
+ 
+ pico_add_extra_outputs(${PROJECT_NAME})
+diff --git a/src/connect.c b/src/connect.c
+index 337e8dc..ef5e113 100644
+--- a/src/connect.c
++++ b/src/connect.c
+@@ -43,7 +43,9 @@
+ #include "config.h"
+ #include "main.h"
+ #include "sdhds.h"
++#if SD_CARD
+ #include "pico/aon_timer.h"
++#endif
+ #include "pico/unique_id.h"
+ #include "lwip/dhcp.h"
+ #include "lwip/dns.h"
+@@ -180,6 +182,7 @@ static void connection(int mode)
+         time_t tt = (time_t)((boottime + to_us_since_boot(get_absolute_time())) / 1000000);
+         struct tm *tm = localtime(&tt);
+         printf("Boottime UTC %04d/%02d/%02d %02d:%02d:%02d\n", tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday, tm->tm_hour, tm->tm_min, tm->tm_sec);
++#if SD_CARD
+         {
+             /* SD カード (FatFs) のファイルの時刻 (get_fattime) と time() は always-on タイマー (sdhds.c の sdc_init で 0 から動かしてある) */
+             static bool set;
+@@ -189,6 +192,7 @@ static void connection(int mode)
+                 set = true;
+             }
+         }
++#endif
+ 
+         disconnect_smb2(smb2ipc);
+ 
+diff --git a/src/sdfs.c b/src/sdfs.c
+index 0a68bf6..3cc936f 100644
+--- a/src/sdfs.c
++++ b/src/sdfs.c
+@@ -13,6 +13,7 @@
+ #include <fcntl.h>
+ #include <time.h>
+ 
++#if SD_CARD
+ #include "ff.h"
+ #include "smb2.h"
+ #include "libsmb2.h"
+@@ -392,3 +393,30 @@ int sdfs_statfs(const char *path, uint64_t *total, uint64_t *avail)
+     sdc_unlock();
+     return -fr2errno(fr);
+ }
++
++#else   /* !SD_CARD */
++#include <stdint.h>
++#include <stdbool.h>
++#include <sys/types.h>
++#include <errno.h>
++#include "smb2.h"
++#include "libsmb2.h"
++#include "sdfs.h"
++bool sdfs_is(const char *rootpath) { (void)rootpath; return false; }   /* sd: のユニットは作らない (vd_init は rootpath を入れない) */
++int sdfs_stat(const char *path, struct smb2_stat_64 *st) { return -ENODEV; }
++int sdfs_mkdir(const char *path) { return -ENODEV; }
++int sdfs_rmdir(const char *path) { return -ENODEV; }
++int sdfs_rename(const char *a, const char *b) { return -ENODEV; }
++int sdfs_unlink(const char *path) { return -ENODEV; }
++uint64_t sdfs_opendir(const char *path, int *err) { *err = ENODEV; return 0; }
++struct smb2dirent *sdfs_readdir(uint64_t dir) { return NULL; }
++int sdfs_closedir(uint64_t dir) { return 0; }
++uint64_t sdfs_open(const char *path, int flags, int *err) { *err = ENODEV; return 0; }
++int sdfs_close(uint64_t fd) { return -EBADF; }
++ssize_t sdfs_read(uint64_t fd, void *buf, size_t count) { return -EBADF; }
++ssize_t sdfs_write(uint64_t fd, const void *buf, size_t count) { return -EBADF; }
++int sdfs_ftruncate(uint64_t fd, uint64_t length) { return -EBADF; }
++int64_t sdfs_lseek(uint64_t fd, int64_t offset, int whence) { return -EBADF; }
++int sdfs_fstat(uint64_t fd, struct smb2_stat_64 *st) { return -EBADF; }
++int sdfs_statfs(const char *path, uint64_t *total, uint64_t *avail) { *total = *avail = 0; return -ENODEV; }
++#endif  /* SD_CARD */
+diff --git a/src/sdhds.c b/src/sdhds.c
+index 109d6a5..1843556 100644
+--- a/src/sdhds.c
++++ b/src/sdhds.c
+@@ -15,14 +15,17 @@
+ #include "FreeRTOS.h"
+ #include "semphr.h"
+ #include "task.h"
++#if SD_CARD
+ #include "pico/aon_timer.h"
+ #include "ff.h"
++#endif
+ #include "smb2.h"
+ #include "libsmb2.h"
+ #include "main.h"
+ #include "vd_command.h"
+ #include "sdhds.h"
+ 
++#if SD_CARD
+ #define SDHDS_MAX   6
+ 
+ static FATFS fs;
+@@ -148,6 +151,20 @@ int sdhds_write(void *handle, uint32_t lba, const uint8_t *buf, int nsect)
+     return r;
+ }
+ 
++#else   /* !SD_CARD: SD カードの無いビルド。呼ぶ側を変えずに済むように何もしない版 */
++
++void sdc_init(void) {}
++void sdc_lock(void) {}
++void sdc_unlock(void) {}
++bool sdc_mount(void) { return false; }
++bool sdhds_is(const char *path) { return strncmp(path, "sd:", 3) == 0; }
++int64_t sdhds_open(const char *path, void **handle) { (void)path; (void)handle; printf("SD: not in this build\n"); return -1; }
++bool sdhds_in_use(const char *sdpath) { (void)sdpath; return false; }
++int sdhds_read(void *handle, uint32_t lba, uint8_t *buf, int nsect) { return -1; }
++int sdhds_write(void *handle, uint32_t lba, const uint8_t *buf, int nsect) { return -1; }
++#endif  /* SD_CARD */
++
++#if SD_CARD && !PICO_RP2040
+ /*
+  * SMB の共有から SD カードへ写す (Wi-Fi 越しにカードへ HDS を載せる道。カードを抜かずに済む)。
+  * 途中で切れたものを使わないよう、別名 (.part) に書いてから名前を変える。上書きは HDS として開いていないファイルだけ。
+@@ -158,11 +175,7 @@ static volatile uint64_t cp_done, cp_total;
+ 
+ static int64_t sd_copy(struct smb2_context *smb2, const char *smbpath, const char *sdpath, const char **why)
+ {
+-#if PICO_RP2040
+-    size_t bsize = 8192;                /* Pico W は RAM が少ない */
+-#else
+     size_t bsize = 32768;
+-#endif
+     uint8_t *buf = malloc(bsize);
+     char tmp[128];
+     FIL *f = NULL;
+@@ -357,3 +370,9 @@ int sdcopy_status(char *s, size_t size)
+         return snprintf(s, size, " sdcopy=err:%s", cp_why);
+     }
+ }
++#else   /* SD カードが無いか Pico W (RP2040): 写す機能は無い (RAM が足りない) */
++int64_t sdhds_fetch(struct smb2_context *smb2, const char *smbpath, const char *sdpath) { return 0; }
++void sdcopy_init(void) {}
++const char *sdcopy_request(const char *args) { (void)args; return "err sdcopy not in this build"; }
++int sdcopy_status(char *s, size_t size) { (void)s; (void)size; return 0; }
++#endif
+-- 
+2.54.0 (Apple Git-157)
+

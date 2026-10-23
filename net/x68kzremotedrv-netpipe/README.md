@@ -51,6 +51,7 @@ USB キーボード (0012) を入れるときは `cmake -DHID_KEYBOARD=ON ..` (�
 | `driver/settingui.c` | 0043: 設定画面のネットワークの項目を「その他の設定」の枠の中 (7〜11 行目) に入れる。別の見出しが上の枠の下の線と重なっていた (実機の Z で直ったことを確認) |
 | `src/hdscache.c` | 0044: HDS の読み込みキャッシュに書いたとき、その sector を持つ組を全部直す (1 つ目で止めていた)。組は読み損ねた LBA から始まるので重なることがあり、古い中身を返し得た。ここでは 8 セクタの組がほぼ揃うので実害はまず無いが、PZL (32 セクタ) では Z が止まる原因だった (Charlie が見つけた) |
 | `src/sdhds.c` / `src/FreeRTOSConfig.h` | 0045: Pico W (RP2040) でも SD を使えるように RAM を詰める: HDS の FIL は開くときに確保、sdcopy のタスク (8KB) は写すたびに作って消す、写す塊は RP2040 では 8KB。FreeRTOS 11 の RP2040 の port 用に `configUSE_PASSIVE_IDLE_HOOK` の既定。Pico W (`-DPICO_BOARD=pico_w -DPICO_PLATFORM=rp2040 -DTSP=OFF`、pico-sdk 2.1.1) の起動時の空きヒープ 107,468 B (SD の前の同じビルドは 112,264 B)。実機は未試験 |
+| `CMakeLists.txt` / `src/sdhds.c` / `src/sdfs.c` / `src/connect.c` | 0046: SD カードをビルドの選択に (`-DSD_CARD=ON|OFF`、既定は pico2_w で ON、pico_w で OFF)。OFF なら FatFs を入れず、`sd:` は開けない。Pico W で ON にしても sdcopy と起動時の fetch は入れない (RAM)。起動時の空きヒープ: Pico W (SD なし) 112,136 B、Pico W (SD あり) 107,872 B、Pico 2 W 343,952 B |
 | `driver/bootwait.S` / `driver/mkbootwait.py` | 0028: ◆ の行を本物の進み具合 (Wi-Fi → SMB → HDS → 起動) に |
 | `driver/mkbootwait.py` | 0027: ロゴの行は見た目の中央から 20 ドット左 (最終の配置) |
 | `driver/mkbootwait.py` | 0026: ロゴの行を「副題の左端にそろえる」と「見た目の中央」の中間に (既定 BW_LOGO=between) |

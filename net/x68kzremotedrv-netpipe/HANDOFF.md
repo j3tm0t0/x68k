@@ -72,10 +72,10 @@ make -j8      # x68kzremotedrv.elf / .uf2 (fork の build-p2w/ で作れる。00
 
 ## Pico W (RP2040) 向け
 
-- 0045 まで + `-DPICO_BOARD=pico_w -DPICO_PLATFORM=rp2040 -DTSP=OFF -DHID_KEYBOARD=ON` (pico-sdk 2.1.1、FreeRTOS 11 の RP2040 port、2 コア SMP のまま) でビルドが通る。fork の build-pw/、uf2 3abf28a1。**実機は未試験**
-- 起動時の空きヒープ: 107,468 B (SD の前 0b1063c の同じビルド 112,264 B、差 4.8KB: fs 616・names 384・cp_src/dst 384・FatFs のロック表 256 など)。
-  使ったときだけ: HDS / C: のファイル 1 つ 608 B、sdcopy の間 8KB (スタック) + 8KB (塊)。動いている Pico W のヒープの使用の最大は約 104KB だったので、余裕は 3KB ほどしかない
-- 気になること: pico-sdk 2.x + FreeRTOS 11 の SMP で、設定の書き込み (flash_safe_execute) が RP2350 の 1 コアのときのように -4 にならないかは未確認
+- SD はビルドの選択 (0046): `-DPICO_BOARD=pico_w -DPICO_PLATFORM=rp2040 -DTSP=OFF -DHID_KEYBOARD=ON` に `-DSD_CARD=ON` を足したときだけ。
+  Pico W では SD を入れても sdcopy と起動時の fetch は入らない。pico-sdk 2.1.1、FreeRTOS 11 の RP2040 port (2 コア SMP のまま)。fork の build-pw/ (SD なし)、build-pwsd/ (SD あり)
+- 起動時の空きヒープ: SD なし 112,136 B (SD の前 0b1063c とほぼ同じ)、SD あり 107,872 B (開いた SD のファイル 1 つにつき +608 B)。動いている Pico W のヒープの使用の最大は約 104KB
+- **実機は未試験** (予備の Pico W は外してある。試すときは team-lead が moto に聞く)。pico-sdk 2.x + FreeRTOS 11 の SMP で設定の書き込み (flash_safe_execute) が通るかも未確認
 
 ## 次にやること
 
