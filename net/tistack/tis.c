@@ -53,10 +53,32 @@ const struct backend *be = &be_loop;
 
 /* -ffreestanding でも gcc は構造体のコピーなどで memcpy / memset を呼ぶ (ホストの試験では libc のものを使う) */
 #ifdef __m68k__
+/* 受信 / 送信リングと TSP の要求・応答はこれで写すので、Z の速さの律速 (README「速さ」)。
+   番地の偶奇がそろえば long で 16 バイトずつ (68000 は奇数番地に word / long で触れない)、そろわなければ 1 バイトずつを
+   8 回ずつ並べる (dbra の分を減らす) */
 void *memcpy(void *d, const void *s, unsigned long n)
 {
   uint8_t *p = d;
   const uint8_t *q = s;
+  if (n >= 16) {
+    unsigned long k;
+    if ((((uint32_t)p ^ (uint32_t)q) & 1) == 0) {
+      if ((uint32_t)p & 1) {
+        *p++ = *q++;
+        n--;
+      }
+      if ((k = n >> 4) != 0)
+        __asm__ volatile ("1: move.l (%0)+,(%1)+\n\tmove.l (%0)+,(%1)+\n\tmove.l (%0)+,(%1)+\n\tmove.l (%0)+,(%1)+\n"
+                          "\tsubq.l #1,%2\n\tbne.s 1b" : "+a"(q), "+a"(p), "+d"(k) : : "memory");
+      n &= 15;
+    } else {
+      k = n >> 3;
+      __asm__ volatile ("1: move.b (%0)+,(%1)+\n\tmove.b (%0)+,(%1)+\n\tmove.b (%0)+,(%1)+\n\tmove.b (%0)+,(%1)+\n"
+                        "\tmove.b (%0)+,(%1)+\n\tmove.b (%0)+,(%1)+\n\tmove.b (%0)+,(%1)+\n\tmove.b (%0)+,(%1)+\n"
+                        "\tsubq.l #1,%2\n\tbne.s 1b" : "+a"(q), "+a"(p), "+d"(k) : : "memory");
+      n &= 7;
+    }
+  }
   while (n--)
     *p++ = *q++;
   return d;

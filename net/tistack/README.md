@@ -183,7 +183,7 @@ Z (tis.x) はソケット表・受信リング・送信リング・ブロッキ�
 | 記録形式 `tsp.h` (Z と Pico で同じファイル) | 実装・ホストで試験済み |
 | Z 側 backend `pico.c` + `tis.c` の手直し | 実装・ホストで試験済み (tis.x は m68k でビルドが通る、XEiJ / 実機では未試験) |
 | Pico 側の窓口 `pico/tsp_svc.c` (lwIP raw API) + `tsp_plat.h` + `tsp_lwipopts.h` | 実装・**本物の lwIP 2.2** (pico-sdk の lib/lwip) の上でホストで試験済み。Cortex-M33 向けにコンパイルが通る (text 5.3KB / bss 7.9KB) |
-| npd.x / npd.sys 1.2 の TSP レコードの受け渡し | 実装・m68k でビルドが通る。**試験していない** (実機が要る) |
+| npd.x / npd.sys 1.2 の TSP レコードの受け渡し | 実装・**XEiJ + harness/picosim で試験済み** (下の「XEiJ で端から端まで」)。実機では未試験 |
 | Pico のファーム (netpipe.c) への組み込み | 設計だけ (下)。新しいファーム (Pico Z Loader、Pico 2 W) に入れる |
 | TLS (mbedTLS)、名前で connect して IPv6、ICMP (ping / traceroute) | 設計だけ。記録形式に場所を取ってある |
 
@@ -392,26 +392,69 @@ tsp_svc.c をそのまま載せる。LAN の相手 (echo 7 / discard 9 / source 
 
 - 記録形式の効率: 1 交換あたりのデータ **Z → LAN 4033 バイト、LAN → Z 4018 バイト** (上限 4078 / 4064 の 99%)。
   1MB に 260 交換。速さは「交換 1 回の時間」で決まり、記録形式はほぼ限りまで詰めている
-- **Z の側の律速は写し**。tis.c の memcpy は 1 バイトずつ (68000 で 1 バイト約 3µs) なので、今のままだと 100〜130KB/s
-  (それでも xip.x の 45KB/s の 2〜3 倍)。long で写す memcpy (約 0.6µs / バイト) にすれば 300〜400KB/s の見込み。
-  ただし 68000 は奇数番地に long で触れないので、写し元と写し先の番地の偶奇がそろうときだけ。リングの位置は任意なので
-  半分ほどは 1 バイトずつに落ちる (偶奇が違うときの写し方か、リングの位置を偶数にそろえる工夫が要る)
+- **Z の側の律速は写し**。1 バイトずつの memcpy (68000 で 1 バイト約 3µs) だと 100〜130KB/s の見込みだった。
+  tis.c の memcpy は、番地の偶奇がそろえば long で 16 バイトずつ、そろわなければ 1 バイトずつを 8 回並べて写すようにした
+  (XEiJ で 2 倍になった。下の「XEiJ で端から端まで」)
 - SCSI の交換 1 回の時間は実機で測っていない (npd.x のメモでは SCSI の命令 1 回 0.2〜2.5ms、交換は書き込み + 読み込みの 2 回)
 - 往復の遅れ: 交換のあと Pico に届いた答えは次の交換で来る。Z が何か送ると、その要求の WINDOW が「送りたい量 =
   送信リングの大きさ」を申告し、Pico は CREDIT を増やして MORE を立てるので、すぐ次の交換が起きる (1 バイトの打鍵でも
   余計な交換が 1〜2 回)。そこで echo が拾えるので往復 10ms。何も送っていないときに届いたものは最大 60ms
   (npd.x の問い合わせ間隔) 待つ。connect は 70ms (SYN を出した交換の次の問い合わせで CONNECTED)
 
+### XEiJ で端から端まで (tests/xeij_pico.sh)
+
+2026-10-23。harness/picosim (Mac の上の Pico W の代わり、XEiJ の SCSI とメールボックスを横取り) に tsp_svc と lwIP を
+載せ、XEiJ の中の **無修正の tis.x -p / npd.x / npd.sys 1.2 / rcmd.x / ssh.x** を本物の lwIP 越しに Mac につないだ。
+
+```
+make -C pico/picosim              # harness/picosim/build/picosim に tsp_svc + lwIP (pico-sdk の lib/lwip) を入れる
+tests/xeij_pico.sh                # ホストのディレクトリから XEiJ を起動し、試験を流して結果を表示する (約 2 分)
+HDS=npd 入りの .hds tests/xeij_xip.sh   # 比べる用: 同じ XEiJ + picosim で xip.x の道
+```
+
+- `pico/picosim/tsp_glue.c`: lwIP の netif を picosim の LAN (libslirp) の 1 台にする (`lan_attach` / `lan_send`)。
+  IP は **Z の IP 192.168.1.68** (Pico が Z の IP を自分の IP にする案のとおり)。picosim は Z の IP を名乗る口があれば
+  代理 ARP をしない (harness/picosim/lan_slirp.c に 1 行)。だから Mac → 127.0.0.1:23468 → slirp → lwIP の 2323 → tis.x →
+  rcmd.x とつながる
+- lwIP と libslirp はどちらも `tcp_input` / `tcp_output` などを持つので、lwIP・tsp_svc・glue を `ld -r` で 1 個の .o に
+  まとめて名前を外に出さない (登録は constructor)
+- **lwIP は入れ子に呼べない**: lwIP が送ったフレームに slirp が lan_send の中で答え、すぐ lwIP に渡すと tcp_output の途中で
+  tcp_input が走って落ちた。受けたフレームは溜めて、poll と交換の初めに渡す (Pico でも cyw43 の受信は別の文脈なので同じ形)
+- DNS: Pico の lwIP の DNS を slirp の DNS の口 (192.168.1.3) にすると、Mac の resolver (Tailscale の 100.100.100.100) に
+  送っても答えが返らなかった (Mac から dig すると両方答える。slirp の転送の問題で、tis.x / tsp_svc ではない)。
+  試験は公開の resolver (TSP_DNS=8.8.8.8、slirp の NAT 越しに UDP 1 往復) と、lwIP の手元の名前 `mac.test` (= ゲートウェイ)
+
+結果 (XEiJ 0.26.10.08 -model=SUPER、10MHz 68000、MacBook Pro。どれも通過):
+
+| 試験 | tis.x -p (tsp_svc + lwIP) | xip.x の道 (同じ XEiJ と picosim) |
+|---|---|---|
+| gethostbyname | mac.test 17ms、example.com 82ms (Pico の DNS) | |
+| 1 バイトの往復 (20 回の平均) | **39 ms** | 102 ms |
+| Z → Mac、1MB 中身を見ない (tisnet sink) | **166 KB/s** | 33 KB/s |
+| Mac → Z、1MB 中身を見ない (tisnet src) | **233 KB/s** | 65 KB/s |
+| Mac → Z、rcmd.x の x68put 300KB (圧縮なし) | **167 KB/s** (中身一致) | 17 KB/s |
+| 型付き 300KB (Z が 1 バイトずつ型を作る / 照合する) | put 44 KB/s、get 57 KB/s (中身一致) | |
+| ssh.x → Mac の sshd | 鍵交換・ホスト鍵の検証まで ("No auth methods could be used" で終わる。鍵を置いていないので期待どおり) | |
+| rcmd.x (backlog 0) を tis.x で | echo の rc=0、x68put、exit | |
+
+- tis.c の memcpy を速くした (番地の偶奇がそろえば long で 16 バイトずつ、そろわなければ 1 バイトずつを 8 回並べる) 前後で:
+  sink 82 → 166 KB/s、src 112 → 233 KB/s、x68put 87 → 167 KB/s、ループバックの 300KB 双方向 20 → 17.4 秒、
+  tisrun echo 100,000 バイト往復 3.2 → 2.2 秒。XEiJ のループバックの試験は全部通る (tistest 46、echo 4、rcmd 4、ssh 2)
+- xip.x の道はイメージから起動 (zsh 常駐) で、tis.x の方はホストのディレクトリから COMMAND.X なので、Z の上の残りの
+  仕事は少し違う。XEiJ の CPU と picosim (交換の遅れ 0) は同じ。実機の Z (xip.x で 40〜56KB/s) とは比べない
+- XEiJ の中では交換 1 回の SCSI の時間がほぼ 0 なので、上の数字は **Z の CPU の律速** (tis.x と npd.x の写しと、
+  libsocket / アプリの手間)。実機では交換の時間が足される (picosim の試験の「速さ」の表)
+
 ### Pico 2 W のファームができたら確かめること
 
 1. 実機の交換 1 回の時間 (SCSI の書き込み 8 セクタ + 読み込み 8 セクタ)。速さはほぼこれで決まる
-2. tis.c の memcpy を long にして、Z の写しの時間を実機で測る (XEiJ でも測れる)
-3. npd.x / npd.sys 1.2 の TSP の受け渡し (ETD 25 / 26、TIS_NP_OUT の問い合わせ、MORE による続けての交換)
+2. Z の写しの時間を実機で測る (XEiJ では memcpy の手直しで 2 倍)
+3. npd.x / npd.sys 1.2 の TSP の受け渡しを実機で (XEiJ + picosim では通った)
 4. USB タスクから tsp_exchange を呼ぶときのロック (cyw43_arch_lwip_begin) と所要時間 (MSC 書き込みの応答が遅れないか)
 5. PBUF_POOL が尽きたときの振る舞い (多数の同時ダウンロード) と、TCP_WND / TCP_SND_BUF の値
 6. Pico が Z の IP を名乗る形 (tis.x モード) と、予約するポート
 7. Wi-Fi が切れたときの tsp_shutdown → tsp_init (Z に Network is down が出るか)
-8. 無修正の rcmd.x / ssh.x を実機の tis.x -p で (XEiJ には Pico が無いので、XEiJ では TSP の相手を Z の中に置く試験台が要る)
+8. 無修正の rcmd.x / ssh.x を実機の tis.x -p で (XEiJ + picosim では通った)
 
 ## ファイル
 
