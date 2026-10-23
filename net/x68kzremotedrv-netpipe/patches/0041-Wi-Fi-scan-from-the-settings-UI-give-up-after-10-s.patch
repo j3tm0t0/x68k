@@ -1,0 +1,31 @@
+From b4672176c9cf8954d3cf76236cbb2183a208ab60 Mon Sep 17 00:00:00 2001
+From: moto <j3tm0t0@gmail.com>
+Date: Fri, 23 Oct 2026 20:41:38 +0900
+Subject: [PATCH] Wi-Fi scan from the settings UI: give up after 10 s
+
+When the scan overlaps a Wi-Fi rejoin, cyw43_wifi_scan_active can stay true and the USB task
+(which runs vd_command) waited forever, so the Z lost the disk. Found by the PZL rewrite.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PrGdt1XK1exBgERrMmLA1u
+---
+ src/vd_command.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/vd_command.c b/src/vd_command.c
+index b8f26fe..106571a 100644
+--- a/src/vd_command.c
++++ b/src/vd_command.c
+@@ -276,7 +276,8 @@ int vd_command(uint8_t *cbuf, uint8_t *rbuf)
+         break;
+       }
+       printf("Performing wifi scan\n");
+-      while (cyw43_wifi_scan_active(&cyw43_state)) {
++      /* 10 秒で打ち切る: Wi-Fi のつなぎ直しと重なると scan_active が下りないまま USB タスクが止まる (Charlie が PZL で見つけた) */
++      for (int i = 0; i < 50 && cyw43_wifi_scan_active(&cyw43_state); i++) {
+         vTaskDelay(pdMS_TO_TICKS(200));
+       }
+       *res = wifi_scan_data;
+-- 
+2.54.0 (Apple Git-157)
+

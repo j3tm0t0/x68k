@@ -84,7 +84,7 @@ cp "$D/idzos" "$WORK/idzos"
 
 /usr/sbin/sshd -D -e -o LogLevel=INFO -f "$D/sshd_config" > "$WORK/sshd.log" 2>&1 &
 SPID=$!
-TSP_DNS=192.168.1.3 build/picosim -l 127.0.0.1:$PICOPORT -L none -s 30 > "$WORK/picosim.log" 2>&1 &
+TSP_DNS=192.168.1.3 build/picosim -l 127.0.0.1:$PICOPORT -L none -s 30 -p "$WORK/lan.pcap" > "$WORK/picosim.log" 2>&1 &
 PPID_=$!
 trap 'kill $SPID $PPID_ 2>/dev/null || true; benchlock_release' EXIT
 sleep 1
@@ -96,7 +96,7 @@ U=$(whoami)
 SSHOPT=; [ -n "${ACCEL:-}" ] && SSHOPT="-oAccel=all "
 KEYS="sleep 12;key f10;type ssh.x -t -y -y ${SSHOPT}-i a:/idzos -p $SSHPORT $U@192.168.1.1\\n;waittext type something 240"
 KEYS="$KEYS;key f10;type echo left pane while ssh waits\\n;key f10;type abc\\n;waittext got: abc 60;sleep 3"
-KEYS="$KEYS;dump zos.bin 0xE00000 0x80000;sleep 2;type exit\\n;sleep 2;key opt1 q"
+KEYS="$KEYS;dump zos.bin 0xE00000 0x80000;key f10;type a:/tis.x -s > a:/TISS.TXT\\n;sleep 3;key f10;sleep 1;type exit\\n;sleep 2;key opt1 q"
 AGENTJAR=$AGENT XEIJ=$XEIJ ZOS_OUT=$OUT ZOS_JAVA_OPTS="-Dpicosim=127.0.0.1:$PICOPORT -Dpicosim.ids=6" \
 FILES="$ZOS/zos.x $SSH_X $WORK/idzos $TOP/net/tistack/tis.x $TOP/net/npd/npd.sys $TOP/net/npd/npd.x" ZOS_STAGE="$STAGE" \
 ZOS_CONFIG='DEVICE = \npd.sys;DEVICE = \SYS\FLOAT2.X;ENVSET = 8192' ZOS_TIMEOUT=${ZOS_TIMEOUT:-420} ZOS_KEYS="$KEYS" \
@@ -123,7 +123,7 @@ grep -q "tsp: first 0xA6" "$WORK/picosim.log" && echo "     picosim: lwIP joined
 kex=$(grep -m1 "waittext 'type something' True" "$OUT/keys.log" 2>/dev/null | awk '{print $NF}')
 echo "     ssh.x connect + kex + login (to the demo prompt): ${kex:-?} s${ACCEL:+ (accel)}"
 if [ $fails -gt 0 ]; then
-  cat "$OUT/zos.txt"; tail -5 "$WORK/sshd.log"
+  cat "$OUT/zos.txt"; tail -5 "$WORK/sshd.log"; cat "$OUT/boot/TISS.TXT" 2>/dev/null; grep "tsp: socket" "$WORK/picosim.log"
   # 落ちたときの記録を残す (次の回に上書きされないように。TSP のたまの失敗を x68k-tistack-2 が調べる)
   keep=$WORK.fail-$(date +%Y%m%d-%H%M%S); cp -R "$WORK" "$keep" 2>/dev/null && echo "     kept: $keep"
 fi

@@ -1,15 +1,16 @@
 # HANDOFF: Pico 2 W ファームと SD カード (Alpha / x68k-tistack-2)
 
-2026-10-23 19:30 時点。セッションが切れても続けられるように、状態・作り方・試し方・残りをここに置く。
+2026-10-23 20:15 時点。セッションが切れても続けられるように、状態・作り方・試し方・残りをここに置く。
 秘密 (Wi-Fi のパスワード、SMB の資格情報) はここにもリポジトリにも書かない。
 
 ## 今の状態
 
 | もの | 状態 |
 |---|---|
-| Z の中の sd 基板 (Pico 2 WH + microSD、192.168.1.4) | 段階 2 の試験版 (uf2 f9e6717a、**SD を自動で C: にする版**) が入っている。設定 (フラッシュ 0x1F0000) はそのまま。B: = SMB のリモートドライブ、C: = SD、D: E: = 内蔵 FD |
-| 明示だけにした版 | 作ってあるが**まだ書き込んでいない** (fork 369cda6 + ac0b102)。書き込むと C: が消え、FD が C: D: に戻る。C: にしたいときは設定でユニット数 2・REMOTE1 = `sd:/` |
-| パッチ | 0036 (SD の HDS、明示のみ)、0037 (SD をリモートドライブのユニットに + sdcopy)、0038 (Pico 2 W のビルド)、0039 (ホスト名と固定 IP、実機未確認)。x68k の `tistack` ブランチ。main には未マージ |
+| Z の中の sd 基板 (Pico 2 WH + microSD、192.168.1.4、ホスト名 pico-f350) | fork sddata 0bb206a まで (0036-0039) を build-p2w で作ったもの (uf2 c8de9191) を 20:00 に書き込み済み。SD は明示したときだけ |
+| sd 基板の設定 (20:03 に設定画面で変更) | **RMTUNIT 1 → 2、REMOTE1 (空) → `sd:/`**。ほかは触っていない (Wi-Fi / SMB / HDS0 = x68000z/x68kdev.hds / REMOTE0 = x68000z/HFS/ / TZ JST-9 / TADJUST 2 / FASTCONN 0 / ネットワークの欄は空 = DHCP)。戻すには設定画面で RMTUNIT を 1 にする (REMOTE1 は残っていても使われない) |
+| Z のドライブ | A: = HDS0、B: = SMB のリモートドライブ、**C: = SD カード**、D: E: = 内蔵 FD。REMOTE1 を外すと FD が C: D: に戻る (実機で確認) |
+| パッチ | 0036 (SD の HDS、明示のみ)、0037 (SD をリモートドライブのユニットに + sdcopy)、0038 (Pico 2 W のビルド)、0039 (ホスト名と固定 IP。ホスト名は実機で確認、固定 IP は未試験)。main にマージ済み (6c661cb) |
 
 実機で確かめたこと (自動で C: にする版): C: で dir / mkdir / ren / del / rmdir、B:→C:→B: のコピーが cmp で一致 (400KB)、
 `sdcopy` で 64MB を約 86 秒、2 本目は `err sdcopy busy`、無いファイルは `err:smb-open`。
@@ -19,7 +20,7 @@
 
 - fork (ローカルのみ、push しない): `/Users/moto/Dropbox/src/github.com/yunkya2/x68kzremotedrv-tsp`、ブランチ `sddata`
   - 0b1063c まで = `tsp` (パッチ 0001-0035 と同じ)
-  - 483429f = 0036、369cda6 = 0037、ac0b102 = 0038、0bb206a = 0039
+  - 483429f = 0036、369cda6 = 0037、ac0b102 = 0038、0bb206a = 0039、f6261a2 = 0040 (host= を返事の最初の語の直後に)、b467217 = 0041 (Wi-Fi の一覧を 10 秒で打ち切る)、19f5e76 = 0042 (SETCONFIG のつなぎ直しで SMB を外して開き直す、未試験)、670fb84 = 0043 (設定画面の枠、uf2 4fb2a2f5)。0036-0041 の uf2 291c7c38 は scratchpad/p2w/release-291c7c38/ と raspi3:~/fw-fork-291c7c38.elf。Charlie の PZL の試験のあと、sd 基板にはこれが戻る
   - サブモジュールの dir (libsmb2, x68kserremote, pico-sdk, FreeRTOS-Kernel) は `../x68kzremotedrv-hid` への symlink。`lib/FatFs_SD` は no-OS-FatFS 6c644cf の clone への symlink
 - x68k: `/Users/moto/Dropbox/src/github.com/j3tm0t0/x68k-tistack` (ブランチ `tistack`)。パッチは `net/x68kzremotedrv-netpipe/patches/`、説明は README の表
 - パッチを作り直すとき: fork で `git format-patch --start-number 36 0b1063c..sddata -o <x68k>/net/x68kzremotedrv-netpipe/patches/`
@@ -64,14 +65,17 @@ make -j8      # x68kzremotedrv.elf / .uf2 (fork の build-p2w/ で作れる。00
 - 空き容量の表示は Human68k の上限 2GB。
 - `my_rtc.c` (FatFs の lib) が `time()` を置き換えている。0037 で always-on タイマーを起動時に 0 から動かし、SMB の時刻で 1 回合わせる (時刻が 1 回前へ飛ぶ)。
 - sdcopy の「HDS として開いているファイルには写さない」は実機で試していない (HDS1 にカードの HDS を指定していないため)。
-- 明示だけにした版と、設定画面に出る `sd:` の共有 (HDS / REMOTE の欄でカードを選ぶ) は実機で未確認。
-- tistack (TSP): picosim の `make test` で tsptest の直後の zostest が 1 回だけ「Error writing: I/O error」で落ちた (Delta の報告、再実行で通過)。負荷のときの write_s の -1 を疑う。未調査。
+- (0043 で直した、実機は未確認) 設定画面の右の「ネットワーク設定」の見出しが上の枠の下の線と重なっていた。ネットワークの項目は「その他の設定」の枠に入れた。PZL 側は Charlie に同じ直しを頼んだ。
+- tistack (TSP): zostest がたまに「Error writing: I/O error」で落ちていた (5 回に 1 回ほど)。原因は tis.x の「npd.x が 5 秒交換しに来ない」の判定で、つながっているソケットまで Z の側だけで死なせていた (tis.x -s で netdown 1・resend 0)。00cc0a6 で、待っている connect などだけを失敗にするよう直した。**なぜ Z-OS の中で npd.x が 5 秒回らないのか**は未調査。Bravo の見立て: zos.x の IOCS フックの中 (スーパーバイザ、vt100 の描画) が長いとスレッドが切り替わらない (zos.x 自身の主スレッドも 2.4 秒止まったことがある)。測るなら kern.c の zos_switch に npd のスレッドの時刻を入れる。今は接続が切れなくなったので遅れだけの問題。
 - ID1 の HDS を B: をずらさずに使う案 (Delta): リモートドライブの顔 (LBA 0/4/6.. の起動部) を ID1 より小さい ID で見せ、運び (vdbuf/netpipe) は ID6 のまま。harness/picosim/README.md「ドライブ名」。
 - 設定画面は SMB の共有の一覧から選ぶ作り。`sd:` は ENUM の最後に足している (共有が 16 個あると出ない)。
 
 ## 次にやること
 
-1. 明示だけにした版を sd 基板に書き、設定画面で ユニット数 2 / REMOTE1 = `sd:/` を選んで C: になるか、FD が D: E: になるかを確かめる (設定を書き換えるので team-lead に先に確認)。
-2. ホスト名と固定 IP (0039) を実機で: status の `host=pico-xxxx`、設定画面の右の「ネットワーク設定」の見た目 (Delta に XEiJ で頼んだ)、固定 IP にして ping が通るか (設定を変えるので team-lead に確認)。
+0. Z の順番: Charlie (PZL の試験、終わったら 291c7c38 に戻す) → Bravo (動画) → 私。私の番で 0043 まで (uf2 4fb2a2f5) を書き、電源を 1 回入れ直し、設定画面で HOSTNAME だけ変えて戻す SETCONFIG を試す (B: が使えたままか)。枠の見た目も見る。
+
+1. (済) 明示だけの版を書き、設定画面で RMTUNIT 2 / REMOTE1 = `sd:/` → C: = SD、FD は D: E:。status に `host=pico-f350`。
+2. ホスト名と固定 IP は Charlie (PZL 186beb6) と同じ形に揃えた (項目名・既定 pico-XXXX・NET1 の並び・返事の host= の位置)。mDNS は今はしない。固定 IP は moto が頼むまで Z の基板では試さない。
+3. (0042 で直した、実機は未試験) SETCONFIG で Wi-Fi をつなぎ直すと古い SMB の接続が残り、次の keepalive までリモートドライブが -14 を返していた。fork は enable_sta_mode を起動時の 1 回しか呼ばないので、つなぎ直しで固定 IP が DHCP に戻ることはない (netif を作り直さない) はず (未試験)。
 3. tistack の実機の速さ (`tis.x -p`) は Pico 2 W でまだ測っていない。
 4. パッチ 0036-0038 を main へ (ホストの試験は関係しないが、マージ前に走らせる)。
