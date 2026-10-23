@@ -4,7 +4,7 @@ Date: Sat, 24 Oct 2026 00:35:06 +0900
 Subject: [PATCH] virtual FAT: the image file's cluster chain is exactly
  ceil(size / 32KB) long
 
-The chain had one cluster too many whenever the size was a multiple of 32KB (inherited); vfat
+The chain had one cluster too many whenever the size was a multiple of 32KB; vfat
 reads were fine because the size bounds them, but fsck flagged it. Computed with 64-bit
 arithmetic so the tentative 0xfffffe00 does not overflow.
 
