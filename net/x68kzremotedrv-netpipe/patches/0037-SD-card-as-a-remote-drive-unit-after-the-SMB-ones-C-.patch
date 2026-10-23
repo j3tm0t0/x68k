@@ -1,0 +1,1252 @@
+From 6712b9e14b56730c6ccf2277312293df3f7ca15d Mon Sep 17 00:00:00 2001
+From: moto <j3tm0t0@gmail.com>
+Date: Fri, 23 Oct 2026 19:14:33 +0900
+Subject: [PATCH] SD card as a remote-drive unit after the SMB ones (C: next to
+ B:), and sdcopy over UDP 6869
+
+fileop.h sends every FUNC_* of a unit whose rootpath starts with "sd:" to sdfs.c (FatFs).
+A REMOTEn slot "sd:/..." uses that directory; with no such slot, a readable card adds one
+unit "sd:/" after the configured ones (vd_remoteunit() is what the Z sees: LBA 4 signature,
+CMD_INIT). No SCSI ID is added, so B: stays the SMB remote drive. Set up in vd_init, without
+waiting for Wi-Fi. File dates are not settable (FF_USE_CHMOD 0); "."/".." are synthesized.
+
+All FatFs calls go through one recursive mutex (sdc_lock), since HDS I/O, the remote unit,
+the boot fetch and sdcopy run in different tasks. my_rtc.c replaces time() with the
+always-on timer, which stayed at 0 (libsmb2 timeouts never fired): start it at 0 in sdc_init
+and set it from the SMB server time once.
+
+sdcopy <share/path> <sd-path>: own task and own SMB connection, .part then rename, refuses
+a target open as an HDS (the Z is using that SCSI ID) and a second copy while one runs.
+status shows sdcopy=idle|run:N/M|done:N|err:<why>.
+Handle ops (READ/WRITE/CLOSE/LSEEK/... and READDIR/CLOSEDIR) dispatch by a tag in the
+handle's upper 32 bits (0xfffe5344; an SMB handle has its smb2_context there), because the
+Z driver sends unit 0 with them. SDFS_LOG (off) prints FatFs failures.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PrGdt1XK1exBgERrMmLA1u
+---
+ CMakeLists.txt     |   1 +
+ src/connect.c      |  12 ++
+ src/fileop.h       |  22 +++
+ src/hidkbd.c       |  14 +-
+ src/sdfs.c         | 394 +++++++++++++++++++++++++++++++++++++++++++++
+ src/sdfs.h         |  35 ++++
+ src/sdhds.c        | 326 ++++++++++++++++++++++++++++++-------
+ src/sdhds.h        |  12 ++
+ src/vd_command.c   |   2 +-
+ src/virtual_disk.c |  28 ++++
+ src/virtual_disk.h |   1 +
+ 11 files changed, 787 insertions(+), 60 deletions(-)
+ create mode 100644 src/sdfs.c
+ create mode 100644 src/sdfs.h
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index c3094cb..26991c9 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -38,6 +38,7 @@ add_executable(
+         src/config_file.c
+         src/netpipe.c
+         src/sdhds.c
++        src/sdfs.c
+         src/hw_config.c
+         src/usb_descriptors.c
+         x68kserremote/service/remoteserv.c
+diff --git a/src/connect.c b/src/connect.c
+index 902c432..5708c8f 100644
+--- a/src/connect.c
++++ b/src/connect.c
+@@ -43,6 +43,7 @@
+ #include "config.h"
+ #include "main.h"
+ #include "sdhds.h"
++#include "pico/aon_timer.h"
+ #include "virtual_disk.h"
+ #include "config_file.h"
+ #include "msclog.h"
+@@ -134,6 +135,15 @@ static void connection(int mode)
+         time_t tt = (time_t)((boottime + to_us_since_boot(get_absolute_time())) / 1000000);
+         struct tm *tm = localtime(&tt);
+         printf("Boottime UTC %04d/%02d/%02d %02d:%02d:%02d\n", tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday, tm->tm_hour, tm->tm_min, tm->tm_sec);
++        {
++            /* SD カード (FatFs) のファイルの時刻 (get_fattime) と time() は always-on タイマー (sdhds.c の sdc_init で 0 から動かしてある) */
++            static bool set;
++            struct timespec ts = { .tv_sec = tt, .tv_nsec = 0 };
++            if (!set) {
++                aon_timer_set_time(&ts);
++                set = true;
++            }
++        }
+ 
+         disconnect_smb2(smb2ipc);
+ 
+@@ -170,6 +180,8 @@ static int vd_mount(void)
+     for (int i = 0; i < remoteunit; i++) {
+         struct smb2_context *smb2;
+         const char *shpath;
++        if (sdhds_is(config.remote[i]))
++            continue;                   /* SD カードのユニットは vd_init で用意してある */
+         if ((smb2 = connect_smb2_path(config.remote[i], &shpath)) == NULL)
+             continue;
+ 
+diff --git a/src/fileop.h b/src/fileop.h
+index 179d4da..2431e7c 100644
+--- a/src/fileop.h
++++ b/src/fileop.h
+@@ -37,6 +37,11 @@
+ 
+ #include "main.h"
+ #include "iconv_mini.h"
++#include "sdfs.h"
++
++/* rootpath が "sd:" のユニットは SD カード (sdfs.c) で答える (ハンドルの操作は sdfs.h の印で) */
++extern const char *rootpath[8];
++#define SDU(unit)         sdfs_is(rootpath[unit])
+ 
+ //****************************************************************************
+ // Data types
+@@ -130,6 +135,7 @@ static inline int FUNC_CHMOD(int unit, int *err, const char *path, int mode)
+ 
+ static inline int FUNC_STAT(int unit, int *err, const char *path, TYPE_STAT *st)
+ {
++  if (SDU(unit)) { int r = sdfs_stat(path, st); if (err) *err = -r; return r; }
+   const char *shpath;
+   struct smb2_context *smb2 = path2smb2(path, &shpath);
+   int r = smb2_stat(smb2, shpath, st);
+@@ -139,6 +145,7 @@ static inline int FUNC_STAT(int unit, int *err, const char *path, TYPE_STAT *st)
+ }
+ static inline int FUNC_MKDIR(int unit, int *err, const char *path)
+ {
++  if (SDU(unit)) { int r = sdfs_mkdir(path); if (err) *err = -r; return r; }
+   const char *shpath;
+   struct smb2_context *smb2 = path2smb2(path, &shpath);
+   int r = smb2_mkdir(smb2, shpath);
+@@ -148,6 +155,7 @@ static inline int FUNC_MKDIR(int unit, int *err, const char *path)
+ }
+ static inline int FUNC_RMDIR(int unit, int *err, const char *path)
+ {
++  if (SDU(unit)) { int r = sdfs_rmdir(path); if (err) *err = -r; return r; }
+   const char *shpath;
+   struct smb2_context *smb2 = path2smb2(path, &shpath);
+   int r = smb2_rmdir(smb2, shpath);
+@@ -157,6 +165,7 @@ static inline int FUNC_RMDIR(int unit, int *err, const char *path)
+ }
+ static inline int FUNC_RENAME(int unit, int *err, const char *pathold, const char *pathnew)
+ {
++  if (SDU(unit)) { int r = sdfs_rename(pathold, pathnew); if (err) *err = -r; return r; }
+   const char *shpath;
+   const char *shpath2;
+   struct smb2_context *smb2 = path2smb2(pathold, &shpath);
+@@ -168,6 +177,7 @@ static inline int FUNC_RENAME(int unit, int *err, const char *pathold, const cha
+ }
+ static inline int FUNC_UNLINK(int unit, int *err, const char *path)
+ {
++  if (SDU(unit)) { int r = sdfs_unlink(path); if (err) *err = -r; return r; }
+   const char *shpath;
+   struct smb2_context *smb2 = path2smb2(path, &shpath);
+   int r = smb2_unlink(smb2, shpath);
+@@ -182,6 +192,7 @@ static inline int FUNC_UNLINK(int unit, int *err, const char *path)
+ 
+ static inline TYPE_DIR FUNC_OPENDIR(int unit, int *err, const char *path)
+ {
++  if (SDU(unit)) { int e; TYPE_DIR d = sdfs_opendir(path, &e); if (err) *err = e; return d; }
+   union smb2dd dir = { .dd = DIR_BADDIR };
+   const char *shpath;
+   struct smb2_context *smb2 = path2smb2(path, &shpath);
+@@ -195,6 +206,7 @@ static inline TYPE_DIR FUNC_OPENDIR(int unit, int *err, const char *path)
+ }
+ static inline TYPE_DIRENT *FUNC_READDIR(int unit, int *err, TYPE_DIR dir)
+ {
++  if (SDFS_IS_HANDLE(dir)) { if (err) *err = 0; return sdfs_readdir(dir); }
+   TYPE_DIRENT *d = smb2_readdir(dir2smb2(dir), dir2dir(dir));
+   if (err)
+     *err = nterror_to_errno(smb2_get_nterror(dir2smb2(dir)));
+@@ -202,6 +214,7 @@ static inline TYPE_DIRENT *FUNC_READDIR(int unit, int *err, TYPE_DIR dir)
+ }
+ static inline int FUNC_CLOSEDIR(int unit, int *err, TYPE_DIR dir)
+ { 
++  if (SDFS_IS_HANDLE(dir)) return sdfs_closedir(dir);
+   smb2_closedir(dir2smb2(dir), dir2dir(dir));
+   return 0;
+ }
+@@ -212,6 +225,7 @@ static inline int FUNC_CLOSEDIR(int unit, int *err, TYPE_DIR dir)
+ 
+ static inline TYPE_FD FUNC_OPEN(int unit, int *err, const char *path, int flags)
+ {
++  if (SDU(unit)) { int e; TYPE_FD f = sdfs_open(path, flags, &e); if (err) *err = e; return f; }
+   union smb2fd fd = { .fd = FD_BADFD };
+   const char *shpath;
+   struct smb2_context *smb2 = path2smb2(path, &shpath);
+@@ -225,6 +239,7 @@ static inline TYPE_FD FUNC_OPEN(int unit, int *err, const char *path, int flags)
+ }
+ static inline int FUNC_CLOSE(int unit, int *err, TYPE_FD fd)
+ {
++  if (SDFS_IS_HANDLE(fd)) { int r = sdfs_close(fd); if (err) *err = -r; return r; }
+   int r = smb2_close(fd2smb2(fd), fd2sfh(fd));
+   if (err)
+     *err = -r;
+@@ -232,6 +247,7 @@ static inline int FUNC_CLOSE(int unit, int *err, TYPE_FD fd)
+ }
+ static inline ssize_t FUNC_READ(int unit, int *err, TYPE_FD fd, void *buf, size_t count)
+ {
++  if (SDFS_IS_HANDLE(fd)) { ssize_t r = sdfs_read(fd, buf, count); if (err) *err = -r; return r; }
+   ssize_t r = smb2_read(fd2smb2(fd), fd2sfh(fd), buf, count);
+   if (err)
+     *err = -r;
+@@ -239,6 +255,7 @@ static inline ssize_t FUNC_READ(int unit, int *err, TYPE_FD fd, void *buf, size_
+ }
+ static inline ssize_t FUNC_WRITE(int unit, int *err, TYPE_FD fd, const void *buf, size_t count)
+ {
++  if (SDFS_IS_HANDLE(fd)) { ssize_t r = sdfs_write(fd, buf, count); if (err) *err = -r; return r; }
+   ssize_t res = 0;
+   while (count > 0) {
+     int c = count > 1024 ? 1024 : count;
+@@ -259,6 +276,7 @@ static inline ssize_t FUNC_WRITE(int unit, int *err, TYPE_FD fd, const void *buf
+ }
+ static inline int FUNC_FTRUNCATE(int unit, int *err, TYPE_FD fd, off_t length)
+ {
++  if (SDFS_IS_HANDLE(fd)) { int r = sdfs_ftruncate(fd, length); if (err) *err = -r; return r; }
+   int r = smb2_ftruncate(fd2smb2(fd), fd2sfh(fd), length);
+   if (err)
+     *err = -r;
+@@ -266,6 +284,7 @@ static inline int FUNC_FTRUNCATE(int unit, int *err, TYPE_FD fd, off_t length)
+ }
+ static inline off_t FUNC_LSEEK(int unit, int *err, TYPE_FD fd, off_t offset, int whence)
+ {
++  if (SDFS_IS_HANDLE(fd)) { off_t r = sdfs_lseek(fd, offset, whence); if (err) *err = -r; return r; }
+   uint64_t cur;
+   off_t r = smb2_lseek(fd2smb2(fd), fd2sfh(fd), offset, whence, &cur);
+   if (err)
+@@ -274,6 +293,7 @@ static inline off_t FUNC_LSEEK(int unit, int *err, TYPE_FD fd, off_t offset, int
+ }
+ static inline int FUNC_FSTAT(int unit, int *err, TYPE_FD fd, TYPE_STAT *st)
+ {
++  if (SDFS_IS_HANDLE(fd)) { int r = sdfs_fstat(fd, st); if (err) *err = -r; return r; }
+   int r = smb2_fstat(fd2smb2(fd), fd2sfh(fd), st);
+   if (err)
+     *err = -r;
+@@ -282,6 +302,7 @@ static inline int FUNC_FSTAT(int unit, int *err, TYPE_FD fd, TYPE_STAT *st)
+ 
+ static inline int FUNC_FILEDATE(int unit, int *err, TYPE_FD fd, uint16_t time, uint16_t date)
+ {
++  if (SDFS_IS_HANDLE(fd)) { if (err) *err = 0; return 0; }   /* FatFs の FF_USE_CHMOD が 0 なので日付は変えない */
+   struct tm tm;
+   tm.tm_sec = (time << 1) & 0x3f;
+   tm.tm_min = (time >> 5) & 0x3f;
+@@ -307,6 +328,7 @@ static inline int FUNC_FILEDATE(int unit, int *err, TYPE_FD fd, uint16_t time, u
+ 
+ static inline int FUNC_STATFS(int unit, int *err, const char *path, uint64_t *total, uint64_t *free)
+ {
++  if (SDU(unit)) return sdfs_statfs(path, total, free);
+   struct smb2_statvfs sf;
+   const char *shpath;
+   struct smb2_context *smb2 = path2smb2(path, &shpath);
+diff --git a/src/hidkbd.c b/src/hidkbd.c
+index b7c98f7..52c2a7d 100644
+--- a/src/hidkbd.c
++++ b/src/hidkbd.c
+@@ -39,6 +39,7 @@
+ #include "bootwait.h"
+ #include "hidkbd_cmd.h"
+ #include "hidkbd.h"
++#include "sdhds.h"
+ 
+ #define HIDKBD_PORT     6869
+ #define READY_TIMEOUT   1000            /* Z が HID を読みに来ないまま (ms) なら諦める */
+@@ -87,7 +88,13 @@ static void on_udp(void *arg, struct udp_pcb *upcb, struct pbuf *p, const ip_add
+     while (n > 0 && (w[n - 1] == '\n' || w[n - 1] == '\r' || w[n - 1] == ' '))
+         n--;
+     w[n] = '\0';
+-    if (strcmp(w, "status") == 0) {
++    if (strncmp(w, "sdcopy", 6) == 0) {
++        /* 長く掛かるので USB タスクには回さず、sdcopy のタスクに渡してすぐ返事をする */
++        char a[400];
++        int m = pbuf_copy_partial(p, a, sizeof a - 1, 0);
++        a[m] = '\0';
++        sendto_locked(sdcopy_request(a + 6), addr, port);
++    } else if (strcmp(w, "status") == 0) {
+         st_from = *addr;
+         st_port = port;
+         __dmb();
+@@ -158,8 +165,10 @@ static int status_line(char *s, int size)
+     for (int i = 0; i < countof(config.hds); i++, id++)
+         if (config.hds[i][0] != '\0' && n < size)
+             n += snprintf(s + n, size - n, " hds%d=%s", i, diskinfo[id].sfh != NULL ? "open" : "closed");
+-    for (int i = 0; i < atoi(config.remoteunit) && i < 8 && n < size; i++)
++    for (int i = 0; i < vd_remoteunit() && i < 8 && n < size; i++)
+         n += snprintf(s + n, size - n, " remote%d=%s", i, rootpath[i] != NULL ? "ok" : "none");
++    if (n < size)
++        n += sdcopy_status(s + n, size - n);
+     uint32_t done;
+     const char *acc = accel_state(&done);
+     extern char __HeapLimit;
+@@ -201,6 +210,7 @@ static void status_task(void *params)
+ void hidkbd_init(void)
+ {
+     xTaskCreate(status_task, "HidKbdStatus", 768, NULL, 1, &st_th);
++    sdcopy_init();
+     cyw43_arch_lwip_begin();
+     kpcb = udp_new();
+     if (kpcb != NULL) {
+diff --git a/src/sdfs.c b/src/sdfs.c
+new file mode 100644
+index 0000000..0a68bf6
+--- /dev/null
++++ b/src/sdfs.c
+@@ -0,0 +1,394 @@
++/*
++ * sdfs.c -- リモートドライブのユニットを SD カードの FatFs で答える (config の REMOTE の欄が "sd:/..." のユニット)
++ *
++ * remoteserv.c は全部の操作を fileop.h の FUNC_*(unit, ...) で呼ぶので、fileop.h がユニットの rootpath を見て
++ * "sd:" ならここへ回す。パスは rootpath + Human68k のパス (UTF-8) で、先頭の "sd:" を外したものが FatFs のパス。
++ * 戻り値は libsmb2 と同じ形 (失敗は -errno、ハンドルは 0 が失敗)。カードに触るところは sdc_lock の中。
++ * FF_USE_CHMOD が 0 なので、ファイルの日付は変えられない (書いた時刻になる)。
++ */
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <time.h>
++
++#include "ff.h"
++#include "smb2.h"
++#include "libsmb2.h"
++#include "sdhds.h"
++#include "sdfs.h"
++
++struct sdfile {
++    FIL f;
++    char path[];
++};
++
++struct sddir {
++    DIR d;
++    int dots;                           /* サブディレクトリでは "." と ".." を先に返す (FatFs は返さない) */
++    FILINFO fi;
++    struct smb2dirent de;
++};
++
++#define SDFS_LOG 0                      /* 1 で FatFs の失敗と書き込みの不足を UART に出す */
++static int fr2errno_(FRESULT fr);
++static int fr2errno_at(FRESULT fr, int line)
++{
++    if (SDFS_LOG && fr != FR_OK)
++        printf("sdfs:%d fr=%d\n", line, fr);
++    return fr2errno_(fr);
++}
++#define fr2errno(fr) fr2errno_at((fr), __LINE__)
++
++static int fr2errno_(FRESULT fr)
++{
++    switch (fr) {
++    case FR_OK:             return 0;
++    case FR_NO_FILE:
++    case FR_NO_PATH:
++    case FR_INVALID_NAME:   return ENOENT;
++    case FR_EXIST:          return EEXIST;
++    case FR_DENIED:         return EACCES;
++    case FR_WRITE_PROTECTED: return EROFS;
++    case FR_LOCKED:         return EACCES;  /* HDS として開いているファイルなど */
++    case FR_TOO_MANY_OPEN_FILES: return EMFILE;
++    case FR_NOT_ENOUGH_CORE: return ENOMEM;
++    default:                return EIO;
++    }
++}
++
++/* "sd:/a/b" -> "/a/b"。"." と ".." をたたむ (FatFs の f_stat は "/a/." を名前として扱えない) */
++static void fpath(const char *path, char *out, size_t size)
++{
++    if (strncmp(path, "sd:", 3) == 0)
++        path += 3;
++    size_t n = 0;
++    out[n++] = '/';
++    while (*path) {
++        while (*path == '/')
++            path++;
++        const char *e = strchr(path, '/');
++        size_t len = e ? (size_t)(e - path) : strlen(path);
++        if (len == 0)
++            break;
++        if (len == 1 && path[0] == '.') {
++            /* 何もしない */
++        } else if (len == 2 && path[0] == '.' && path[1] == '.') {
++            while (n > 1 && out[n - 1] != '/')
++                n--;
++            if (n > 1)
++                n--;
++        } else if (n + (n > 1) + len < size) {
++            if (n > 1)
++                out[n++] = '/';
++            memcpy(out + n, path, len);
++            n += len;
++        }
++        path += len;
++    }
++    out[n] = 0;
++}
++
++static uint64_t fat2time(WORD fdate, WORD ftime)
++{
++    struct tm tm = { 0 };
++    if (fdate == 0)
++        fdate = (0 << 9) | (1 << 5) | 1;    /* 1980-01-01 */
++    tm.tm_year = (fdate >> 9) + 80;
++    tm.tm_mon = ((fdate >> 5) & 15) - 1;
++    tm.tm_mday = fdate & 31;
++    tm.tm_hour = ftime >> 11;
++    tm.tm_min = (ftime >> 5) & 63;
++    tm.tm_sec = (ftime & 31) * 2;
++    tm.tm_isdst = 0;
++    return (uint64_t)mktime(&tm);
++}
++
++static void fi2stat(const FILINFO *fi, struct smb2_stat_64 *st)
++{
++    memset(st, 0, sizeof *st);
++    st->smb2_type = (fi->fattrib & AM_DIR) ? SMB2_TYPE_DIRECTORY : SMB2_TYPE_FILE;
++    st->smb2_size = fi->fsize;
++    st->smb2_mtime = fat2time(fi->fdate, fi->ftime);
++}
++
++static FRESULT stat_locked(const char *p, struct smb2_stat_64 *st)
++{
++    FILINFO fi;
++    if (strcmp(p, "/") == 0) {          /* ルートは f_stat で引けない */
++        memset(&fi, 0, sizeof fi);
++        fi.fattrib = AM_DIR;
++        fi2stat(&fi, st);
++        return FR_OK;
++    }
++    FRESULT fr = f_stat(p, &fi);
++    if (fr == FR_OK)
++        fi2stat(&fi, st);
++    return fr;
++}
++
++bool sdfs_is(const char *rootpath)
++{
++    return rootpath != NULL && sdhds_is(rootpath);
++}
++
++int sdfs_stat(const char *path, struct smb2_stat_64 *st)
++{
++    char p[256];
++    if (!sdc_mount())
++        return -EIO;
++    fpath(path, p, sizeof p);
++    sdc_lock();
++    FRESULT fr = stat_locked(p, st);
++    sdc_unlock();
++    return -fr2errno(fr);
++}
++
++int sdfs_mkdir(const char *path)
++{
++    char p[256];
++    fpath(path, p, sizeof p);
++    sdc_lock();
++    FRESULT fr = f_mkdir(p);
++    sdc_unlock();
++    return -fr2errno(fr);
++}
++
++int sdfs_rmdir(const char *path)
++{
++    char p[256];
++    FILINFO fi;
++    fpath(path, p, sizeof p);
++    sdc_lock();
++    FRESULT fr = f_stat(p, &fi);
++    int e = fr2errno(fr);
++    if (fr == FR_OK) {
++        if (!(fi.fattrib & AM_DIR))
++            e = ENOTDIR;
++        else if ((fr = f_unlink(p)) != FR_OK)
++            e = fr == FR_DENIED ? ENOTEMPTY : fr2errno(fr);
++    }
++    sdc_unlock();
++    return -e;
++}
++
++int sdfs_rename(const char *pathold, const char *pathnew)
++{
++    char a[256], b[256];
++    fpath(pathold, a, sizeof a);
++    fpath(pathnew, b, sizeof b);
++    sdc_lock();
++    FRESULT fr = f_rename(a, b);
++    sdc_unlock();
++    return -fr2errno(fr);
++}
++
++int sdfs_unlink(const char *path)
++{
++    char p[256];
++    FILINFO fi;
++    fpath(path, p, sizeof p);
++    sdc_lock();
++    FRESULT fr = f_stat(p, &fi);
++    int e = fr2errno(fr);
++    if (fr == FR_OK)
++        e = (fi.fattrib & AM_DIR) ? EISDIR : fr2errno(f_unlink(p));     /* f_unlink は空のディレクトリも消すので先に見る */
++    sdc_unlock();
++    return -e;
++}
++
++uint64_t sdfs_opendir(const char *path, int *err)
++{
++    char p[256];
++    struct sddir *d;
++    if (!sdc_mount()) {
++        *err = EIO;
++        return 0;
++    }
++    if ((d = calloc(1, sizeof *d)) == NULL) {
++        *err = ENOMEM;
++        return 0;
++    }
++    fpath(path, p, sizeof p);
++    sdc_lock();
++    FRESULT fr = f_opendir(&d->d, p);
++    sdc_unlock();
++    *err = fr2errno(fr);
++    if (fr != FR_OK) {
++        free(d);
++        return 0;
++    }
++    d->dots = strcmp(p, "/") == 0 ? 2 : 0;
++    return SDFS_HANDLE(d);
++}
++
++struct smb2dirent *sdfs_readdir(uint64_t dir)
++{
++    struct sddir *d = (struct sddir *)(uintptr_t)(uint32_t)dir;
++    if (d->dots < 2) {
++        d->de.name = d->dots++ == 0 ? "." : "..";
++        memset(&d->de.st, 0, sizeof d->de.st);
++        d->de.st.smb2_type = SMB2_TYPE_DIRECTORY;
++        return &d->de;
++    }
++    sdc_lock();
++    FRESULT fr = f_readdir(&d->d, &d->fi);
++    sdc_unlock();
++    if (fr != FR_OK || d->fi.fname[0] == 0)
++        return NULL;
++    d->de.name = d->fi.fname;
++    fi2stat(&d->fi, &d->de.st);
++    return &d->de;
++}
++
++int sdfs_closedir(uint64_t dir)
++{
++    struct sddir *d = (struct sddir *)(uintptr_t)(uint32_t)dir;
++    sdc_lock();
++    f_closedir(&d->d);
++    sdc_unlock();
++    free(d);
++    return 0;
++}
++
++uint64_t sdfs_open(const char *path, int flags, int *err)
++{
++    char p[256];
++    BYTE mode;
++    if (!sdc_mount()) {
++        *err = EIO;
++        return 0;
++    }
++    fpath(path, p, sizeof p);
++    switch (flags & O_ACCMODE) {
++    case O_RDONLY:  mode = FA_READ; break;
++    case O_WRONLY:  mode = FA_WRITE; break;
++    default:        mode = FA_READ | FA_WRITE; break;
++    }
++    if ((flags & (O_CREAT | O_EXCL)) == (O_CREAT | O_EXCL))
++        mode |= FA_CREATE_NEW;
++    else if ((flags & (O_CREAT | O_TRUNC)) == (O_CREAT | O_TRUNC))
++        mode |= FA_CREATE_ALWAYS;
++    else if (flags & O_CREAT)
++        mode |= FA_OPEN_ALWAYS;
++    struct sdfile *f = malloc(sizeof *f + strlen(p) + 1);
++    if (f == NULL) {
++        *err = ENOMEM;
++        return 0;
++    }
++    strcpy(f->path, p);
++    sdc_lock();
++    FRESULT fr = f_open(&f->f, p, mode);
++    if (fr == FR_OK && (flags & O_TRUNC) && !(mode & FA_CREATE_ALWAYS))
++        fr = f_truncate(&f->f);
++    if (fr == FR_NO_FILE) {
++        FILINFO fi;
++        if (f_stat(p, &fi) == FR_OK && (fi.fattrib & AM_DIR)) {
++            sdc_unlock();
++            free(f);
++            *err = EISDIR;
++            return 0;
++        }
++    }
++    sdc_unlock();
++    *err = fr2errno(fr);
++    if (fr != FR_OK) {
++        free(f);
++        return 0;
++    }
++    return SDFS_HANDLE(f);
++}
++
++int sdfs_close(uint64_t fd)
++{
++    struct sdfile *f = (struct sdfile *)(uintptr_t)(uint32_t)fd;
++    sdc_lock();
++    FRESULT fr = f_close(&f->f);
++    sdc_unlock();
++    free(f);
++    return -fr2errno(fr);
++}
++
++ssize_t sdfs_read(uint64_t fd, void *buf, size_t count)
++{
++    struct sdfile *f = (struct sdfile *)(uintptr_t)(uint32_t)fd;
++    UINT br;
++    sdc_lock();
++    FRESULT fr = f_read(&f->f, buf, count, &br);
++    sdc_unlock();
++    return fr == FR_OK ? (ssize_t)br : -fr2errno(fr);
++}
++
++ssize_t sdfs_write(uint64_t fd, const void *buf, size_t count)
++{
++    struct sdfile *f = (struct sdfile *)(uintptr_t)(uint32_t)fd;
++    UINT bw;
++    sdc_lock();
++    FRESULT fr = f_write(&f->f, buf, count, &bw);
++    sdc_unlock();
++    if (SDFS_LOG && (fr != FR_OK || bw != count))
++        printf("sdfs: write %u -> fr=%d bw=%u\n", (unsigned)count, fr, (unsigned)bw);
++    if (fr != FR_OK)
++        return -fr2errno(fr);
++    return bw < count ? (bw > 0 ? (ssize_t)bw : -ENOSPC) : (ssize_t)bw;
++}
++
++int sdfs_ftruncate(uint64_t fd, uint64_t length)
++{
++    struct sdfile *f = (struct sdfile *)(uintptr_t)(uint32_t)fd;
++    sdc_lock();
++    FSIZE_t pos = f_tell(&f->f);
++    FRESULT fr = f_lseek(&f->f, length);    /* 長くするときは f_lseek が伸ばす */
++    if (fr == FR_OK)
++        fr = f_truncate(&f->f);
++    if (fr == FR_OK && pos < length)
++        fr = f_lseek(&f->f, pos);
++    sdc_unlock();
++    return -fr2errno(fr);
++}
++
++int64_t sdfs_lseek(uint64_t fd, int64_t offset, int whence)
++{
++    struct sdfile *f = (struct sdfile *)(uintptr_t)(uint32_t)fd;
++    sdc_lock();
++    int64_t pos = whence == SEEK_SET ? offset : whence == SEEK_CUR ? (int64_t)f_tell(&f->f) + offset : (int64_t)f_size(&f->f) + offset;
++    FRESULT fr = FR_OK;
++    if (pos < 0)
++        fr = FR_INVALID_PARAMETER;
++    else
++        fr = f_lseek(&f->f, pos);       /* 書き込みで開いたファイルは末尾の先まで伸びる (op_write が pos に書けるように。読み込みだけなら末尾で止まる) */
++    pos = f_tell(&f->f);
++    sdc_unlock();
++    return fr == FR_OK ? pos : -EINVAL;
++}
++
++int sdfs_fstat(uint64_t fd, struct smb2_stat_64 *st)
++{
++    struct sdfile *f = (struct sdfile *)(uintptr_t)(uint32_t)fd;
++    sdc_lock();
++    FRESULT fr = f_sync(&f->f);         /* 書いた分の大きさと時刻をディレクトリに出してから引く */
++    if (fr == FR_OK || fr == FR_DENIED)
++        fr = stat_locked(f->path, st);
++    if (fr == FR_OK)
++        st->smb2_size = f_size(&f->f);
++    sdc_unlock();
++    return -fr2errno(fr);
++}
++
++int sdfs_statfs(const char *path, uint64_t *total, uint64_t *avail)
++{
++    FATFS *fs;
++    DWORD nclst;
++    *total = *avail = 0;
++    if (!sdc_mount())
++        return -EIO;
++    sdc_lock();
++    FRESULT fr = f_getfree("", &nclst, &fs);
++    if (fr == FR_OK) {
++        *total = (uint64_t)(fs->n_fatent - 2) * fs->csize * 512;
++        *avail = (uint64_t)nclst * fs->csize * 512;
++    }
++    sdc_unlock();
++    return -fr2errno(fr);
++}
+diff --git a/src/sdfs.h b/src/sdfs.h
+new file mode 100644
+index 0000000..24bcc1c
+--- /dev/null
++++ b/src/sdfs.h
+@@ -0,0 +1,35 @@
++#ifndef _SDFS_H_
++#define _SDFS_H_
++
++#include <stdint.h>
++#include <stdbool.h>
++#include <sys/types.h>
++
++/* リモートドライブのユニットのうち rootpath が "sd:" のものを SD カードで答える (fileop.h から) */
++struct smb2_stat_64;
++struct smb2dirent;
++bool sdfs_is(const char *rootpath);
++/* ファイルとディレクトリのハンドルは上位 32 ビットに印を付ける (SMB のハンドルは上位が smb2_context のポインタ)。
++   Z のドライバは READ / WRITE などファイル番号の操作ではユニット番号を送ってこない (0 になる) ので、
++   ハンドルの操作はユニットではなくこの印で振り分ける */
++#define SDFS_TAG            0xfffe5344u
++#define SDFS_HANDLE(p)      (((uint64_t)SDFS_TAG << 32) | (uint32_t)(uintptr_t)(p))
++#define SDFS_IS_HANDLE(h)   ((uint32_t)((h) >> 32) == SDFS_TAG)
++int sdfs_stat(const char *path, struct smb2_stat_64 *st);
++int sdfs_mkdir(const char *path);
++int sdfs_rmdir(const char *path);
++int sdfs_rename(const char *pathold, const char *pathnew);
++int sdfs_unlink(const char *path);
++uint64_t sdfs_opendir(const char *path, int *err);
++struct smb2dirent *sdfs_readdir(uint64_t dir);
++int sdfs_closedir(uint64_t dir);
++uint64_t sdfs_open(const char *path, int flags, int *err);
++int sdfs_close(uint64_t fd);
++ssize_t sdfs_read(uint64_t fd, void *buf, size_t count);
++ssize_t sdfs_write(uint64_t fd, const void *buf, size_t count);
++int sdfs_ftruncate(uint64_t fd, uint64_t length);
++int64_t sdfs_lseek(uint64_t fd, int64_t offset, int whence);
++int sdfs_fstat(uint64_t fd, struct smb2_stat_64 *st);
++int sdfs_statfs(const char *path, uint64_t *total, uint64_t *avail);
++
++#endif  /* _SDFS_H_ */
+diff --git a/src/sdhds.c b/src/sdhds.c
+index 635d262..85da182 100644
+--- a/src/sdhds.c
++++ b/src/sdhds.c
+@@ -8,11 +8,19 @@
+  */
+ #include <stdio.h>
+ #include <string.h>
++#include <stdlib.h>
++#include <strings.h>
+ #include <fcntl.h>
+ 
++#include "FreeRTOS.h"
++#include "semphr.h"
++#include "task.h"
++#include "pico/aon_timer.h"
+ #include "ff.h"
+ #include "smb2.h"
+ #include "libsmb2.h"
++#include "main.h"
++#include "vd_command.h"
+ #include "sdhds.h"
+ 
+ #define SDHDS_MAX   6
+@@ -20,84 +28,159 @@
+ static FATFS fs;
+ static bool mounted;
+ static FIL files[SDHDS_MAX];
++static char names[SDHDS_MAX][64];       /* HDS として開いているファイル (sdcopy が上書きしないように) */
+ static int nfiles;
+ 
+-bool sdhds_is(const char *path)
++/* FatFs は FF_FS_REENTRANT 0 なので、カードに触るところは全部この 1 本の錠で囲む
++   (USB タスクの HDS とリモートドライブ、接続タスクの fetch、sdcopy タスク) */
++static SemaphoreHandle_t sd_mtx;
++
++void sdc_init(void)
+ {
+-    return strncmp(path, "sd:", 3) == 0;
++    /* FatFs の lib (my_rtc.c) が time() を always-on タイマーで置き換えていて、止まっていると 0 のまま進まない
++       (libsmb2 の待ちの時間切れが効かない)。起動時に 0 から動かしておき、SMB の時刻が取れたら connect.c で合わせる */
++    if (!aon_timer_is_running()) {
++        struct timespec ts = { 0, 0 };
++        aon_timer_start(&ts);
++    }
++    if (sd_mtx == NULL)
++        sd_mtx = xSemaphoreCreateRecursiveMutex();
+ }
+ 
+-int64_t sdhds_open(const char *path, void **handle)
++void sdc_lock(void)
++{
++    if (xTaskGetSchedulerState() == taskSCHEDULER_NOT_STARTED)
++        return;                         /* vd_init はスケジューラの前 (ほかのタスクはまだいない) */
++    xSemaphoreTakeRecursive(sd_mtx, portMAX_DELAY);
++}
++
++void sdc_unlock(void)
++{
++    if (xTaskGetSchedulerState() == taskSCHEDULER_NOT_STARTED)
++        return;
++    xSemaphoreGiveRecursive(sd_mtx);
++}
++
++bool sdc_mount(void)
+ {
++    static bool failed;
+     FRESULT fr;
++    if (mounted)
++        return true;
++    if (failed)
++        return false;                   /* カードが無いとき、毎回 SPI で待たない */
++    sdc_lock();
+     if (!mounted) {
+-        if ((fr = f_mount(&fs, "", 1)) != FR_OK) {
++        if ((fr = f_mount(&fs, "", 1)) == FR_OK)
++            mounted = true;
++        else {
+             printf("SD: mount failed (%d)\n", fr);
+-            return -1;
++            failed = true;
+         }
+-        mounted = true;
+     }
+-    if (nfiles >= SDHDS_MAX)
+-        return -1;
+-    FIL *f = &files[nfiles];
+-    const char *name = path + 3;            /* "sd:" の後ろ */
+-    if ((fr = f_open(f, name, FA_READ | FA_WRITE)) != FR_OK) {
+-        printf("SD: %s open failed (%d)\n", name, fr);
++    sdc_unlock();
++    return mounted;
++}
++
++bool sdhds_is(const char *path)
++{
++    return strncmp(path, "sd:", 3) == 0;
++}
++
++int64_t sdhds_open(const char *path, void **handle)
++{
++    FRESULT fr;
++    int64_t sz = -1;
++    if (!sdc_mount())
+         return -1;
++    sdc_lock();
++    if (nfiles < SDHDS_MAX) {
++        FIL *f = &files[nfiles];
++        const char *name = path + 3;        /* "sd:" の後ろ */
++        if ((fr = f_open(f, name, FA_READ | FA_WRITE)) != FR_OK) {
++            printf("SD: %s open failed (%d)\n", name, fr);
++        } else {
++            snprintf(names[nfiles], sizeof names[0], "%s", name);
++            nfiles++;
++            *handle = f;
++            sz = (int64_t)f_size(f);
++        }
+     }
+-    nfiles++;
+-    *handle = f;
+-    return (int64_t)f_size(f);
++    sdc_unlock();
++    return sz;
++}
++
++bool sdhds_in_use(const char *sdpath)
++{
++    if (strncmp(sdpath, "sd:", 3) == 0)
++        sdpath += 3;
++    for (int i = 0; i < nfiles; i++)
++        if (strcasecmp(names[i], sdpath) == 0)
++            return true;
++    return false;
+ }
+ 
+ int sdhds_read(void *handle, uint32_t lba, uint8_t *buf, int nsect)
+ {
+     FIL *f = handle;
+     UINT br;
+-    if (f_lseek(f, (FSIZE_t)lba * 512) != FR_OK)
+-        return -1;
+-    if (f_read(f, buf, nsect * 512, &br) != FR_OK)
+-        return -1;
+-    return br;
++    int r = -1;
++    sdc_lock();
++    if (f_lseek(f, (FSIZE_t)lba * 512) == FR_OK && f_read(f, buf, nsect * 512, &br) == FR_OK)
++        r = br;
++    sdc_unlock();
++    return r;
+ }
+ 
+ int sdhds_write(void *handle, uint32_t lba, const uint8_t *buf, int nsect)
+ {
+     FIL *f = handle;
+     UINT bw;
+-    if (f_lseek(f, (FSIZE_t)lba * 512) != FR_OK)
+-        return -1;
+-    if (f_write(f, buf, nsect * 512, &bw) != FR_OK || bw != (UINT)nsect * 512)
+-        return -1;
+-    if (f_sync(f) != FR_OK)
+-        return -1;
+-    return bw;
++    int r = -1;
++    sdc_lock();
++    if (f_lseek(f, (FSIZE_t)lba * 512) == FR_OK &&
++        f_write(f, buf, nsect * 512, &bw) == FR_OK && bw == (UINT)nsect * 512 &&
++        f_sync(f) == FR_OK)
++        r = bw;
++    sdc_unlock();
++    return r;
+ }
+ 
+ /*
+- * SMB の共有から SD カードへ 1 回だけ写す (Wi-Fi 越しにカードへ HDS を載せる道。カードを抜かずに済む)。
+- * SD に sdpath が無く、共有に smbpath があるときだけ。途中で切れたものを使わないよう、別名に書いてから名前を変える。
+- * 戻り値: 写したバイト数 / 0 (写すものが無い・もうある) / -1 (失敗)
++ * SMB の共有から SD カードへ写す (Wi-Fi 越しにカードへ HDS を載せる道。カードを抜かずに済む)。
++ * 途中で切れたものを使わないよう、別名 (.part) に書いてから名前を変える。上書きは HDS として開いていないファイルだけ。
++ * 1 塊ずつ SMB から読み (錠の外)、カードに書く (錠の中)。USB タスクの HDS の読み書きは塊の合間に入る。
++ * 戻り値: 写したバイト数 / -1 (失敗、*why に理由)
+  */
+-int64_t sdhds_fetch(struct smb2_context *smb2, const char *smbpath, const char *sdpath)
++static volatile uint64_t cp_done, cp_total;
++
++static int64_t sd_copy(struct smb2_context *smb2, const char *smbpath, const char *sdpath, const char **why)
+ {
+-    static uint8_t buf[32768];
++    size_t bsize = 32768;
++    uint8_t *buf = malloc(bsize);
+     char tmp[128];
+-    FILINFO fi;
+-    FIL f;
++    FIL *f = NULL;
+     FRESULT fr;
+-    struct smb2fh *fh;
+-    int64_t total = 0;
+-    if (!mounted) {
+-        if ((fr = f_mount(&fs, "", 1)) != FR_OK)
+-            return -1;
+-        mounted = true;
++    struct smb2fh *fh = NULL;
++    struct smb2_stat_64 st;
++    int64_t total = -1;
++
++    if (buf == NULL && (buf = malloc(bsize = 4096)) == NULL) {
++        *why = "nomem";
++        return -1;
+     }
+-    if (f_stat(sdpath, &fi) == FR_OK)
+-        return 0;
+-    if ((fh = smb2_open(smb2, smbpath, O_RDONLY)) == NULL)
+-        return 0;
++    if ((f = malloc(sizeof *f)) == NULL) {
++        *why = "nomem";
++        goto out;
++    }
++    if ((fh = smb2_open(smb2, smbpath, O_RDONLY)) == NULL) {
++        *why = "smb-open";
++        goto out;
++    }
++    cp_total = smb2_fstat(smb2, fh, &st) == 0 ? st.smb2_size : 0;
++    cp_done = 0;
+     snprintf(tmp, sizeof tmp, "%s.part", sdpath);
++    sdc_lock();
+     {
+         /* 親ディレクトリ (1 段だけ) */
+         char d[128];
+@@ -108,35 +191,164 @@ int64_t sdhds_fetch(struct smb2_context *smb2, const char *smbpath, const char *
+             f_mkdir(d);
+         }
+     }
+-    if ((fr = f_open(&f, tmp, FA_WRITE | FA_CREATE_ALWAYS)) != FR_OK) {
+-        printf("SD: fetch %s: create failed (%d)\n", tmp, fr);
+-        smb2_close(smb2, fh);
+-        return -1;
++    fr = f_open(f, tmp, FA_WRITE | FA_CREATE_ALWAYS);
++    sdc_unlock();
++    if (fr != FR_OK) {
++        printf("SD: copy %s: create failed (%d)\n", tmp, fr);
++        *why = "sd-create";
++        goto out;
+     }
+-    printf("SD: fetching %s -> %s\n", smbpath, sdpath);
++    printf("SD: copying %s -> %s (%llu bytes)\n", smbpath, sdpath, (unsigned long long)cp_total);
++    total = 0;
+     for (;;) {
+-        int n = smb2_read(smb2, fh, buf, sizeof buf);
++        int n = smb2_read(smb2, fh, buf, bsize);
+         UINT bw;
+         if (n < 0) {
++            *why = "smb-read";
+             total = -1;
+             break;
+         }
+         if (n == 0)
+             break;
+-        if (f_write(&f, buf, n, &bw) != FR_OK || bw != (UINT)n) {
++        sdc_lock();
++        fr = f_write(f, buf, n, &bw);
++        sdc_unlock();
++        if (fr != FR_OK || bw != (UINT)n) {
++            *why = fr == FR_OK ? "sd-full" : "sd-write";
+             total = -1;
+             break;
+         }
+         total += n;
++        cp_done = total;
+     }
+-    smb2_close(smb2, fh);
+-    if (f_close(&f) != FR_OK)
++    sdc_lock();
++    if (f_close(f) != FR_OK && total >= 0) {
++        *why = "sd-close";
+         total = -1;
+-    if (total < 0 || f_rename(tmp, sdpath) != FR_OK) {
+-        printf("SD: fetch %s failed\n", smbpath);
++    }
++    if (total >= 0) {
++        if (sdhds_in_use(sdpath)) {
++            *why = "in-use";            /* 写している間に HDS として開かれた */
++            total = -1;
++        } else if ((fr = f_unlink(sdpath)) != FR_OK && fr != FR_NO_FILE) {
++            *why = fr == FR_LOCKED ? "in-use" : "sd-unlink";
++            total = -1;
++        } else if (f_rename(tmp, sdpath) != FR_OK) {
++            *why = "sd-rename";
++            total = -1;
++        }
++    }
++    if (total < 0)
+         f_unlink(tmp);
++    sdc_unlock();
++    if (total < 0)
++        printf("SD: copy %s failed (%s)\n", smbpath, *why);
++    else
++        printf("SD: copied %lld bytes to %s\n", total, sdpath);
++out:
++    if (fh)
++        smb2_close(smb2, fh);
++    free(f);
++    free(buf);
++    return total;
++}
++
++/* 起動時に 1 回: SD に sdpath が無く、共有に smbpath があるときだけ写す。戻り値: バイト数 / 0 (写すものが無い・もうある) / -1 */
++int64_t sdhds_fetch(struct smb2_context *smb2, const char *smbpath, const char *sdpath)
++{
++    FILINFO fi;
++    FRESULT fr;
++    struct smb2_stat_64 st;
++    const char *why;
++    if (!sdc_mount())
+         return -1;
++    sdc_lock();
++    fr = f_stat(sdpath, &fi);
++    sdc_unlock();
++    if (fr == FR_OK || smb2_stat(smb2, smbpath, &st) < 0)
++        return 0;
++    return sd_copy(smb2, smbpath, sdpath, &why);
++}
++
++/*
++ * sdcopy <smb-path> <sd-path>: UDP 6869 から。<smb-path> は config の HDS と同じ「共有名/パス」、<sd-path> は "/..." か "sd:/..."。
++ * 専用のタスクが別の SMB の接続で写す (USB タスクの接続とは分ける)。様子は status の sdcopy=... に出る。
++ */
++static TaskHandle_t cp_th;
++static char cp_src[256], cp_dst[128];
++static volatile enum { CP_IDLE, CP_RUN, CP_DONE, CP_ERR } cp_state;
++static const char *cp_why = "";
++
++static void sdcopy_task(void *params)
++{
++    for (;;) {
++        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
++        if (cp_state != CP_RUN)
++            continue;
++        const char *why = "smb-connect";
++        int64_t r = -1;
++        char share[64];
++        const char *slash = strchr(cp_src, '/');
++        if (sysstatus < STAT_SMB2_CONNECTED) {
++            why = "no-smb";
++        } else if (!slash || slash == cp_src || (size_t)(slash - cp_src) >= sizeof share) {
++            why = "bad-path";
++        } else if (!sdc_mount()) {
++            why = "no-card";
++        } else {
++            memcpy(share, cp_src, slash - cp_src);
++            share[slash - cp_src] = 0;
++            struct smb2_context *smb2 = connect_smb2(share);
++            if (smb2 != NULL) {
++                r = sd_copy(smb2, slash + 1, cp_dst, &why);
++                disconnect_smb2(smb2);
++            }
++        }
++        cp_why = why;
++        __sync_synchronize();
++        cp_state = r < 0 ? CP_ERR : CP_DONE;
++    }
++}
++
++void sdcopy_init(void)
++{
++    xTaskCreate(sdcopy_task, "SdCopy", 2048, NULL, 1, &cp_th);
++}
++
++/* lwIP のスレッドから。args は "sdcopy " の後ろ。返事の文字列を返す */
++const char *sdcopy_request(const char *args)
++{
++    char src[sizeof cp_src], dst[sizeof cp_dst];
++    if (cp_th == NULL)
++        return "err sdcopy unavailable";
++    if (cp_state == CP_RUN)
++        return "err sdcopy busy";
++    if (sscanf(args, "%255s %127s", src, dst) != 2)
++        return "err usage: sdcopy <share/path> <sd-path>";
++    const char *d = strncmp(dst, "sd:", 3) == 0 ? dst + 3 : dst;
++    if (d[0] != '/' || strlen(d) + 6 > sizeof cp_dst)
++        return "err sd-path must start with / (or sd:/)";
++    if (sdhds_in_use(d))
++        return "err in-use (open as an HDS; the Z is using that SCSI ID)";
++    strcpy(cp_src, src);
++    strcpy(cp_dst, d);
++    cp_done = cp_total = 0;
++    __sync_synchronize();
++    cp_state = CP_RUN;
++    xTaskNotifyGive(cp_th);
++    return "ok sdcopy started";
++}
++
++int sdcopy_status(char *s, size_t size)
++{
++    switch (cp_state) {
++    case CP_IDLE:
++        return snprintf(s, size, " sdcopy=idle");
++    case CP_RUN:
++        return snprintf(s, size, " sdcopy=run:%llu/%llu", (unsigned long long)cp_done, (unsigned long long)cp_total);
++    case CP_DONE:
++        return snprintf(s, size, " sdcopy=done:%llu", (unsigned long long)cp_done);
++    default:
++        return snprintf(s, size, " sdcopy=err:%s", cp_why);
+     }
+-    printf("SD: fetched %lld bytes to %s (used from the next boot)\n", total, sdpath);
+-    return total;
+ }
+diff --git a/src/sdhds.h b/src/sdhds.h
+index 57ee8c0..7215652 100644
+--- a/src/sdhds.h
++++ b/src/sdhds.h
+@@ -13,10 +13,22 @@ bool sdhds_is(const char *path);
+    (写すだけで、HDS1 に指定しない限りディスクにはならない) */
+ #define SDHDS_FETCH1    "sdcopy/hds1.hds"
+ struct smb2_context;
++/* カードに触るところは全部 sdc_lock の中で (FatFs は 1 本の錠で守る)。sdc_mount は最初の 1 回だけ実際に mount する */
++void sdc_init(void);              /* vd_init の最初 (スケジューラの前) */
++void sdc_lock(void);
++void sdc_unlock(void);
++bool sdc_mount(void);
++/* sd_path ("/..." か "sd:/...") を HDS として開いているか */
++bool sdhds_in_use(const char *sdpath);
+ int64_t sdhds_fetch(struct smb2_context *smb2, const char *smbpath, const char *sdpath);
+ /* 開いて大きさ (バイト) を返す。失敗なら -1。戻り値の handle を hds_cache_* に smb2 = NULL で渡す */
+ int64_t sdhds_open(const char *path, void **handle);
+ int sdhds_read(void *handle, uint32_t lba, uint8_t *buf, int nsect);
+ int sdhds_write(void *handle, uint32_t lba, const uint8_t *buf, int nsect);
+ 
++/* UDP 6869 の sdcopy <共有名/パス> <sd-path> (hidkbd.c から) */
++void sdcopy_init(void);
++const char *sdcopy_request(const char *args);
++int sdcopy_status(char *s, size_t size);
++
+ #endif  /* _SDHDS_H_ */
+diff --git a/src/vd_command.c b/src/vd_command.c
+index c6005c7..3d0e669 100644
+--- a/src/vd_command.c
++++ b/src/vd_command.c
+@@ -189,7 +189,7 @@ int vd_command(uint8_t *cbuf, uint8_t *rbuf)
+         res->hour = tm->tm_hour;
+         res->min = tm->tm_min;
+         res->sec = tm->tm_sec;
+-        res->unit = atoi(config.remoteunit);
++        res->unit = vd_remoteunit();
+       }
+       res->version = PROTO_VERSION;
+       strncpy(res->verstr, GIT_REPO_VERSION, sizeof(res->verstr) - 1);
+diff --git a/src/virtual_disk.c b/src/virtual_disk.c
+index faf9077..201559b 100644
+--- a/src/virtual_disk.c
++++ b/src/virtual_disk.c
+@@ -48,6 +48,7 @@
+ #include "bootloader.inc"
+ #include "hdsboot.inc"
+ #include "sdhds.h"
++#include "sdfs.h"
+ #include "settingui.inc"
+ 
+ //****************************************************************************
+@@ -205,6 +206,12 @@ static void vd_sync(void)
+     }
+ }
+ 
++/* SD カードのユニットを足した後のリモートドライブのユニット数 (config.remoteunit ではなくこちらを Z に見せる) */
++int vd_remoteunit(void)
++{
++    return remoteunit;
++}
++
+ int vd_init(void)
+ {
+     uint32_t nvalue;
+@@ -212,6 +219,7 @@ int vd_init(void)
+     int len;
+ 
+     setenv("TZ", config.tz, true);
++    sdc_init();
+ 
+     remoteunit = atoi(config.remoteunit);
+     remoteboot = atoi(config.remoteboot);
+@@ -254,6 +262,26 @@ int vd_init(void)
+             smb2_hds = true;
+             diskinfo[id].size = 0xfffffe00; /* tentative size */
+         }
++
++        /* SD カードをリモートドライブのユニットにする (SMB のユニットの後ろ = B: の次の C:。SCSI ID は増やさないので
++           ドライブ名はずれない)。REMOTE の欄に "sd:/..." と書いたユニットはそれを使う。どの欄にも書いていなければ、
++           カードが読めるときは "sd:/" のユニットを 1 つ足す。Wi-Fi を待たない */
++        bool sdunit = false;
++        for (int i = 0; i < remoteunit && i < 8; i++) {
++            if (!sdhds_is(config.remote[i]))
++                continue;
++            sdunit = true;
++            struct smb2_stat_64 st;
++            if (sdfs_stat(config.remote[i], &st) == 0 && st.smb2_type == SMB2_TYPE_DIRECTORY) {
++                rootpath[i] = config.remote[i];
++                printf("REMOTE%u: %s (SD)\n", i, config.remote[i]);
++            }
++        }
++        if (!sdunit && remoteunit < 8 && sdc_mount()) {
++            rootpath[remoteunit] = "sd:/";
++            printf("REMOTE%u: sd:/ (SD, automatic)\n", remoteunit);
++            remoteunit++;
++        }
+     }
+ 
+     /* SCSI ID 6 : for remote communication */
+diff --git a/src/virtual_disk.h b/src/virtual_disk.h
+index 9a33f71..6355f93 100644
+--- a/src/virtual_disk.h
++++ b/src/virtual_disk.h
+@@ -54,6 +54,7 @@
+ /* virtual disk function prototypes */
+ 
+ int vd_init(void);
++int vd_remoteunit(void);
+ int vd_read_block(uint32_t lba, uint8_t *buf);
+ int vd_write_block(uint32_t lba, uint8_t *buf);
+ 
+-- 
+2.54.0 (Apple Git-157)
+
