@@ -19,6 +19,24 @@ Z から Linux / macOS に入って Claude Code まで動かした経緯は [日
 `x68kcli` のイメージ作成は `net` と `harness` のソースも使う (相対パス `../net`、`../harness`)。
 README の中のパスは、特に断りがなければリポジトリの根からのもの。
 
+## CI
+
+GitHub Actions (`.github/workflows/ci.yml`) で、実機も第三者のバイナリ (XEiJ、Human68k、x68kcli の stage、ROM) も要らない試験を回す。
+main への push と PR のたびに、次のジョブが ubuntu-24.04 (x86-64) で並んで動く。
+
+| ジョブ | 中身 |
+|---|---|
+| vt100 | `term/vt100/tests/run.sh`。CGROM が無いので glyph の 2 項目は SKIP。Linux の ASan のリーク検出は切る (`ASAN_OPTIONS=detect_leaks=0`) |
+| zterm | `cargo build --release` と `cargo test`、`term/zterm/tests/replay.sh` |
+| host | `net/accel/tests/run.sh`、`net/tistack/tests` の hostsim と picosim (lwIP 2.2.0 を固定コミットで取る) |
+| m68k | elf2x68k で ssh.x (`ZTERM=1 FAST=1 ACCEL=1`)、npd、tis.x をビルドし、`net/ssh/crypto68k/tests/run.sh` と chacha68k の試験 (`.github/ci/chacha68k.sh`、Musashi で 68000 のコードを動かす) |
+| picosim | `make -C harness/picosim test-host`。driver/ のバイナリは yunkya2/x68kzremotedrv 3afd408 に `net/x68kzremotedrv-netpipe/patches` を当ててビルドする (`.github/ci/yunkya2.sh`) |
+
+- elf2x68k は yunkya2/elf2x68k の Linux 版のリリース (20261004) を取り、sha256 を確かめてから使う。リポジトリには入れず、actions/cache に置く
+- python のパッケージは `.github/ci/requirements.txt` の版で入れる
+- 回さないもの: XEiJ を使う試験 (`make test-tsp` / `test-zos`、`net/tistack/tests/xeij_*.sh`、各 xeij_bench)、CGROM を使う試験 (vt100 の glyph、simbench)、x68k-zos (非公開) が要る pzltest と zostest、実機の試験
+- `.github/workflows/docker.yml` は `harness/picosim/docker/Dockerfile` を linux/amd64 でビルドするだけ (push しない)。Dockerfile が変わったときに動く
+
 ## ライセンス
 
 このリポジトリで書いたもの (コード、スクリプト、テンプレート、記事) は [MIT](LICENSE)。

@@ -10,7 +10,7 @@ Z 側は [../../x68kcli](../../x68kcli) の `slipd.x -z` (`netup pico` / `netup 
 git clone https://github.com/yunkya2/x68kzremotedrv
 cd x68kzremotedrv
 git checkout 3afd408df99f3f9d1aafc7c090e54285cbeadba6   # "Show system statistics by default"
-git am /path/to/x68k/x68kzremotedrv-netpipe/patches/*.patch
+git am --keep-cr /path/to/x68k/net/x68kzremotedrv-netpipe/patches/*.patch   # config.tmpl.txt は CRLF なので --keep-cr が要る
 make
 ```
 
