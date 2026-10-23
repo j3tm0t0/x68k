@@ -57,7 +57,7 @@ build/libslirp.a: build/libslirp.tar.gz
 	done
 	ar rcs $@ build/slirp-obj/*.o
 
-test: build/picosim-echo
+test: build/picosim build/picosim-echo
 	python3 -I tests/bridgetest.py build/picosim-echo
 	python3 -I tests/bootwaittest.py build/picosim $(FW)
 	python3 -I tests/remotetest.py build/picosim $(FW)

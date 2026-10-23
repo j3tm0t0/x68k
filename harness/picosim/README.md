@@ -42,6 +42,29 @@ X68_HOST=127.0.0.1 X68_PORT=23268 harness/raspi/x68.sh 'ping.x -c 4 192.168.1.1'
   REQUEST SENSE を繰り返して待ち、準備ができたら picosim の HDS から起動した (下記)
 - Pico Z Loader の起動 (待ち画面・控え・設定画面) は下の「Pico Z Loader の起動」
 
+### ファームの部品 (`-F` / `-R` / `make FW= RS=`)
+
+Pico Z Loader (`-F`) と B: (`-R`) には x68kzremotedrv のファームの一部が要る。どれも git には入れない
+(68000 のバイナリと、yunkya2 氏の x68kserremote のソースはビルド時に読むだけ)。本家に
+[../../net/x68kzremotedrv-netpipe/patches](../../net/x68kzremotedrv-netpipe/patches) (0001〜0030) を当てたものから作る:
+
+```sh
+git clone https://github.com/yunkya2/x68kzremotedrv ~/src/x68kzremotedrv-picosim
+cd ~/src/x68kzremotedrv-picosim
+git checkout 3afd408df99f3f9d1aafc7c090e54285cbeadba6        # net/x68kzremotedrv-netpipe/README.md と同じ起点
+git am /path/to/x68k/net/x68kzremotedrv-netpipe/patches/*.patch
+git submodule update --init x68kserremote                     # B: の remoteserv.c (Pico のツールチェーンは要らない)
+make -C driver bootwait1.bin bootwait.bin hdsboot.bin settingui.bin scsiremote.bin   # elf2x68k (m68k-xelf-gcc) で
+```
+
+- picosim に: `-F ~/src/x68kzremotedrv-picosim/driver`、ビルドと試験に:
+  `make -C harness/picosim FW=~/src/x68kzremotedrv-picosim/driver RS=~/src/x68kzremotedrv-picosim/x68kserremote test`
+- `FW` / `RS` の既定は作業用の checkout (`~/src/github.com/yunkya2/x68kzremotedrv-hid`)。RS が無ければ B: 無しでビルドし、
+  FW が無ければ bootwaittest は SKIP する
+- パッチ 0030 (B: のページを LBA から) を当てた scsiremote.bin / settingui.bin は rpage 方式で話す。0029 までのものを
+  渡すと古い数え方 (B: の大きさによる破損あり) になる。2026-10-23 に上の手順 (0001〜0030) で作ったもので `make test` が
+  3 本とも通った
+
 ### XEiJ 側の設定 (システムプロパティ、run.sh の `XEIJ_JAVA_OPTS`)
 
 | プロパティ | 既定 | 意味 |
