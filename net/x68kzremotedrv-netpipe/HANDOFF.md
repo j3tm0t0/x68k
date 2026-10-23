@@ -20,7 +20,7 @@
 
 - fork (ローカルのみ、push しない): `/Users/moto/Dropbox/src/github.com/yunkya2/x68kzremotedrv-tsp`、ブランチ `sddata`
   - 0b1063c まで = `tsp` (パッチ 0001-0035 と同じ)
-  - 483429f = 0036、369cda6 = 0037、ac0b102 = 0038、0bb206a = 0039、f6261a2 = 0040 (host= を返事の最初の語の直後に)、b467217 = 0041 (Wi-Fi の一覧を 10 秒で打ち切る)。0040 と 0041 はまだ書き込んでいない (build-p2w で uf2 291c7c38)
+  - 483429f = 0036、369cda6 = 0037、ac0b102 = 0038、0bb206a = 0039、f6261a2 = 0040 (host= を返事の最初の語の直後に)、b467217 = 0041 (Wi-Fi の一覧を 10 秒で打ち切る)、4 つ目 = 0042 (SETCONFIG のつなぎ直しで SMB を外して開き直す、未試験、uf2 d94004ac)。0036-0041 の uf2 291c7c38 は scratchpad/p2w/release-291c7c38/ と raspi3:~/fw-fork-291c7c38.elf。Charlie の PZL の試験のあと、sd 基板にはこれが戻る
   - サブモジュールの dir (libsmb2, x68kserremote, pico-sdk, FreeRTOS-Kernel) は `../x68kzremotedrv-hid` への symlink。`lib/FatFs_SD` は no-OS-FatFS 6c644cf の clone への symlink
 - x68k: `/Users/moto/Dropbox/src/github.com/j3tm0t0/x68k-tistack` (ブランチ `tistack`)。パッチは `net/x68kzremotedrv-netpipe/patches/`、説明は README の表
 - パッチを作り直すとき: fork で `git format-patch --start-number 36 0b1063c..sddata -o <x68k>/net/x68kzremotedrv-netpipe/patches/`
@@ -74,6 +74,6 @@ make -j8      # x68kzremotedrv.elf / .uf2 (fork の build-p2w/ で作れる。00
 
 1. (済) 明示だけの版を書き、設定画面で RMTUNIT 2 / REMOTE1 = `sd:/` → C: = SD、FD は D: E:。status に `host=pico-f350`。
 2. ホスト名と固定 IP は Charlie (PZL 186beb6) と同じ形に揃えた (項目名・既定 pico-XXXX・NET1 の並び・返事の host= の位置)。mDNS は今はしない。固定 IP は moto が頼むまで Z の基板では試さない。
-3. Charlie の指摘で残っているもの: SETCONFIG で Wi-Fi をつなぎ直すと古い SMB の接続が「開いている」まま残り、次の keepalive までリモートドライブが -14 を返す (上流からの動き、未対応)。fork は enable_sta_mode を起動時の 1 回しか呼ばないので、つなぎ直しで固定 IP が DHCP に戻ることはない (netif を作り直さない) はず (未試験)。
+3. (0042 で直した、実機は未試験) SETCONFIG で Wi-Fi をつなぎ直すと古い SMB の接続が残り、次の keepalive までリモートドライブが -14 を返していた。fork は enable_sta_mode を起動時の 1 回しか呼ばないので、つなぎ直しで固定 IP が DHCP に戻ることはない (netif を作り直さない) はず (未試験)。
 3. tistack の実機の速さ (`tis.x -p`) は Pico 2 W でまだ測っていない。
 4. パッチ 0036-0038 を main へ (ホストの試験は関係しないが、マージ前に走らせる)。
