@@ -150,6 +150,7 @@ static void cb_err(void *arg, err_t err)
   struct psock *s = arg;
   if (!s)
     return;
+  TSP_LOG("tsp: socket %d lwIP error %d (state %d)\n", (int)(s - ps), err, s->state);
   s->tcp = NULL;                        /* lwIP はもう pcb を解放した */
   if (s->state == P_CONNECTING)
     s->err = err == ERR_RST ? TSP_ERR_REFUSED : TSP_ERR_TIMEOUT;
@@ -837,6 +838,7 @@ static int build(uint8_t *res, int max)
         continue;
       }
       b[0] = s->err;
+      TSP_LOG("tsp: socket %d -> Z ERROR %d\n", (int)(s - ps), s->err);
       ps_close(s, 0);                   /* Z の番号から外す。Z は CLOSE を送らない */
     }
   }

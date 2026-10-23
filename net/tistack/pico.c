@@ -166,11 +166,38 @@ static void no_tsp(void)
   netdown();
 }
 
+/* npd.x がしばらく交換しに来ない: 待っている connect と名前の問い合わせだけを "Network is down" で終わらせ、
+   新しいソケットは断る。つながっているソケットは残す (Pico 側の TCP は生きていて、npd.x が戻れば続きを運べる)。
+   Z-OS の試験で、npd.x が 5 秒ほど回らなかっただけで ssh.x の接続を落としていた ("Error writing: I/O error") */
+static void npd_stalled(void)
+{
+  int i;
+  notsp = 1;
+  for (i = 0; i < NSOCK; i++) {
+    /* 返事待ちの connect / listen / bind は Z の側だけで失敗にする。Pico 側は生かしておき (dead にしない)、
+       閉じたときの CLOSE を npd.x が戻ったら運ぶ (積んだ CONNECT が後から Pico に届いても片付く) */
+    if (!ts[i].remote || !ps[i].opened || ps[i].dead)
+      continue;
+    if (ts[i].st == S_SYNSENT) {
+      ts[i].st = S_CLOSED;
+      ts[i].err = tsp_errstr(TSP_ERR_NETDOWN);
+    }
+    if (ps[i].waitbound == 1)
+      ps[i].waitbound = 2;
+  }
+  for (i = 0; i < TSP_NQUERY; i++)
+    if (qt[i].state == 1) {
+      qt[i].state = 2;
+      qt[i].code = TSP_ERR_NETDOWN;
+    }
+  pstat.stall++;
+}
+
 static void pi_tick(void)
 {
   be_loop.tick();
   if (!notsp && (reqlen || cqlen) && since(last_np) > NONPD_CS)
-    no_tsp();                           /* npd.x が動いていない */
+    npd_stalled();                      /* npd.x が動いていない (か、回ってこない) */
 }
 
 static void open_slot(int s)
