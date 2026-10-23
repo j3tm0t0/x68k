@@ -43,13 +43,14 @@ make -C harness/picosim FW=<x68kzremotedrv の clone>/driver RS=<clone>/x68kserr
 | tests/remotetest.py | B: の com_cmdres を再現: 古いドライバの 16 / 24 ページの後の破損、rpage ドライバで正しい (ソフトリセット後の読み直しも) | RS、FW |
 | tests/tsptest.sh | XEiJ で tis.x -p: 名前・echo・put・get・sink・src・ssh.x (鍵交換まで)・Mac からの rcmd.x (net/tistack/tests/xeij_pico.sh を回す) | lwIP、XEiJ (x68kcli/tools)、GUI のセッション |
 | tests/pzltest.py | Pico Z Loader (x68k-zos pzl) の SCSI の層をホストで: NOT READY → 開く、LBA 2 = hdsboot、0x20 = 本物の 2、READ CAPACITY、書き込み、ID 6 の顔、無い HDS1 は 03/11 | PZL の作業木 (PZLREPO)、elf2x68k |
+| tests/tsptest.sh (PZL=1, make test-tsppzl) | 同じ tis.x -p の試験を Pico Z Loader の TSP (pzl の src/tsp、TSP_ENABLE=1) で | 上 + PZL |
 | tests/zostest.sh | XEiJ で zos.x (ksh 2 ペイン)、右で ssh.x -t を TSP 越しに試験用 sshd へ、テキスト VRAM で判定 | 上 + x68k-zos の kernel/ (ZOS=)、x68kcli の stage、ssh.x |
 
 XEiJ の 2 本 (tsptest / zostest) は試験台の排他 `tests/benchlock.sh` を使う: scratchpad/xeijlock (無ければ $TMPDIR/xeijlock)
 に持ち主の名前を書き、無いか自分の名前のときだけ取り、終わったら消す (zlock と同じ決まり。XEIJLOCK_NAME で名前、
 XEIJLOCK_WAIT 秒待ってだめなら SKIP)。手で XEiJ + picosim を動かすときも同じファイルを取る。口 (SSHPORT / PICOPORT など) と
 作業場所 (WORK / TIS_OUT) は固定なので、同時に 2 つ流すとぶつかる。
-PZL の版は pzl/Makefile の `PZLREV` (既定は試したコミット 5c87bd6)。`make -C harness/picosim pzl-latest` で branch pzl の先を
+PZL の版は pzl/Makefile の `PZLREV` (既定は試したコミット。今は 0995be6)。`make -C harness/picosim pzl-latest` で branch pzl の先を
 試し、通ったら PZLREV を進める。
 
 FW / RS の部品の作り方は README の「ファームの部品」 (本家 3afd408 + net/x68kzremotedrv-netpipe/patches)。

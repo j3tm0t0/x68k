@@ -100,17 +100,21 @@ test-host: build/picosim build/picosim-echo
 	@if [ -d "$(PZLREPO)" ] || [ -n "$(PZLSRC)" ]; then $(MAKE) build/picosim-pzl PZLREPO=$(PZLREPO) PZLSRC=$(PZLSRC) && \
 	  python3 -I tests/pzltest.py build/picosim-pzl; else echo "SKIP pzltest: no PZL repo ($(PZLREPO))"; fi
 
-test-xeij: test-tsp test-zos
+test-xeij: test-tsp test-zos test-tsppzl
 test-tsp: build/picosim
 	tests/tsptest.sh
+# 同じ tis.x -p の試験を Pico Z Loader の TSP (x68k-zos pzl の src/tsp) で
+test-tsppzl: build/picosim
+	@if [ -d "$(PZLREPO)" ] || [ -n "$(PZLSRC)" ]; then $(MAKE) build/picosim-pzl PZLREPO=$(PZLREPO) PZLSRC=$(PZLSRC) && PZL=1 tests/tsptest.sh; \
+	  else echo "SKIP tsptest (PZL): no PZL repo"; fi
 test-zos: build/picosim
 	tests/zostest.sh
 
-# Docker の中で流す (docker/README.md)。SUITES="host tsp zos" JOBS=2
+# Docker の中で流す (docker/README.md)。SUITES="host tsp zos tsppzl" JOBS=2
 docker-test:
 	docker/docker-test.sh $(SUITES)
 
 clean:
 	rm -f build/picosim build/picosim-echo
 
-.PHONY: all test test-host test-xeij test-tsp test-zos docker-test pzl-latest clean
+.PHONY: all test test-host test-xeij test-tsp test-tsppzl test-zos docker-test pzl-latest clean
