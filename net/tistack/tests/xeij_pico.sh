@@ -9,7 +9,7 @@
 #      ssh.x (Mac の sshd、鍵交換まで) を動かして DONE1.TXT を作り、最後に rcmd.x を立てる
 #   3. Mac から 127.0.0.1:23468 → (slirp) → lwIP の 2323 → tis.x → rcmd.x: echo、x68put (300KB)、exit
 #   4. rcmd.x が終わると tis.x -s を書いて DONE.TXT
-# 使い方: tests/xeij_pico.sh     環境変数: TIS_OUT (既定 $TMPDIR/tispico)、SSH_X、RCMD_X、PUTSIZE、GETSIZE、NET=xip (下)
+# 使い方: tests/xeij_pico.sh     環境変数: PICOSIM / PICOSIM_ARGS (picosim を替える。--pzl なら PZL の TSP)、TIS_OUT (既定 $TMPDIR/tispico)、SSH_X、RCMD_X、PUTSIZE、GETSIZE、NET=xip (下)
 # NET=xip: 同じ XEiJ / picosim で xip.x の道 (比べる用)。tis.x の代わりに XIP_X / ifconfig 類を使う (XIPDIR)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -73,7 +73,7 @@ trap cleanup EXIT
 # Pico (lwIP) の DNS: picosim の DNS の口 (picosim が Mac の resolver で答える。bacb837 から lan_attach の口にも)
 export TSP_DNS=${TSP_DNS:-192.168.1.3}
 python3 -I tests/tisnet_peer.py "$PEERPORT" > "$OUT/peer.log" 2>&1 & pids+=($!)
-"$TOP/harness/picosim/build/picosim" -l 127.0.0.1:$BRIDGE -L $RPORT:2323 -s 10 > "$OUT/picosim.log" 2>&1 & pids+=($!)
+${PICOSIM:-$TOP/harness/picosim/build/picosim} ${PICOSIM_ARGS:-} -l 127.0.0.1:$BRIDGE -L $RPORT:2323 -s 10 > "$OUT/picosim.log" 2>&1 & pids+=($!)
 sleep 1
 "$JAVA" -javaagent:"$AGENT=$OUT/tmp/agent.cmd" -Dpicosim=127.0.0.1:$BRIDGE -Dpicosim.ids=6 -Djava.io.tmpdir="$OUT/tmp" \
   -jar "$XEIJ/XEiJ.jar" -config=default -saveonexit=off -model=SUPER -boot="$B" -flrinformed=on -usecanvas=off \

@@ -16,6 +16,7 @@
 #include <poll.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <strings.h>
 #include "picosim.h"
 #include "libslirp.h"
 
@@ -289,7 +290,14 @@ static int dns_answer(const uint8_t *ip, int len)
   uint8_t *m = r + 28;                  /* IP 20 + UDP 8 の後ろ */
   memcpy(m, q, qend + 4);
   rl = qend + 4;
-  if (qtype == 1) {                     /* A */
+  if (qtype == 1 && !strcasecmp(name, "mac.test")) {
+    /* 試験の名前: mac.test = ゲートウェイ (Mac)。net/tistack の試験と同じ取り決め (tsp_glue.c の dns_local_addhost) */
+    static const uint8_t rr[12] = { 0xc0, 12, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4 };
+    memcpy(m + rl, rr, 12);
+    memcpy(m + rl + 12, &lan_cfg.gw, 4);
+    rl += 16;
+    an = 1;
+  } else if (qtype == 1) {              /* A */
     struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_DGRAM }, *res = NULL, *a;
     if (getaddrinfo(name, NULL, &hints, &res) != 0)
       rcode = 3;

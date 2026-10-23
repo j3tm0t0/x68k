@@ -8,7 +8,14 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 TOP=$PWD/../..
 if [ -n "${NOXEIJ:-}" ]; then echo "SKIP tsptest (NOXEIJ)"; exit 0; fi
-if ! nm build/picosim 2>/dev/null | grep -q "tsp\|lwip" && ! grep -qa "socket service for tis.x" build/picosim; then
+# PZL=1: Pico Z Loader (x68k-zos pzl) の TSP (src/tsp) で (build/picosim-pzl --pzl)
+if [ -n "${PZL:-}" ]; then
+  [ -x build/picosim-pzl ] || { echo "SKIP tsptest (PZL): no build/picosim-pzl"; exit 0; }
+  R=${TMPDIR:-/tmp}/picosim-tsptest-pzlroot; mkdir -p "$R"
+  printf 'WIFI_SSID: picosim\nSMB2_SERVER: 192.168.1.1\nREMOTE_UNIT: 0\nTZ: JST-9\n' > "$R/config.txt"
+  # PZL の TSP の lwIP は Pico 自身の IP (.118) を使う (Z の IP .68 は netpipe のブリッジ)。Mac からの転送は .118 へ
+  export PICOSIM=$PWD/build/picosim-pzl PICOSIM_ARGS="--pzl=$R/config.txt --pzl-root=$R --pzl-zip=192.168.1.118 -T 0,0,0"
+elif ! grep -qa "socket service for tis.x" build/picosim 2>/dev/null; then
   echo "SKIP tsptest: build/picosim has no TSP (lwIP not found; make LWIP=...)"; exit 0; fi
 if [ ! -f "$TOP/x68kcli/tools/xeij/XEiJ.jar" ] || [ ! -f "$TOP/x68kcli/tools/xeijagent.jar" ]; then
   echo "SKIP tsptest: no XEiJ / agent in x68kcli/tools (make -C x68kcli tools agent)"; exit 0; fi

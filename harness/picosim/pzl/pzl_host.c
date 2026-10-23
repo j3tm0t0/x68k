@@ -31,6 +31,7 @@
 #include "lwip/netif.h"
 #include "lwip/etharp.h"
 #include "lwip/timeouts.h"
+#include "lwip/dns.h"
 #include "netif/ethernet.h"
 #include "lwip/sockets.h"
 #include "smb2.h"
@@ -55,7 +56,6 @@ void lan_send(const uint8_t *frame, int len);
 /* ---- main.c / net.c の大域変数 ---- */
 char log_txt[LOGSIZE];
 volatile int sysstatus;
-struct diskinfo diskinfo[7];
 uint64_t boottime;
 const char *rootpath[8];
 
@@ -168,6 +168,14 @@ int smb2_share_enum_async(struct smb2_context *smb2, enum SHARE_INFO_enum level,
 struct smb2dir *smb2_opendir(struct smb2_context *smb2, const char *path) { (void)smb2; (void)path; return NULL; }
 struct smb2dirent *smb2_readdir(struct smb2_context *smb2, struct smb2dir *dir) { (void)smb2; (void)dir; return NULL; }
 void smb2_closedir(struct smb2_context *smb2, struct smb2dir *dir) { (void)smb2; (void)dir; }
+/* REMOTE_BOOT の HUMAN.SYS (virtual_disk.c の human_read) も SMB なので、ホストでは読めない (0 を返す) */
+struct smb2_context *path2smb2(const char *path, const char **shpath) { (void)path; (void)shpath; return NULL; }
+struct smb2fh *smb2_open(struct smb2_context *smb2, const char *path, int flags) { (void)smb2; (void)path; (void)flags; return NULL; }
+int smb2_close(struct smb2_context *smb2, struct smb2fh *fh) { (void)smb2; (void)fh; return 0; }
+int smb2_read(struct smb2_context *smb2, struct smb2fh *fh, uint8_t *buf, uint32_t count)
+{ (void)smb2; (void)fh; (void)buf; (void)count; return -1; }
+int64_t smb2_lseek(struct smb2_context *smb2, struct smb2fh *fh, int64_t offset, int whence, uint64_t *cur)
+{ (void)smb2; (void)fh; (void)offset; (void)whence; (void)cur; return -1; }
 
 /* ---- Wi-Fi の代わり: lwIP の netif を picosim の LAN に ---- */
 cyw43_t cyw43_state;
@@ -229,6 +237,10 @@ static void wifi_up(void)
   netif_set_default(wifi);
   netif_set_up(wifi);
   netif_set_link_up(wifi);
+  /* DHCP の代わり: DNS はゲートウェイ (picosim が答える) */
+  ip_addr_t d;
+  ip_addr_copy_from_ip4(d, gw);
+  dns_setserver(0, &d);
   lan_attach(pico_mac, pico_ip, lan_rx, NULL);
   lan_up = 1;
   picosim_log("pzl: Wi-Fi (lwIP) %s on the LAN\n", ip4addr_ntoa(&ip));
@@ -259,12 +271,19 @@ static int bw_read0(void *ctx, uint32_t lba, uint8_t *buf)
 }
 
 uint32_t net_retry_ms(void) { return opened ? 0xffffffffu : 0; }
+/* net.c の: HDS を開こうとしている最中か / SMB の読み書きの失敗 (繋ぎ直し) / SMB を使っている最中か。ホストでは SMB が
+   切れないので、開く前は pending、失敗は記録だけ */
+volatile bool smb_busy;
+bool net_hds_pending(void) { return !opened; }
+void net_io_failed(void) { picosim_log("pzl: net_io_failed (the Pico would reconnect SMB)\n"); }
+const char *net_hostname(void) { return "pico-host"; }
 void net_request(int mode) { (void)mode; }
 
+/* net.c の net_open_storage と同じ順 (リモートドライブの根 REMOTE0〜 → HDS0〜、HDS0 は起動待ちの控えも → diskinfo)。
+   net_open_storage そのものは net.c (cyw43 と libsmb2 の状態機械と同じファイル) にあるので、ホストでは同じ手順を写している */
 static void open_storage(void)
 {
   static char paths[8][1024];
-  /* net.c の smb_mount の後半と同じ順: リモートドライブの根 (REMOTE0〜) → HDS0〜 (HDS0 は起動待ちの控えも) */
   int remoteunit = atoi(config.remoteunit);
   for (int i = 0; i < remoteunit && i < (int)countof(config.remote); i++) {
     struct stat st;

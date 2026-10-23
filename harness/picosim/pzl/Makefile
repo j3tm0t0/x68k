@@ -6,13 +6,14 @@
 PZLREPO ?= $(HOME)/Dropbox/src/github.com/j3tm0t0/x68k-zos-pzl
 # 既定は試したコミットに留める (pzl が進んでも main の make test が壊れないように)。最新に合わせるかは
 #   make -C harness/picosim pzl-latest  (PZLREV=pzl で作って試す) で確かめてから、ここを進める
-PZLREV ?= 5c87bd6
+PZLREV ?= 0995be6
 B = build
 S = $(B)/src/pico
 PZLFILES = src/scsi/virtual_disk.c src/storage/storage.c src/storage/stor_ram.c \
            src/remote/vd_command.c src/remote/iconv/iconv_mini.c lib/x68kserremote/service/remoteserv.c \
            src/netpipe/netpipe.c src/accel/accel.c src/accel/accel_ops.c src/accel/monocypher/monocypher.c \
-           src/accel/monocypher/monocypher-ed25519.c src/bootwait/bootwait.c
+           src/accel/monocypher/monocypher-ed25519.c src/bootwait/bootwait.c \
+           $(if $(wildcard $(S)/src/tsp/tsp_svc.c),src/tsp/tsp_svc.c)
 # lwIP (netpipe のブリッジと、Wi-Fi の代わりの netif)。pico-sdk の lib/lwip (net/tistack と同じもの)
 LWIP ?= $(HOME)/src/github.com/yunkya2/x68kzremotedrv/pico-sdk/lib/lwip
 L = $(LWIP)/src
@@ -24,7 +25,7 @@ LWIPSRC = $(addprefix $(L)/,core/def.c core/dns.c core/inet_chksum.c core/init.c
 #   → x68kserremote の service (POSIX の fileop.h。Pico の src/remote/fileop.h は libsmb2 なので使わない) → PZL の各所 → lwIP
 INC = -Ishim -I$(S)/include -I$(S)/src/net -I$(S)/lib/x68kserremote/include -I$(S)/lib/x68kserremote/service \
       -I$(S)/src -I$(S)/src/scsi -I$(S)/src/storage -I$(S)/src/config -I$(S)/src/remote -I$(S)/src/remote/iconv \
-      -I$(S)/src/netpipe -I$(S)/src/accel -I$(S)/src/accel/monocypher -I$(S)/src/bootwait -I$(S)/driver \
+      -I$(S)/src/netpipe -I$(S)/src/tsp -I$(S)/src/accel -I$(S)/src/accel/monocypher -I$(S)/src/bootwait -I$(S)/driver \
       -I$(S)/lib/libsmb2/include -I$(S)/lib/libsmb2/include/smb2 -I$(L)/include -I$(LWIP)/contrib/ports/unix/port/include
 
 all: $(B)/pzl_all.o
@@ -60,7 +61,7 @@ $(B)/config_file_host.c: $(B)/src/.done host_config.py
 $(B)/pzl_all.o: $(B)/rev $(B)/src/.done $(B)/config_file_host.c pzl_host.c $(wildcard shim/*/*.h)
 	rm -rf $(B)/o && mkdir -p $(B)/o
 	for f in $(addprefix $(S)/,$(PZLFILES)) $(B)/config_file_host.c pzl_host.c $(LWIPSRC); do \
-	  cc -O1 -g -w -fno-common -fPIC -DPZL_HOST -DPZL_BOARD='"host"' -DGIT_REPO_VERSION='"picosim"' -DHID_KEYBOARD=0 $(INC) -c $$f -o $(B)/o/$$(basename $${f%.c}).o || exit 1; done
+	  cc -O1 -g -w -fno-common -fPIC -DPZL_HOST -DPZL_BOARD='"host"' -DGIT_REPO_VERSION='"picosim"' -DHID_KEYBOARD=0 $(if $(wildcard $(S)/src/tsp/tsp_svc.c),-DTSP_ENABLE=1) $(INC) -c $$f -o $(B)/o/$$(basename $${f%.c}).o || exit 1; done
 	printf 'pzlh_init\npzlh_poll\npzlh_read\npzlh_write\npzlh_present\npzlh_sects\npzlh_sysstatus\npzlh_ready\npzlh_rebooted\n' > $(B)/exports
 	../tools/ld-hide.sh $@ $(B)/exports $(B)/o/*.o
 

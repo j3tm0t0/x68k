@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# docker-test.sh [SUITE...] -- picosim の試験を Docker の中で流す (docker/README.md)。SUITE は host / tsp / zos (既定は 3 つとも)。
+# docker-test.sh [SUITE...] -- picosim の試験を Docker の中で流す (docker/README.md)。SUITE は host / tsp / zos / tsppzl (既定は全部)。
 #   同じものを何度も並べてよい (例: zos zos zos zos zos)。1 つのコンテナが 1 回の試験 (口も作業場所もコンテナごと)。
 #   同時に動かすのは JOBS 個 (既定 2。XEiJ の鍵交換がホストの負荷で遅くならないように)。
 #   記録は harness/picosim/build/docker-out/<日時>/<番号>-<SUITE>/ (run.log、test-*.log、落ちたときの作業場所)
@@ -12,7 +12,7 @@ SRC=$HOME/Dropbox/src/github.com/j3tm0t0
 IMAGE=${IMAGE:-x68k-picoharness:latest}
 PLATFORM=${PLATFORM:-}            # 既定はホストと同じ (Mac・raspi5 は arm64)。CI の x86-64 なら linux/amd64
 JOBS=${JOBS:-2}
-SUITES=("${@:-host}"); [ $# -eq 0 ] && SUITES=(host tsp zos)
+SUITES=("${@:-host}"); [ $# -eq 0 ] && SUITES=(host tsp zos tsppzl)
 real() { [ -e "$1" ] && (cd "$(dirname "$1")" && echo "$(pwd -P)/$(basename "$1")"); }
 XEIJ=${XEIJ:-$(real "$TOP/x68kcli/tools/xeij" || real "$SRC/x68kcli/tools/xeij")}
 STAGE=${STAGE:-$( [ -d "$TOP/x68kcli/stage/USR/BIN" ] && echo "$TOP/x68kcli/stage" || echo "$SRC/x68k-picoharness/x68kcli/stage")}
