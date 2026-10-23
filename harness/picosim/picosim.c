@@ -3,7 +3,7 @@
  *            XEiJ (harness/xeij/agent/PicoBridge.java) が SCSI の命令を TCP で渡してくる
  *
  *   picosim [-l 127.0.0.1:6868] [-n 192.168.1.0/24] [-g 192.168.1.1] [-D DNS] [-L [u]PORT:ZPORT]...
- *           [-0 disk.hds] [-T Wi-Fi,SMB,HDS の秒] [-N 秒] [-B 控え] [-F ファームの driver/] [-C 制御] [-K 設定] [-c MB] [-r KB] [-d µs] [-a 倍率] [-s 秒] [-p lan.pcap] [-v]
+ *           [-0 disk.hds] [-T Wi-Fi,SMB,HDS の秒] [-N 秒] [-B 控え] [-F ファームの driver/] [-C 制御] [-K 設定] [-R B: の中身]... [-c MB] [-r KB] [-d µs] [-a 倍率] [-s 秒] [-p lan.pcap] [-v]
  *
  * 受け持つ SCSI ID:
  *   ID 6 = netpipe (netpipe.c)。LBA 0x100000 の要求と 0x110000〜0x1ffff7 の応答。ほかの LBA は 0 を返し、書き込みは捨てる
@@ -35,6 +35,7 @@
 
 extern double np_accel_scale;
 extern FILE *lan_pcap;
+void remote_add(const char *dir) __attribute__((weak));
 int picosim_verbose;
 static uint64_t t0_us;
 
@@ -443,7 +444,7 @@ static void usage(void)
 {
   fprintf(stderr,
           "usage: picosim [-l 127.0.0.1:6868] [-n 192.168.1.0/24] [-g GW] [-D DNS] [-L [u]PORT:ZPORT|none]...\n"
-          "               [-0 disk.hds] [-T wifi,smb,hds] [-N sec] [-B snap] [-F fwdir] [-C ctlfile] [-K config] [-c MB] [-r KB] [-d us] [-a scale] [-s sec] [-p lan.pcap] [-v]\n");
+          "               [-0 disk.hds] [-T wifi,smb,hds] [-N sec] [-B snap] [-F fwdir] [-C ctlfile] [-K config] [-R dir]... [-c MB] [-r KB] [-d us] [-a scale] [-s sec] [-p lan.pcap] [-v]\n");
   exit(2);
 }
 
@@ -456,7 +457,7 @@ int main(int argc, char **argv)
   lan_cfg.net = ip_arg("192.168.1.0");
   lan_cfg.gw = ip_arg("192.168.1.1");
   lan_cfg.dns = 0;
-  while ((o = getopt(argc, argv, "l:n:g:D:L:0:N:T:B:F:C:K:c:r:d:a:s:p:vh")) != -1) {
+  while ((o = getopt(argc, argv, "l:n:g:D:L:0:N:T:B:F:C:K:R:c:r:d:a:s:p:vh")) != -1) {
     switch (o) {
     case 'l': listen_spec = optarg; break;
     case 'n': {
@@ -498,6 +499,13 @@ int main(int argc, char **argv)
     case 'F': pz.fw_dir = optarg; pz.signature = 1; break;
     case 'C': pz.ctl_file = optarg; break;
     case 'K': pz_set_config_file(optarg); break;
+    case 'R':
+      if (!remote_add) {
+        fprintf(stderr, "picosim: built without the remote drive (make RS=.../x68kserremote)\n");
+        exit(2);
+      }
+      remote_add(optarg);
+      break;
     case 'c': cache_mb = atoi(optarg); break;
     case 'r': ra_kb = atoi(optarg); break;
     case 'd': cmd_delay_us = atoi(optarg); break;

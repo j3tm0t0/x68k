@@ -8,6 +8,10 @@ GLIB ?= $(shell brew --prefix glib 2>/dev/null || echo /opt/homebrew/opt/glib)
 GLIB_CFLAGS = -I$(GLIB)/include/glib-2.0 -I$(GLIB)/lib/glib-2.0/include
 GLIB_LIBS = -L$(GLIB)/lib -lglib-2.0
 ACCEL = ../../net/accel
+# B: (リモートドライブ): フォークの x68kserremote (サブモジュール) の remoteserv.c をそこからコンパイルする (写さない)。
+# 無ければ B: 無しでビルドする
+RS ?= $(HOME)/src/github.com/yunkya2/x68kzremotedrv-hid/x68kserremote
+REMOTE_SRC = $(if $(wildcard $(RS)/service/remoteserv.c),build/remote.o build/remoteserv.o)
 CFLAGS ?= -O2 -g -Wall
 SVC ?=
 # 待ち IPL / hdsboot / settingui の 68000 のバイナリ (フォークの driver/ でビルドしたもの。git には入れない)
@@ -16,10 +20,16 @@ SVCFLAGS ?=
 
 all: build/picosim
 
-build/picosim: picosim.c netpipe.c lan_slirp.c bootwait.c picosim.h build/libslirp.a $(SVC)
+build/picosim: picosim.c netpipe.c lan_slirp.c bootwait.c picosim.h build/libslirp.a $(SVC) $(REMOTE_SRC)
 	cc $(CFLAGS) -I$(SLIRP_DIR)/src -I$(ACCEL) -I$(ACCEL)/monocypher $(GLIB_CFLAGS) $(SVCFLAGS) -o $@ \
-	  picosim.c netpipe.c lan_slirp.c bootwait.c $(SVC) $(ACCEL)/accel_ops.c $(ACCEL)/monocypher/monocypher.c \
-	  $(ACCEL)/monocypher/monocypher-ed25519.c build/libslirp.a $(GLIB_LIBS) -lresolv
+	  picosim.c netpipe.c lan_slirp.c bootwait.c $(SVC) $(REMOTE_SRC) $(ACCEL)/accel_ops.c $(ACCEL)/monocypher/monocypher.c \
+	  $(ACCEL)/monocypher/monocypher-ed25519.c build/libslirp.a $(GLIB_LIBS) -lresolv -liconv
+
+REMOTE_CFLAGS = -O2 -g -Iremote -I$(RS)/include -I$(RS)/service -I.
+build/remote.o: remote.c remote/config.h picosim.h
+	mkdir -p build && cc $(REMOTE_CFLAGS) -Wall -c -o $@ remote.c
+build/remoteserv.o: $(RS)/service/remoteserv.c remote/config.h
+	mkdir -p build && cc $(REMOTE_CFLAGS) -w -c -o $@ $<
 
 # 試験用: 0xA6 をそのまま返すサービス入り
 build/picosim-echo: picosim.c netpipe.c lan_slirp.c bootwait.c picosim.h build/libslirp.a tests/echosvc.c

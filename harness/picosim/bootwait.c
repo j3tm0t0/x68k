@@ -46,8 +46,13 @@
 
 struct pz pz;                           /* 外 (picosim.c) から見る状態 */
 
-static uint8_t *bw1, *bw2, *hdsboot, *setui;    /* 68000 のバイナリ (-F から) */
-static long bw1_len, bw2_len, hdsboot_len, setui_len;
+/* B: (remote.c + x68kserremote の remoteserv.c)。リンクしていなければ NULL */
+int remote_request(uint8_t *c, uint8_t *r) __attribute__((weak));
+extern int remote_units __attribute__((weak));
+static int nunits(void) { return &remote_units ? remote_units : 0; }
+
+static uint8_t *bw1, *bw2, *hdsboot, *setui, *scsirem;   /* 68000 のバイナリ (-F から) */
+static long bw1_len, bw2_len, hdsboot_len, setui_len, scsirem_len;
 static uint8_t snap[SNAP_SIZE];         /* 控え (ファイルの写し) */
 static int snap_ok = -1;                /* 壊れていないか (-1: まだ) */
 static int served, checked, match;
@@ -227,8 +232,10 @@ void pz_init(void)
     bw2 = load(pz.fw_dir, "bootwait.bin", &bw2_len);
     hdsboot = load(pz.fw_dir, "hdsboot.bin", &hdsboot_len);
     setui = load(pz.fw_dir, "settingui.bin", &setui_len);
-    picosim_log("pz: firmware pieces from %s: bootwait1 %ld, bootwait %ld, hdsboot %ld, settingui %ld bytes\n",
-                pz.fw_dir, bw1 ? bw1_len : -1, bw2 ? bw2_len : -1, hdsboot ? hdsboot_len : -1, setui ? setui_len : -1);
+    scsirem = load(pz.fw_dir, "scsiremote.bin", &scsirem_len);
+    picosim_log("pz: firmware pieces from %s: bootwait1 %ld, bootwait %ld, hdsboot %ld, settingui %ld, scsiremote %ld bytes\n",
+                pz.fw_dir, bw1 ? bw1_len : -1, bw2 ? bw2_len : -1, hdsboot ? hdsboot_len : -1, setui ? setui_len : -1,
+                scsirem ? scsirem_len : -1);
     if (bw1_len > 512 || bw2_len > BW_STAGE2_SECTS * 512)
       bw1 = bw2 = NULL;
   }
@@ -363,7 +370,8 @@ static int vd_rpages, vd_rcnt;
 static int vd_command(const uint8_t *c, uint8_t *r)
 {
   int cmd = c[0] << 8 | c[1];
-  picosim_log("pz: settings command 0x%04x\n", cmd);
+  if (cmd >= 0xff00)
+    picosim_log("pz: settings command 0x%04x\n", cmd);
   switch (cmd) {
   case 0xff00: {                        /* GETINFO: 時刻, unit, version, verstr */
     time_t t = time(NULL);
@@ -376,7 +384,7 @@ static int vd_command(const uint8_t *c, uint8_t *r)
     r[4] = tm->tm_hour;
     r[5] = tm->tm_min;
     r[6] = tm->tm_sec;
-    r[7] = atoi(config.remoteunit);
+    r[7] = nunits();
     r[8] = 1;
     strcpy((char *)r + 9, "picosim");
     return 26;
@@ -434,7 +442,10 @@ static int vd_command(const uint8_t *c, uint8_t *r)
     return 1 + 1024;
   }
   default:
-    return -1;                          /* scsiremote.sys (リモートドライブ) は無い */
+    /* リモートドライブ (scsiremote.sys) の要求。ファームと同じく、接続が済むまでは答えない */
+    if (remote_request && nunits() && pz_sysstatus() >= 5)
+      return remote_request((uint8_t *)c, r);
+    return -1;
   }
 }
 
@@ -471,7 +482,14 @@ int pz_id6_read(uint32_t lba, uint8_t *buf)
     memcpy(buf, "X68SCSI1", 8);
     memcpy(buf + 16, "X68000ZRemoteDrv", 16);
   } else if (lba == 4 && pz.signature) {
-    memcpy(buf, "X68K", 4);             /* リモートドライブ 0 個 (remoteunit) */
+    memcpy(buf, "X68K", 4);             /* 分割表: リモートドライブの数 (-R) だけ "Human68k" */
+    for (int i = 0; i < nunits(); i++)
+      memcpy(buf + 16 + i * 16, "Human68k", 8);
+  } else if (lba >= 6 && lba < 0x20) {
+    /* SCSI のデバイスドライバ (scsiremote.sys)。Human68k が ID 6 をディスクとして組み込むときに読む */
+    uint32_t off = (lba - 6) * 512;
+    if (scsirem && nunits() && off < (uint32_t)scsirem_len)
+      memcpy(buf, scsirem + off, scsirem_len - off < 512 ? scsirem_len - off : 512);
   } else if (lba < 0x20) {
   } else if (np_read(lba, buf) == 0) {
   } else if (lba >= BW_STAGE2 && lba < BW_STAGE2 + BW_STAGE2_SECTS) {
