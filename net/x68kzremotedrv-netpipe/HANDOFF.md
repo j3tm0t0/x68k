@@ -78,4 +78,4 @@ make -j8      # x68kzremotedrv.elf / .uf2 (fork の build-p2w/ で作れる。00
 2. ホスト名と固定 IP は Charlie (PZL 186beb6) と同じ形に揃えた (項目名・既定 pico-XXXX・NET1 の並び・返事の host= の位置)。mDNS は今はしない。固定 IP は moto が頼むまで Z の基板では試さない。
 3. (0042 で直した、実機で SERVER の確定で試した) SETCONFIG で Wi-Fi をつなぎ直すと古い SMB の接続が残り、次の keepalive までリモートドライブが -14 を返していた。fork は enable_sta_mode を起動時の 1 回しか呼ばないので、つなぎ直しで固定 IP が DHCP に戻ることはない (netif を作り直さない) はず (未試験)。
 3. (済、23:10) tistack の実機の速さ: 往復 53 / 149 ms、1MB 109・145 / 26・16 KB/s、rcmd 300KB 36 / 12 KB/s (tis.x -p / xip.x)。net/tistack/README.md「実機の Z で」
-4. (済) リリース v2026.10.23 を公開 (https://github.com/j3tm0t0/x68k/releases/tag/v2026.10.23、ファームは 0001-0043 の 4fb2a2f5)。0044 (HDS キャッシュ) を入れた点リリースは moto の判断待ち。
+4. (済) リリース v2026.10.23 を公開 (https://github.com/j3tm0t0/x68k/releases/tag/v2026.10.23、ファームは 0001-0043 の 4fb2a2f5)。0044 (HDS キャッシュ) は**次のリリース**に入れる (moto の判断。今は点リリースしない)。
