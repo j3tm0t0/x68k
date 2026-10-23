@@ -210,7 +210,18 @@ long vt_prof[8];   /* 0=blit したセル 1=scroll 呼び出し 2=TXRASCOPY 3=32
 
 /* ---- スーパーバイザ ---- */
 /* 戻り値を _dos_super に渡して戻す。負なら元からスーパーバイザなので触らない。 */
+#ifdef VT_ZOS
+/* zos.x の中では IOCS のフック (スーパーバイザ、ときに DOS の CON の中) から呼ばれる。そこで DOS _SUPER を呼ぶと
+ * DOS コールの入れ子になるので、すでにスーパーバイザなら呼ばない (68000 の move from SR はユーザでも使える) */
+static int sup_enter(void)
+{
+  unsigned short sr;
+  __asm__ volatile ("move.w %%sr,%0" : "=d"(sr));
+  return (sr & 0x2000) ? -1 : _dos_super(0);
+}
+#else
 static int sup_enter(void) { return _dos_super(0); }
+#endif
 static void sup_leave(int s) { if (s >= 0) _dos_super(s); }
 
 /* ================= DEC 特殊グラフィック (罫線) の 8x16 グリフ ================= */
