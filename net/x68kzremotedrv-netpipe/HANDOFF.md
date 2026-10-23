@@ -16,6 +16,10 @@
 `sdcopy` で 64MB を約 86 秒、2 本目は `err sdcopy busy`、無いファイルは `err:smb-open`。
 段階 1 (HDS1 = `sd:/x68000z/hds1.hds` で SCSI ID 1) は動くが、**B: を取ってリモートドライブが C: にずれる**ので明示したときだけ。
 
+## 決まりごと
+
+- 使う人に見える変更 (fork のパッチ、npd / tis / ssh) を入れたら、x68k の `CHANGELOG.md` の「未公開 (次の版に入るもの)」に 1 行足す。リリースのときにその行を新しい版の見出しの下へ移す
+
 ## ブランチとコミット
 
 - fork (ローカルのみ、push しない): `/Users/moto/Dropbox/src/github.com/yunkya2/x68kzremotedrv-tsp`、ブランチ `sddata`
