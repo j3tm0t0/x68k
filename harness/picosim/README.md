@@ -309,7 +309,8 @@ netpipe など (最初の日):
   picosim の Z キャッシュの先読みでそれらしくしているだけ
 - LAN は slirp の NAT。外 (インターネットや家の LAN) にも出られるので、試験はゲートウェイ (Mac) 宛てに留める。
   Mac から Z へは -L の転送だけ (Z を LAN の 1 台として外から見ることはできない)
-- DNS は A と PTR の 1 問だけ。slirp の DNS の転送は使わない (picosim からは Mac の DNS サーバ (Tailscale の
+- DNS は A と PTR の 1 問だけ。Z からも lan_attach の口 (tistack の Pico 側 lwIP など) からも、ゲートウェイか DNS の口の
+  UDP 53 番なら picosim が答える。slirp の DNS の転送は使わない (picosim からは Mac の DNS サーバ (Tailscale の
   100.100.100.100) への UDP が "No route to host" になった。python からは届くので、macOS のローカルネットワークの
   許可のせいと見ている (未確認)。libslirp の macOS の
   `res_ninit` に初期化していない構造体を渡す不具合も Makefile で直している)。名前を引く間は picosim が止まる

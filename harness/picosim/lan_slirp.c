@@ -267,6 +267,7 @@ static int dns_put_name(uint8_t *p, const char *name)
 }
 
 static uint32_t st_dns;
+static int dns_to = -1;                 /* 答えを返す先: -1 = Z (netpipe)、それ以外は lan_attach の口の番号 */
 
 static int dns_answer(const uint8_t *ip, int len)
 {
@@ -353,7 +354,20 @@ static int dns_answer(const uint8_t *ip, int len)
   readdr(r, tot, 12, dst);              /* チェックサム */
   st_dns++;
   picosim_log("lan: DNS %s %s -> rcode %d, %d answer(s)\n", qtype == 1 ? "A" : qtype == 12 ? "PTR" : "?", name, rcode, an);
-  np_to_z(r, tot);
+  if (dns_to < 0)
+    np_to_z(r, tot);
+  else {
+    /* 口 (Pico 自身の lwIP など) から聞かれたら、ゲートウェイ (slirp) の MAC から返す */
+    uint8_t fr[14 + 1500];
+    memcpy(fr, att[dns_to].mac, 6);
+    memcpy(fr + 6, gw_mac, 6);
+    fr[12] = 0x08;
+    fr[13] = 0x00;
+    memcpy(fr + 14, r, tot);
+    if (lan_pcap)
+      pcap_frame(fr, 14 + tot);
+    att[dns_to].rx(fr, 14 + tot, att[dns_to].arg);
+  }
   return 1;
 }
 
@@ -380,6 +394,15 @@ void lan_from_z(const uint8_t *ip, int len)
 void lan_send(const uint8_t *frame, int len)
 {
   int a = len >= 12 ? find_att_mac(frame + 6) : -1;
+  /* 口からの DNS (ゲートウェイか DNS の口の UDP 53) も Z と同じく picosim が答える (slirp の DNS の転送は届かない) */
+  if (a >= 0 && len > 14 + 28 && frame[12] == 0x08 && frame[13] == 0x00) {
+    int tot = (frame[16] << 8) | frame[17];   /* Ethernet の詰め物を除く */
+    dns_to = a;
+    int done = tot >= 28 && tot <= len - 14 && dns_answer(frame + 14, tot);
+    dns_to = -1;
+    if (done)
+      return;
+  }
   deliver(frame, len, a < 0 ? -2 : a);
 }
 
