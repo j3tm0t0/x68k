@@ -1,0 +1,39 @@
+From ba44e2bbf404b629396c648ff740a17a0e78cb17 Mon Sep 17 00:00:00 2001
+From: moto <j3tm0t0@gmail.com>
+Date: Fri, 23 Oct 2026 16:01:29 +0900
+Subject: [PATCH] msc: keep the INQUIRY strings inside their fields (product id
+ overflowed by 9 bytes)
+
+"Remote Drive Mass Storage" is 25 characters and was copied into the 16-byte product_id, running over
+product_rev and past the response. TinyUSB keeps that response on the tud_task stack; with the TinyUSB
+in pico-sdk 2.1 (Pico 2 W build) the overflow clobbered the task's saved registers and the firmware
+hard-faulted as soon as a USB host sent INQUIRY (the X68000 Z showed no disk). Truncate to 8/16/4.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PrGdt1XK1exBgERrMmLA1u
+---
+ src/msc_disk.c | 8 +++++---
+ 1 file changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/src/msc_disk.c b/src/msc_disk.c
+index d958b7d..71fbb5d 100644
+--- a/src/msc_disk.c
++++ b/src/msc_disk.c
+@@ -50,9 +50,11 @@ void tud_msc_inquiry_cb(uint8_t lun, uint8_t vendor_id[8], uint8_t product_id[16
+   const char pid[] = "Remote Drive Mass Storage";
+   const char rev[] = "1.0";
+ 
+-  memcpy(vendor_id  , vid, strlen(vid));
+-  memcpy(product_id , pid, strlen(pid));
+-  memcpy(product_rev, rev, strlen(rev));
++  /* 欄の長さ (8 / 16 / 4) を超えて写さない。pid は 25 文字あり、以前は product_id から 9 バイトはみ出していた
++     (TinyUSB 0.18 では応答が tud_task のスタックにあり、はみ出しがタスクの保存したレジスタを壊して落ちた) */
++  memcpy(vendor_id  , vid, strlen(vid) < 8 ? strlen(vid) : 8);
++  memcpy(product_id , pid, strlen(pid) < 16 ? strlen(pid) : 16);
++  memcpy(product_rev, rev, strlen(rev) < 4 ? strlen(rev) : 4);
+ }
+ 
+ // Invoked when received Test Unit Ready command.
+-- 
+2.54.0 (Apple Git-157)
+
