@@ -7,12 +7,14 @@
 //   get <class> <field>        public static フィールドの値を標準出力に表示する
 //   format <path.hds> <MB>     XEiJ 内蔵のフォーマッタで Human68k 入り SCSI HDS を作る (参照用)
 //   dump <file> <addr> <len>   メインメモリ (xeij.MainMemory.mmrM8) の一部をファイルに書く (16 進可: 0x...)
+// -Dpicosim=host:port があれば SCSI ID / Z のメールボックスを harness/picosim につなぐ (PicoBridge.java)
 import java.io.File;
 import java.lang.instrument.Instrumentation;
 import java.nio.file.Files;
 
 public class XEiJAgent {
   public static void premain(String args, Instrumentation inst) {
+    xeij.PicoBridge.start ();
     final File cmdFile = new File(args == null || args.isEmpty() ? "build/agent.cmd" : args);
     Thread t = new Thread(() -> {
       while (true) {

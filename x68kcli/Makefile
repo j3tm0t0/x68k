@@ -49,9 +49,9 @@ run: tools agent  ## XEiJ で起動
 JAVA_HOME ?= $(shell [ -d /opt/homebrew/opt/openjdk ] && echo /opt/homebrew/opt/openjdk || echo /usr)
 agent: tools/xeijagent.jar  ## XEiJ 用エージェント (screenshot / textcopy をファイル経由で実行)
 XAGENT = ../harness/xeij/agent
-tools/xeijagent.jar: $(XAGENT)/XEiJAgent.java $(XAGENT)/manifest.txt
+tools/xeijagent.jar: $(XAGENT)/XEiJAgent.java $(XAGENT)/PicoBridge.java $(XAGENT)/manifest.txt
 	rm -rf build/agent && mkdir -p build/agent tools
-	$(JAVA_HOME)/bin/javac -d build/agent $(XAGENT)/XEiJAgent.java
+	$(JAVA_HOME)/bin/javac -cp tools/xeij/XEiJ.jar -d build/agent $(XAGENT)/XEiJAgent.java $(XAGENT)/PicoBridge.java
 	$(JAVA_HOME)/bin/jar cfm $@ $(XAGENT)/manifest.txt -C build/agent .
 
 ls:               ## イメージの内容一覧
