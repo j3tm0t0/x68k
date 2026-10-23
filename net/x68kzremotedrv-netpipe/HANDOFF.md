@@ -65,6 +65,8 @@ make -j8      # x68kzremotedrv.elf / .uf2
 - `my_rtc.c` (FatFs の lib) が `time()` を置き換えている。0037 で always-on タイマーを起動時に 0 から動かし、SMB の時刻で 1 回合わせる (時刻が 1 回前へ飛ぶ)。
 - sdcopy の「HDS として開いているファイルには写さない」は実機で試していない (HDS1 にカードの HDS を指定していないため)。
 - 明示だけにした版と、設定画面に出る `sd:` の共有 (HDS / REMOTE の欄でカードを選ぶ) は実機で未確認。
+- tistack (TSP): picosim の `make test` で tsptest の直後の zostest が 1 回だけ「Error writing: I/O error」で落ちた (Delta の報告、再実行で通過)。負荷のときの write_s の -1 を疑う。未調査。
+- ID1 の HDS を B: をずらさずに使う案 (Delta): リモートドライブの顔 (LBA 0/4/6.. の起動部) を ID1 より小さい ID で見せ、運び (vdbuf/netpipe) は ID6 のまま。harness/picosim/README.md「ドライブ名」。
 - 設定画面は SMB の共有の一覧から選ぶ作り。`sd:` は ENUM の最後に足している (共有が 16 個あると出ない)。
 
 ## 次にやること
