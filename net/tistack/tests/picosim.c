@@ -21,6 +21,7 @@
 #include "picoworld.h"
 
 int _dos_super(int stack) { (void)stack; return 0; }
+uint32_t pico_host_clock_cs(void);
 
 static int fails, passes, verbose = 1;
 #define CHECK(name, cond) do { int ok_ = (cond); if (!ok_ || verbose) printf("%s %s\n", ok_ ? "PASS" : "FAIL", name); if (ok_) passes++; else fails++; } while (0)
@@ -37,6 +38,9 @@ static uint8_t zbuf[TSP_REQ_MAX], rbuf[TSP_RES_MAX], oldres[TSP_RES_MAX];
 static int oldlen;
 static uint64_t deadline;
 static void (*on_yield)(void);
+
+static int no_tsp_fw;                   /* 1: Pico が 0xA6 を知らない (今のファーム): 要求を捨てて応答を返さない */
+uint32_t pico_host_clock_cs(void) { return (uint32_t)(world_us / 10000 % 8640000); }
 
 static double rnd(void) { return (double)random() / 2147483648.0; }
 
@@ -55,7 +59,7 @@ static void exchange(void)
   world_us += xcost_us;
   if (n <= 0)
     goto done;
-  if (wloss && rnd() < wloss)
+  if ((wloss && rnd() < wloss) || no_tsp_fw)
     goto done;                          /* 書き込みが Pico に届かなかった */
   r = world_exchange(zbuf, n, rbuf, TSP_RES_MAX, &more);
   if (stale && oldlen && rnd() < stale) {
@@ -616,6 +620,34 @@ static void raw_scan(const uint8_t *r, int l)
   }
 }
 
+/* Pico が TSP を話さない (今のファーム): 待ちが固まらずに "Network is down" で終わり、TSP が戻れば元どおり */
+static void x_notsp(void)
+{
+  long s, r, l;
+  uint64_t t;
+  no_tsp_fw = 1;
+  s = sock(0);
+  t = world_us;
+  r = conn(s, PICO_IP, 7);
+  printf("  connect without TSP gave up after %.1f s virtual\n", (world_us - t) / 1e6);
+  CHECK("no TSP on the Pico: blocking connect -> -1 \"Network is down\" within 5 s", r == -1 && !strcmp(serr(s), "Network is down") && world_us - t < 5000000);
+  cls(s);
+  s = sock(0);
+  t = world_us;
+  CHECK("no TSP: next connect fails at once", conn(s, PICO_IP, 7) == -1 && world_us - t < 100000);
+  cls(s);
+  CHECK("no TSP: gethostbyname -> NULL at once", T1(_TI_gethostbyname, (long)"peer.test") == 0);
+  l = lsn(2324, 0);
+  CHECK("no TSP: listen still works (loopback only)", l >= 128 && !strcmp(st(l), "LISTEN"));
+  cls(l);
+  no_tsp_fw = 0;
+  run_ms(500);
+  s = sock(0);
+  CHECK("TSP back: connect works again", conn(s, PICO_IP, 7) == 0);
+  cls(s);
+  settle("no TSP");
+}
+
 /* 記録形式を直に: 名前でつなぐ (addr 0)、TLS は NOTSUP、同じ要求には同じ応答 */
 static void x_raw(void)
 {
@@ -725,6 +757,7 @@ int main(int argc, char **argv)
          (unsigned long long)nx_data, pstat.resend, pstat.stale_rec, pstat.stale, pstat.netdown, pstat.overrun);
   CHECK("Z ring never overran (WINDOW respected)", pstat.overrun == 0);
   x_reboot();
+  x_notsp();
   x_raw();
   if (!quick)
     throughput();

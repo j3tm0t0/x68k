@@ -16,11 +16,27 @@
 #include "tsp.h"
 
 #ifdef __m68k__
+#define __IOCS_INLINE__
+#include <x68k/iocs.h>
 void *memcpy(void *d, const void *s, unsigned long n);
 void *memset(void *d, int c, unsigned long n);
+static uint32_t now_cs(void) { return _iocs_ontime().sec; }   /* 1/100 秒 (0 時に戻るが、差しか使わない) */
 #else
 #include <string.h>
+uint32_t pico_host_clock_cs(void);      /* 試験 (picosim.c) が仮想の時計を出す */
+static uint32_t now_cs(void) { return pico_host_clock_cs(); }
 #endif
+
+/* Pico が TSP を話さない (今のファーム) / npd.x が動いていないときに、待ちを止める時間 (1/100 秒) */
+#define NOTSP_CS    300                 /* 要求を送り直し続けて答えが無い: Pico は 0xA6 を知らない */
+#define NONPD_CS    500                 /* 送るものがあるのに npd.x が取りに来ない */
+
+/* t からの経過 (1/100 秒)。ONTIME は 0 時に 8,640,000 から 0 に戻る */
+static uint32_t since(uint32_t t)
+{
+  uint32_t n = now_cs();
+  return n >= t ? n - t : n + 8640000 - t;
+}
 
 #define CQSIZE  8192                    /* 制御メッセージの待ち行列 (CONNECT / LISTEN / ADOPT / SENDTO / RESOLVE) */
 
@@ -55,6 +71,8 @@ static uint16_t zseq;
 static uint32_t zepoch, pepoch;
 static uint8_t pknown, zreset;
 static uint8_t rr;                      /* データを分けるときの始まりの番号 (交換ごとに回す) */
+static uint8_t notsp;                   /* Pico に TSP が無い (答えが来ない)。この間は新しい Pico 側のソケットを断る */
+static uint32_t last_ok, last_np;       /* 最後に応答を受けた / npd.x が要求を取りに来た時刻 (1/100 秒) */
 
 struct pico_stat pstat;
 
@@ -138,9 +156,21 @@ static void netdown(void)
 
 /* ---- backend の口 ---- */
 
+/* Pico から答えが来ない: 待っているものを全部 "Network is down" で終わらせ、以後の新しいソケットは断る
+   (応答が来れば戻る)。今のファームは 0xA6 を知らずに捨てるので、ここに来る */
+static void no_tsp(void)
+{
+  if (notsp)
+    return;
+  notsp = 1;
+  netdown();
+}
+
 static void pi_tick(void)
 {
   be_loop.tick();
+  if (!notsp && (reqlen || cqlen) && since(last_np) > NONPD_CS)
+    no_tsp();                           /* npd.x が動いていない */
 }
 
 static void open_slot(int s)
@@ -161,8 +191,8 @@ static int pi_listen(int s)
   struct tsock *t = &ts[s];
   uint8_t *p;
   be_loop.listen(s);
-  if ((t->laddr >> 24) == 127)
-    return 0;
+  if ((t->laddr >> 24) == 127 || notsp)
+    return 0;                           /* (Pico に TSP が無ければループバックだけで受ける) */
   open_slot(s);
   if (!(p = cq_msg(TSP_C_LISTEN, s, ps[s].gen, 8)))
     return 0;                           /* 待ち行列が一杯: ループバックだけで受ける */
@@ -182,6 +212,10 @@ static int pi_connect(int s, uint32_t addr, uint16_t port)
   const char *name = 0;
   if (is_local(addr))
     return be_loop.connect(s, addr, port);
+  if (notsp) {
+    t->err = tsp_errstr(TSP_ERR_NETDOWN);
+    return -1;
+  }
   for (k = 0; k < NCACHE; k++)
     if (nc[k].addr == addr && nc[k].name[0]) {
       name = nc[k].name;
@@ -234,6 +268,10 @@ static int udp_open(int s)
   uint8_t *p;
   if (ps[s].udpbound && t->remote)
     return 0;
+  if (notsp) {
+    t->err = tsp_errstr(TSP_ERR_NETDOWN);
+    return -1;
+  }
   if (!t->remote || !ps[s].opened)
     open_slot(s);
   if (!(p = cq_msg(TSP_C_UDPOPEN, s, ps[s].gen, 8)))
@@ -308,11 +346,13 @@ static int pi_pending(int s)
   return 1;
 }
 
-/* 名前を引く。戻り値: 問い合わせ番号 / -1 (表が一杯) */
+/* 名前を引く。戻り値: 問い合わせ番号 / -1 (表が一杯、待てば空く) / -2 (Pico に TSP が無い) */
 static int pi_resolve_start(const char *name)
 {
   int k, n = 0;
   uint8_t *p;
+  if (notsp)
+    return -2;
   while (name[n] && n < TSP_NAME_MAX)
     n++;
   for (k = 0; k < TSP_NQUERY; k++)
@@ -519,13 +559,16 @@ static uint32_t build(uint32_t max)
 static int pi_np_out(uint8_t *buf, int max, int *urg)
 {
   if (max == 0) {
-    *urg = reqlen ? 1 : urgent();       /* 問い合わせだけ (npd.x が交換するかを決める) */
+    *urg = reqlen ? !notsp : urgent();  /* 問い合わせだけ (npd.x が交換するかを決める) */
     return 0;
   }
   if (max > TSP_REQ_MAX)
     max = TSP_REQ_MAX;
+  last_np = now_cs();
   if (reqlen) {
-    *urg = 1;                           /* 前の交換の答えが来ていない: 同じ要求をもう一度 */
+    *urg = !notsp;                      /* 前の交換の答えが来ていない: 同じ要求をもう一度 (TSP が無ければ急がない) */
+    if (!notsp && since(last_ok) > NOTSP_CS)
+      no_tsp();
     if (reqlen > (uint32_t)max)
       return 0;                         /* IP のレコードで埋まっている: 次の交換で */
     pstat.resend++;
@@ -676,6 +719,8 @@ static int pi_np_in(const uint8_t *r, int len)
     return 0;
   }
   reqlen = 0;
+  last_ok = now_cs();
+  notsp = 0;
   pe = tsp_get32(r + 8);
   if (pknown && pe != pepoch)
     netdown();
@@ -704,7 +749,8 @@ void pico_init(uint8_t *pool, uint32_t txsz, uint32_t seed)
     ps[i].tx.size = txsz;
   }
   cqlen = reqlen = 0;
-  pknown = zreset = 0;
+  pknown = zreset = notsp = 0;
+  last_ok = last_np = now_cs();
   rr = 0;
   seed *= 2654435761u;
   zseq = seed >> 16;

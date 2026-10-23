@@ -6,7 +6,8 @@
  * lwIP の netif は picosim の LAN (libslirp) の 1 台になる (lan_attach / lan_send)。IP は既定で Z の IP
  * (192.168.1.68): Pico が Z の IP を自分の IP として名乗る形 (README「SLIP / xip.x の道との共存」の案)。
  * picosim は Z の IP を名乗る口があれば代理 ARP をしないので、-L の転送 (Mac → Z:2323) はこの lwIP に来る。
- * 環境変数: TSP_IP (既定 192.168.1.68)、TSP_GW (192.168.1.1)、TSP_DNS (192.168.1.3 = slirp の DNS)
+ * 環境変数: TSP_IP (既定 192.168.1.68)、TSP_GW (192.168.1.1)、TSP_DNS (192.168.1.3 = slirp の DNS)、
+ *           TSP_OFF=1 (0xA6 に答えない: TSP を知らない今のファームの真似)
  * 名前 mac.test はゲートウェイ (Mac) を指す (lwIP の DNS の手元の表。ほかの名前は DNS に聞く)。
  */
 #include <stdio.h>
@@ -121,6 +122,11 @@ static void poll_(void)
 static int exchange(const uint8_t *req, int reqlen, uint8_t *res, int resmax, int *more)
 {
   int n;
+  static int off = -1;
+  if (off < 0)
+    off = getenv("TSP_OFF") && *getenv("TSP_OFF") == '1';
+  if (off)
+    return 0;                           /* TSP_OFF=1: 0xA6 を知らない今のファームの真似 (答えない) */
   rx_drain();                           /* 届いているもの (ACK・データ) を先に lwIP に */
   n = tsp_exchange(req, reqlen, res, resmax, more);
   return n;

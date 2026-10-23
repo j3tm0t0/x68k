@@ -42,6 +42,10 @@ printf 'FILES = 30\r\nBUFFERS = 20 1024\r\nLASTDRIVE = Z:\r\nPROCESS = 16 10 20\
   printf 'ECHO OFF\r\nPATH A:\\\r\n'
   printf 'TIS.X -p > TIS.TXT\r\nNPD.X 192.168.1.68 > NPD.TXT\r\n'
   printf 'TISNET.X resolve mac.test %s > RES.TXT\r\n' "${RESOLVE:-example.com}"
+  if [ -n "${TSP_OFF:-}" ]; then
+    # TSP を知らない Pico の真似: 名前も接続も固まらずに失敗し、tis.x は残る
+    printf 'TISNET.X echo 192.168.1.1 %d 1 > ECHO.TXT\r\nTIS.X -s > STAT.TXT\r\nCOPY CONFIG.SYS DONE1.TXT\r\nCOPY CONFIG.SYS DONE.TXT\r\n' "$PEERPORT"
+  fi
   printf 'TISNET.X echo 192.168.1.1 %d 20 > ECHO.TXT\r\n' "$PEERPORT"
   printf 'TISNET.X put 192.168.1.1 %d %d > PUT.TXT\r\n' "$PEERPORT" "$PUTSIZE"
   printf 'TISNET.X get mac.test %d %d > GET.TXT\r\n' "$PEERPORT" "$GETSIZE"

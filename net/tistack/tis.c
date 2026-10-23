@@ -767,8 +767,10 @@ static long t_gethostbyname(const char *name, int *ssp)
     net_name[n] = name[n];
   net_name[n] = 0;
   /* 問い合わせの表が一杯なら空くまで待つ。答えは npd.x のスレッドが運んでくる */
-  while ((q = be->resolve_start(net_name)) < 0)
+  while ((q = be->resolve_start(net_name)) == -1)
     yield(ssp);
+  if (q < 0)
+    return 0;                           /* Pico に頼めない */
   while ((r = be->resolve_poll(q, net_name, &addr)) == 0)
     yield(ssp);
   if (r < 0)
