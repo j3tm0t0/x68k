@@ -1,0 +1,40 @@
+From e101bf8c0530bba4b295b82fb339f7dbe6e54b9f Mon Sep 17 00:00:00 2001
+From: moto <j3tm0t0@gmail.com>
+Date: Fri, 23 Oct 2026 16:03:51 +0900
+Subject: [PATCH] remote drive: don't read past vdbuf_read in the old counting
+ path
+
+With old drivers (no base) vdbuf_rcnt grows with every 8th read, and nothing bounded the page
+against vdbuf_read, so a host probing the ID6 disk could make memcpy read past RAM (hard fault seen
+on the Pico 2 W build when a Mac probed LBA 58737839). Return zeros for pages beyond the buffer
+(the header stays as before, so old drivers still don't hang).
+
+Reported by x68k-tistack-2.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PrGdt1XK1exBgERrMmLA1u
+---
+ src/virtual_disk.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/src/virtual_disk.c b/src/virtual_disk.c
+index ef6c27a..e66cadd 100644
+--- a/src/virtual_disk.c
++++ b/src/virtual_disk.c
+@@ -597,7 +597,12 @@ int vd_read_block(uint32_t lba, uint8_t *buf)
+                     memset(b->buf, 0, sizeof(b->buf));
+                 } else {
+                     b->header.page = page;
+-                    memcpy(b->buf, &vdbuf_read[page * (512 - 16)], sizeof(b->buf));
++                    if (page < (int)(sizeof(vdbuf_read) / (512 - 16))) {
++                        memcpy(b->buf, &vdbuf_read[page * (512 - 16)], sizeof(b->buf));
++                    } else {
++                        // 従来方式で数えすぎた: バッファの外は読まない
++                        memset(b->buf, 0, sizeof(b->buf));
++                    }
+                 }
+                 return 0;
+             }
+-- 
+2.54.0 (Apple Git-157)
+

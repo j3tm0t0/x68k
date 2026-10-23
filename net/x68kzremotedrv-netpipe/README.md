@@ -34,6 +34,7 @@ USB キーボード (0012) を入れるときは `cmake -DHID_KEYBOARD=ON ..` (�
 | `src/virtual_disk.c` | ID 6 の読み書きを netpipe に回す |
 | `src/connect.c` | Wi-Fi の省電力を切る (応答が 50〜300ms 遅れて TCP が遅くなるため) |
 | `src/accel.c` / `accel_ops.c` / `accel_proto.h` / `monocypher/` | 0011: 暗号アクセラレータ (X25519 / Ed25519 を Z の代わりに計算する。[../accel](../accel)) |
+| `src/virtual_disk.c` | 0034: 古い driver の数え方でも vdbuf_read の外を読まない (ID6 を別の機械が覗くと止まった。Pico 2 W で見つかった) |
 | `src/virtual_disk.c` | 0032: 0030 の続き。範囲外のページを捨てさせるのは新しい driver (bit7) にだけ (古い driver は読み直し続けて固まるので、今までどおりに) |
 | `src/virtual_disk.c` / `driver/scsiremote.c` / `driver/settinguisub.c` | 0030: リモートドライブ (B:) の応答のページを読まれた LBA から決める (下の「B: の読み込みが 8 ページずれる」) |
 | `driver/mkbootwait.py` | 0029: 進み具合の最後の見出しを「BOOT」に |
