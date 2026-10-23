@@ -1,0 +1,33 @@
+From 0ae66c3a95763bf585bac54467d56cca227e234f Mon Sep 17 00:00:00 2001
+From: moto <j3tm0t0@gmail.com>
+Date: Fri, 23 Oct 2026 23:18:34 +0900
+Subject: [PATCH] hds cache: a write updates every set that holds the sector
+
+Sets start at the LBA that missed, so two can overlap (e.g. the boot-time 0x20/0x21 -> 2/3
+remap). Updating only the first match let a later read return the old sector from the other set
+once the first was evicted. Harmless in practice here (8-sector sets that are almost always
+page-aligned), but it corrupted data in the PZL rewrite's 32-sector cache. Found by Charlie.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PrGdt1XK1exBgERrMmLA1u
+---
+ src/hdscache.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/hdscache.c b/src/hdscache.c
+index 0cc498c..7ff6df8 100644
+--- a/src/hdscache.c
++++ b/src/hdscache.c
+@@ -107,7 +107,8 @@ int hds_cache_write(struct smb2_context *smb2, struct smb2fh *sfh, uint32_t lba,
+         struct cache *c = &cache[i];
+         if (c->sfh == sfh && c->smb2 == smb2 && lba >= c->lba && lba < c->lba + c->sects) {
+             memcpy(&c->data[(lba - c->lba) * SECTOR_SIZE], buf, SECTOR_SIZE);
+-            break;
++            /* break しない: 組は読み損ねた LBA から始まるので重なることがある (起動の LBA 0x20/0x21 -> 2/3 の
++               差し替えなど)。1 つ目だけ直すと、それが追い出されたあと別の組から古い中身を返す (PZL で見つかった) */
+         }
+     }
+ 
+-- 
+2.54.0 (Apple Git-157)
+

@@ -79,6 +79,16 @@ void vt_con_rect(int col, int row, int w, int h);
 extern int vt_nomove;                                /* (zos.x) vt_defer のときスクロールで VRAM を動かさない (既定 1) */
 extern int vt_defer;                                 /* (zos.x) 1: vt_write は描かない。描くのは vt_flush_some */
 int vt_flush_some(int maxrows);                      /* (zos.x) 描き直しの要る行を多くて maxrows 行描く。残っていれば 1 */
+/* スクロールバックの置き場 (zos.x が持つ。term/vt100 はセルを 32 ビットの値として渡すだけ。後で Pico の SD に置き換えられる) */
+typedef struct vt_sb vt_sb;
+struct vt_sb {
+  void (*push)(vt_sb *s, const unsigned int *cells, int n);   /* 画面の上から流れ出た 1 行 (行の終わりの空白は落としてある) */
+  int (*count)(vt_sb *s);                                      /* 持っている行数 */
+  int (*get)(vt_sb *s, int back, unsigned int *cells, int max);   /* back = 1 が直近の行。返すのはセルの数 */
+};
+void vt_con_set_sb(vt_sb *s);                        /* いまの端末のスクロールバックの置き場 (NULL で取らない) */
+int vt_view(int delta);                              /* delta 行さかのぼる (正) / 戻る (負)。新しい位置 (0 = いまの画面) */
+int vt_view_off(void);                               /* いま何行さかのぼっているか */
 void vt_con_cursor(int on);                          /* いまの端末のカーソルを描く (1) / 描かない (0)。既定 1 */   /* いまの端末を画面の枠に置き直す (表の端末を何枚でも並べられる) */
 unsigned short vt_jis_ucs(unsigned short jis);       /* JIS X 0208 -> Unicode (0 = 無い) */
 void vt_con_status(const char *s);     /* 最上行の右端に s を反転で一時表示 (論理画面は変えない)。NULL で消す */
