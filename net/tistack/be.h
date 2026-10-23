@@ -109,6 +109,7 @@ struct pico_stat {
   uint32_t xchg, resend, stale_rec, stale, netdown, connects, accepts;
   uint32_t tx_bytes, rx_bytes, dgrams_in, dgrams_out, overrun;
   uint32_t stall;                       /* npd.x が NONPD_CS 来なかった回数 (つながっているソケットは残す) */
+  uint32_t gapmax;                      /* npd.x の交換と交換の間の最長 (1/100 秒) */
 };
 extern struct pico_stat pstat;
 void pico_init(uint8_t *pool, uint32_t txsz, uint32_t seed);
