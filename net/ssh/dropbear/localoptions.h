@@ -51,7 +51,10 @@
 #define DROPBEAR_CLI_REMOTETCPFWD 0
 #define DROPBEAR_CLI_AGENTFWD 0
 #define DROPBEAR_CLI_ASKPASS_HELPER 0
-#define DROPBEAR_CLI_PASSWORD_AUTH 0
+/* パスワード認証 (と keyboard-interactive: sysoptions.h で PASSWORD_AUTH に従う)。公開鍵が通らないときに使う。
+   入力は x68k_pass.c (エコー無しの IOCS キー入力)。環境変数 DROPBEAR_PASSWORD からは取らない */
+#define DROPBEAR_CLI_PASSWORD_AUTH 1
+#define DROPBEAR_USE_PASSWORD_ENV 0
 #define DROPBEAR_CLI_PUBKEY_AUTH 1
 #define DROPBEAR_USE_SSH_CONFIG 0
 

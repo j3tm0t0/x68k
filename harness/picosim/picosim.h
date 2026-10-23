@@ -24,6 +24,33 @@ struct ps_result {
   uint32_t len;                         /* データインのバイト数 */
 };
 
+/* 1 セクタの結果 */
+#define PS_OK           0
+#define PS_NOTREADY     1               /* CHECK CONDITION 02/04/01 */
+#define PS_IOERR        2               /* CHECK CONDITION 03/11/00 */
+void picosim_cache_clear(void);         /* Z の読み込みキャッシュを捨てる (Z の電源断) */
+
+/* ---- Pico Z Loader (bootwait.c): ID 0 の準備待ちと ID 6 の netpipe 以外の帯 ---- */
+struct pz {
+  const char *hds_path;                 /* -0 (config の HDS0) */
+  int hds_fd;                           /* 開いていなければ -1 */
+  uint32_t hds_sects;
+  int bootwait;                         /* -T: 時間で sysstatus を進め、HDS が開くまで待たせる */
+  double t_wifi, t_smb, t_hds;
+  const char *snap_file, *fw_dir, *ctl_file;
+  int signature;                        /* ID 6 の LBA 0 に "X68SCSI1"/"X68000ZRemoteDrv" (設定画面が要る) */
+};
+extern struct pz pz;
+void pz_init(void);
+void pz_tick(void);
+void pz_set_config_file(const char *path);
+int pz_sysstatus(void);
+int pz_id0_ready(void);
+int pz_id0_read(uint32_t lba, uint8_t *buf);
+int pz_id0_write(uint32_t lba, const uint8_t *buf);
+int pz_id6_read(uint32_t lba, uint8_t *buf);
+int pz_id6_write(uint32_t lba, const uint8_t *buf);
+
 /* ---- netpipe (netpipe.c): SCSI ID 6 の LBA を受ける ---- */
 #define NP_WLBA         0x100000        /* 要求を書く (8 セクタまで) */
 #define NP_RLBA         0x110000        /* 応答を読む (0x110000〜0x1ffff7 のどこでも) */

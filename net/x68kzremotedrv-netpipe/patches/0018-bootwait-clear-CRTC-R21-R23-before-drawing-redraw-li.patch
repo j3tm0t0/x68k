@@ -1,0 +1,164 @@
+From a8e9f15d3b8984fc3f8d6e62086915346f0e986b Mon Sep 17 00:00:00 2001
+From: moto <j3tm0t0@gmail.com>
+Date: Thu, 22 Oct 2026 19:55:38 +0900
+Subject: [PATCH] bootwait: clear CRTC R21/R23 before drawing; redraw lines at
+ a fixed width
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+On the Z, after returning from the setting UI (which draws with IOCS TX*
+calls), the status and animation lines showed old and new text blended
+("IPIR9I926868...秒秒", "..oo.."): text written over earlier text kept
+some of the old bits. The waiter now writes 0 to CRTC R21 (simultaneous
+access) and R23 (text bit mask) at start and before every B_PRINT (with
+move, not clr, so the registers are never read), and pads every
+redrawn line with spaces to 88 columns so a shorter line always erases
+a longer one. One blank row between the [S] line and the note.
+
+waiter_test.py presets R21/R23 to non-zero and checks they are 0 at
+every print, that redrawn lines have a fixed width, and the blank row.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PrGdt1XK1exBgERrMmLA1u
+---
+ driver/bootwait.S            | 33 +++++++++++++++++++++++++--------
+ test/bootwait/waiter_test.py | 10 ++++++++++
+ 2 files changed, 35 insertions(+), 8 deletions(-)
+
+diff --git a/driver/bootwait.S b/driver/bootwait.S
+index 7c041cc..468e342 100644
+--- a/driver/bootwait.S
++++ b/driver/bootwait.S
+@@ -26,11 +26,15 @@ V_SPIN      = 0x3810
+ V_UP0       = 0x3814                    /* 最初に受け取った Pico の起動からの ms (経過秒の起点) */
+ LINE        = 0x3900                    /* 表示する行を組み立てる */
+ ANIM_LEN    = 24
++LINE_END    = LINE+95                   /* 書き直す行は毎回ここまで空白で埋める (ESC[y;5H の 7 バイト + 88 桁、92 桁目まで) */
++CRTC_R21    = 0xe8002a                  /* テキストの同時アクセス・ラスタコピー */
++CRTC_R23    = 0xe8002e                  /* テキストのビットマスク */
+ BUF         = 0x4000                    /* 応答 3 セクタ */
+ 
+ entry:
+     .ascii  "BW2!"                      /* 前半が確かめる */
+ main:
++    bsr     txreset
+     moveq.l #0x7f,%d0                   /* ONTIME */
+     trap    #15
+     move.l  %d0,V_T0.w
+@@ -176,8 +180,7 @@ show:                                   /* a2 の文言 + IP + 経過秒 + く
+     andi.w  #3,%d0
+     lea.l   %pc@(m_spin),%a4
+     move.b  %a4@(%d0.w),%a3@+
+-    lea.l   %pc@(m_pad),%a4
+-    bsr     copystr
++    bsr     padto
+     bsr     print
+                                         /* [Pico W] .....o........ [X68000 Z] */
+     movea.w #LINE,%a3
+@@ -200,6 +203,7 @@ show:                                   /* a2 の文言 + IP + 経過秒 + く
+     dbra    %d1,5b
+     lea.l   %pc@(m_anim2),%a4
+     bsr     copystr
++    bsr     padto
+     bsr     print
+     bra     loop
+ 
+@@ -209,8 +213,7 @@ changed:
+     bsr     copystr
+     lea.l   %pc@(m_changed),%a4
+     bsr     copystr
+-    lea.l   %pc@(m_pad),%a4
+-    bsr     copystr
++    bsr     padto
+     bsr     print
+     bra     halt
+ 
+@@ -277,13 +280,30 @@ putdec:
+     bne     2b
+     rts
+ 
++/* 行の残りを LINE_END まで空白で埋める (前に書いたものを必ず消す) */
++padto:
++    cmpa.w  #LINE_END,%a3
++    bcc     1f
++    move.b  #' ',%a3@+
++    bra     padto
++1:
++    rts
++
+ print:
++    bsr     txreset
+     clr.b   %a3@
+     movea.w #LINE,%a1
+     moveq.l #0x21,%d0
+     trap    #15
+     rts
+ 
++/* 設定画面 (IOCS の TXBOX など) が残したテキストの同時アクセスとビットマスクを戻す。残っていると
++   書き直した文字が前の文字と重なって見える (実機で状態行がそうなった) */
++txreset:                                /* clr は先に読むので move で書く (R21 は読まない) */
++    move.w  #0,CRTC_R21
++    move.w  #0,CRTC_R23
++    rts
++
+ loadsetting:                            /* hdsboot.S と同じ: ID 6 の設定メニューを読んで飛ぶ */
+     lea.l   %pc@(e_clear),%a1
+     moveq.l #0x21,%d0
+@@ -356,7 +376,7 @@ m_screen:
+     /* [S] 設定画面 (Wi-Fi / SMB / HDS)   ([F1] でも入れます) */
+     .byte   0x5b,0x53,0x5d,0x20,0x90,0xdd,0x92,0xe8,0x89,0xe6,0x96,0xca,0x20,0x28,0x57,0x69,0x2d,0x46,0x69,0x20,0x2f,0x20,0x53,0x4d,0x42,0x20,0x2f,0x20,0x48,0x44,0x53,0x29,0x20,0x20,0x20,0x28,0x5b,0x46,0x31,0x5d,0x20,0x82,0xc5,0x82,0xe0,0x93,0xfc,0x82,0xea,0x82,0xdc,0x82,0xb7,0x29
+     .byte   0x1b
+-    .ascii  "[20;5H"
++    .ascii  "[21;5H"
+     /* ※ 設定で HDS を変えたら、Z の電源を入れ直してください */
+     .byte   0x81,0xa6,0x20,0x90,0xdd,0x92,0xe8,0x82,0xc5,0x20,0x48,0x44,0x53,0x20,0x82,0xf0,0x95,0xcf,0x82,0xa6,0x82,0xbd,0x82,0xe7,0x81,0x41,0x5a,0x20,0x82,0xcc,0x93,0x64,0x8c,0xb9,0x82,0xf0,0x93,0xfc,0x82,0xea,0x92,0xbc,0x82,0xb5,0x82,0xc4,0x82,0xad,0x82,0xbe,0x82,0xb3,0x82,0xa2
+     .byte   0
+@@ -406,9 +426,6 @@ m_secp:     /*  秒) */
+     .byte   0x20,0x95,0x62,0x29,0
+ m_spin:
+     .ascii  ".oOo"                      /* \ は X68k では円記号なので使わない */
+-m_pad:
+-    .ascii  "                              "
+-    .byte   0
+     .even
+ 
+     .end
+diff --git a/test/bootwait/waiter_test.py b/test/bootwait/waiter_test.py
+index c7bbd27..07e4748 100644
+--- a/test/bootwait/waiter_test.py
++++ b/test/bootwait/waiter_test.py
+@@ -121,6 +121,10 @@ class Z:
+         u = self.uc = Uc(UC_ARCH_M68K, UC_MODE_BIG_ENDIAN)
+         u.ctl_set_cpu_model(UC_CPU_M68K_M68000)
+         u.mem_map(0, 0x100000)
++        u.mem_map(0xe80000, 0x1000)                 # CRTC
++        u.mem_write(0xe8002a, b'\x01\xf0')         # 設定画面が残した同時アクセスとビットマスクの真似
++        u.mem_write(0xe8002e, b'\xff\xff')
++        self.dirty_prints = 0
+         u.hook_add(UC_HOOK_CODE, self._hook)
+         self.trap = False
+ 
+@@ -163,6 +167,8 @@ class Z:
+                 s.append(c)
+                 p += 1
+             self.screen.append(bytes(s).decode('cp932', 'replace'))
++            if u.mem_read(0xe8002a, 2) != b'\0\0' or u.mem_read(0xe8002e, 2) != b'\0\0':
++                self.dirty_prints += 1
+         elif fn == 0x7f:                            # ONTIME
+             self.clock += self.step
+             self.mono += 2
+@@ -272,6 +278,10 @@ def scenario_wait_then_ready(fl):
+     check(r[0] == 'jumped' and r[3] == 0, 'd4 (SCSI ID from the ROM) restored to 0')
+     t = z.text()
+     check('Pico: SMB 接続待ち' in t, 'title shown')
++    check(z.dirty_prints == 0, 'CRTC R21/R23 cleared before every print (%d dirty)' % z.dirty_prints)
++    redraw = [l for l in z.screen if l.startswith('\x1b[15;5H') or l.startswith('\x1b[17;5H')]
++    check(redraw and all(len(l.encode('cp932')) == 95 for l in redraw), 'status/animation lines always padded to the same width')
++    check('\x1b[19;5H[S]' in t and '\x1b[21;5H' in t, 'blank row between the [S] and ※ lines')
+     art = open(os.path.join(HERE, 'art.txt'), encoding='ascii').read().splitlines()
+     check(len(art) >= 8 and all(l in t for l in art) and '\\' not in t, 'X68000 Z banner (%d lines) shown, no backslash (a yen sign on the X68k)' % len(art))
+     secs = [int(m) for m in re.findall(r'経過 (\d+) 秒', t)]
+-- 
+2.54.0 (Apple Git-157)
+

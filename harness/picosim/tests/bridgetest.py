@@ -20,7 +20,7 @@ def check(name, cond, extra=""):
     if not cond:
         fails += 1
 
-p = subprocess.Popen([PICOSIM] + (["-vvv"] if os.environ.get("DBG") else []) + ["-l", "127.0.0.1:%d" % PORT, "-L", "%d:2323" % FWD], stderr=open(os.path.join(HERE, "picosim.log"), "w"))
+p = subprocess.Popen([PICOSIM] + (["-vvv", "-p", "/tmp/bt.pcap"] if os.environ.get("DBG") else []) + ["-l", "127.0.0.1:%d" % PORT, "-L", "%d:2323" % FWD], stderr=open(os.path.join(HERE, "picosim.log"), "w"))
 for _ in range(50):
     try:
         s = socket.create_connection(("127.0.0.1", PORT)); break
@@ -132,6 +132,36 @@ for _ in range(50):
     time.sleep(0.01)
 check("ping 192.168.1.1 via slirp", got is not None and got[12:16] == GW and got[28:] == icmp[8:],
       "%.1f ms" % ((time.time() - t0) * 1000))
+
+# DNS: ゲートウェイの 53 番に聞く (zshrc の NETDNS の既定)。slirp の DNS の口に付け替えられ、Mac の resolver が答える。
+# 返事の送り元はゲートウェイに戻っていること
+q = struct.pack(">HHHHHH", 0x4242, 0x0100, 1, 0, 0, 0) + b"\x09localhost\x00" + struct.pack(">HH", 1, 1)
+udp = struct.pack(">HHHH", 2050, 53, 8 + len(q), 0) + q
+dns = None
+t0 = time.time()
+recs_in = [xchg(zrec(ipv4(17, ZIP, GW, udp)))[1]]
+for _ in range(150):
+    data = recs_in.pop() if recs_in else xchg()[1]
+    for pkt in recs(data):
+        if len(pkt) > 40 and pkt[9] == 17 and pkt[20:22] == b"\x00\x35" and pkt[28:30] == b"\x42\x42":
+            dns = pkt
+    if dns: break
+    time.sleep(0.02)
+check("DNS via gateway:53", dns is not None and dns[12:16] == GW and (dns[31] & 15) == 0,
+      "%.0f ms, rcode=%d, answers=%d" % ((time.time() - t0) * 1000, dns[31] & 15, struct.unpack(">H", dns[34:36])[0]) if dns else "no reply")
+
+# 仮想の LAN の逆引きは Mac に聞かずに picosim が名付ける
+q = struct.pack(">HHHHHH", 0x4343, 0x0100, 1, 0, 0, 0) + b"\x011\x011\x03168\x03192\x07in-addr\x04arpa\x00" + struct.pack(">HH", 12, 1)
+udp = struct.pack(">HHHH", 2051, 53, 8 + len(q), 0) + q
+ptr = None
+recs_in = [xchg(zrec(ipv4(17, ZIP, GW, udp)))[1]]
+for _ in range(50):
+    data = recs_in.pop() if recs_in else xchg()[1]
+    for pkt in recs(data):
+        if len(pkt) > 40 and pkt[9] == 17 and pkt[28:30] == b"\x43\x43":
+            ptr = pkt
+    if ptr: break
+check("PTR 192.168.1.1 -> gateway.picosim", ptr is not None and b"\x07gateway\x07picosim" in ptr)
 
 # 暗号アクセラレータ PING
 xchg(zrec(bytes([0xa5, 0, 0x00, 0x07])))

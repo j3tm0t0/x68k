@@ -1,0 +1,288 @@
+From 6008e5fd4c867d6e2d7ef1d875034d232fe77fd7 Mon Sep 17 00:00:00 2001
+From: moto <j3tm0t0@gmail.com>
+Date: Thu, 22 Oct 2026 19:47:51 +0900
+Subject: [PATCH] bootwait: X68000 Z banner and animation, [S] for the setting
+ UI while waiting
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- The waiter screen gets a 5-line "X68000 Z" block banner (plain ASCII,
+  no backslash: 0x5C is a yen sign on the X68k), a moving
+  "[Pico W] ....o.... [X68000 Z]" line and the spinner ".oOo".
+- "[S] 設定画面 (Wi-Fi / SMB / HDS)   ([F1] でも入れます)" and
+  "※ 設定で HDS を変えたら、Z の電源を入れ直してください". S (B_KEYSNS /
+  B_KEYINP) or F1 loads settingui.bin from ID 6 LBA 0x100, the same path
+  hdsboot.S uses, and jumps to it.
+- So that the setting UI works while the Pico is still connecting
+  (BOOTWAIT): ID 6 command writes no longer wait in vd_sync(); if the
+  connect task holds remote_sem (a Wi-Fi attempt can take 30 s), the
+  last command page returns VD_NOTREADY (TinyUSB re-invokes, then Linux
+  retries on 04/01) instead of blocking the USB task; remote drive
+  (B:) commands before the mount answer an error instead of calling
+  remote_serv with no root path. The connect task's retries already use
+  the config the setting UI changes in RAM.
+- waiter_test.py: banner (and no backslash), animation frames, the
+  setup lines, S -> setting UI with d4 = 6.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PrGdt1XK1exBgERrMmLA1u
+---
+ driver/bootwait.S            | 71 +++++++++++++++++++++++++++++++++---
+ src/virtual_disk.c           | 17 ++++++++-
+ test/bootwait/waiter_test.py | 28 ++++++++++++--
+ 3 files changed, 106 insertions(+), 10 deletions(-)
+
+diff --git a/driver/bootwait.S b/driver/bootwait.S
+index 60b4409..2f7ef28 100644
+--- a/driver/bootwait.S
++++ b/driver/bootwait.S
+@@ -8,7 +8,7 @@
+  *   BW_READY   -> 返ってきた本物の IPL (1KB) を $2000 に置いて飛ぶ (ROM から来たときの d4 = SCSI ID を戻す)
+  *   BW_CHANGED -> 「電源を入れ直してください」と出して止まる
+  *   それ以外   -> 状態を出して 0.5 秒後にもう一度
+- * F1 を押すと設定メニュー (hdsboot.S と同じ)。
++ * S (か F1) を押すと設定画面 (hdsboot.S の F1 と同じ settingui を ID 6 から読む)。
+  * Unicorn (ホスト試験) は movem を扱えないので使わない。
+  */
+ 
+@@ -24,6 +24,7 @@ V_LAST      = 0x3808                    /* 最後に問い合わせた時刻 */
+ V_UP        = 0x380c                    /* 最後に受け取った Pico の起動からの ms */
+ V_SPIN      = 0x3810
+ LINE        = 0x3900                    /* 表示する行を組み立てる */
++ANIM_LEN    = 24
+ BUF         = 0x4000                    /* 応答 3 セクタ */
+ 
+ entry:
+@@ -46,6 +47,16 @@ loop:
+     trap    #15
+     andi.b  #0x08,%d0                   /* F1 */
+     bne     loadsetting
++    moveq.l #0x01,%d0                   /* B_KEYSNS */
++    trap    #15
++    tst.l   %d0
++    beq     1f
++    moveq.l #0x00,%d0                   /* B_KEYINP (読み捨てる) */
++    trap    #15
++    andi.b  #0xdf,%d0                   /* 大文字に */
++    cmpi.b  #'S',%d0
++    beq     loadsetting
++1:
+ 
+     moveq.l #0x7f,%d0                   /* ONTIME */
+     trap    #15
+@@ -150,6 +161,28 @@ show:                                   /* a2 の文言 + IP + 経過秒 + く
+     move.b  %a4@(%d0.w),%a3@+
+     lea.l   %pc@(m_pad),%a4
+     bsr     copystr
++    bsr     print
++                                        /* [Pico W] .....o........ [X68000 Z] */
++    movea.w #LINE,%a3
++    lea.l   %pc@(m_anim1),%a4
++    bsr     copystr
++    moveq.l #0,%d0
++    move.w  V_SPIN.w,%d0
++    divu.w  #ANIM_LEN,%d0
++    swap    %d0                         /* 光る位置 p */
++    neg.w   %d0
++    addi.w  #ANIM_LEN-1,%d0             /* dbra は数え下げなので ANIM_LEN-1-p で比べる */
++    moveq.l #ANIM_LEN-1,%d1
++5:
++    moveq.l #'.',%d2
++    cmp.w   %d0,%d1
++    bne     6f
++    moveq.l #'o',%d2
++6:
++    move.b  %d2,%a3@+
++    dbra    %d1,5b
++    lea.l   %pc@(m_anim2),%a4
++    bsr     copystr
+     bsr     print
+     bra     loop
+ 
+@@ -225,6 +258,9 @@ print:
+     rts
+ 
+ loadsetting:                            /* hdsboot.S と同じ: ID 6 の設定メニューを読んで飛ぶ */
++    lea.l   %pc@(e_clear),%a1
++    moveq.l #0x21,%d0
++    trap    #15
+     move.l  #(0x20000/512),%d2
+     moveq.l #6,%d4
+     moveq.l #1,%d3
+@@ -265,17 +301,40 @@ m_screen:
+     .byte   0x1b
+     .ascii  "[2J"
+     .byte   0x1b
+-    .ascii  "[12;5H"
++    .ascii  "[3;22H#   #   ###    ###    ###    ###    ###        #####"
++    .byte   0x1b
++    .ascii  "[4;22H # #   #      #   #  #  ##  #  ##  #  ##          #"
++    .byte   0x1b
++    .ascii  "[5;22H  #    ####    ###   # # #  # # #  # # #         #"
++    .byte   0x1b
++    .ascii  "[6;22H # #   #   #  #   #  ##  #  ##  #  ##  #        #"
++    .byte   0x1b
++    .ascii  "[7;22H#   #   ###    ###    ###    ###    ###        #####"
++    .byte   0x1b
++    .ascii  "[9;22H-- Raspberry Pi Pico W / x68kzremotedrv --"
++    .byte   0x1b
++    .ascii  "[11;5H"
+     /* Pico: SMB 接続待ち… (Wi-Fi/SMB を確認してください) */
+     .byte   0x50,0x69,0x63,0x6f,0x3a,0x20,0x53,0x4d,0x42,0x20,0x90,0xda,0x91,0xb1,0x91,0xd2,0x82,0xbf,0x81,0x63,0x20,0x28,0x57,0x69,0x2d,0x46,0x69,0x2f,0x53,0x4d,0x42,0x20,0x82,0xf0,0x8a,0x6d,0x94,0x46,0x82,0xb5,0x82,0xc4,0x82,0xad,0x82,0xbe,0x82,0xb3,0x82,0xa2,0x29
+     .byte   0x1b
+     .ascii  "[17;5H"
+-    /* F1: 設定メニュー */
+-    .byte   0x46,0x31,0x3a,0x20,0x90,0xdd,0x92,0xe8,0x83,0x81,0x83,0x6a,0x83,0x85,0x81,0x5b
++    /* [S] 設定画面 (Wi-Fi / SMB / HDS)   ([F1] でも入れます) */
++    .byte   0x5b,0x53,0x5d,0x20,0x90,0xdd,0x92,0xe8,0x89,0xe6,0x96,0xca,0x20,0x28,0x57,0x69,0x2d,0x46,0x69,0x20,0x2f,0x20,0x53,0x4d,0x42,0x20,0x2f,0x20,0x48,0x44,0x53,0x29,0x20,0x20,0x20,0x28,0x5b,0x46,0x31,0x5d,0x20,0x82,0xc5,0x82,0xe0,0x93,0xfc,0x82,0xea,0x82,0xdc,0x82,0xb7,0x29
++    .byte   0x1b
++    .ascii  "[18;5H"
++    /* ※ 設定で HDS を変えたら、Z の電源を入れ直してください */
++    .byte   0x81,0xa6,0x20,0x90,0xdd,0x92,0xe8,0x82,0xc5,0x20,0x48,0x44,0x53,0x20,0x82,0xf0,0x95,0xcf,0x82,0xa6,0x82,0xbd,0x82,0xe7,0x81,0x41,0x5a,0x20,0x82,0xcc,0x93,0x64,0x8c,0xb9,0x82,0xf0,0x93,0xfc,0x82,0xea,0x92,0xbc,0x82,0xb5,0x82,0xc4,0x82,0xad,0x82,0xbe,0x82,0xb3,0x82,0xa2
+     .byte   0
+ e_row2:
+     .byte   0x1b
+-    .ascii  "[14;5H"
++    .ascii  "[13;5H"
++    .byte   0
++m_anim1:
++    .byte   0x1b
++    .ascii  "[15;5H[Pico W] "
++    .byte   0
++m_anim2:
++    .ascii  " [X68000 Z]"
+     .byte   0
+ e_clear:
+     .byte   0x1b
+@@ -303,7 +362,7 @@ m_ip:
+ m_sec:      /* 秒 */
+     .byte   0x20,0x95,0x62,0x20,0
+ m_spin:
+-    .ascii  "|/-\\"
++    .ascii  ".oOo"                      /* \ は X68k では円記号なので使わない */
+ m_pad:
+     .ascii  "          "
+     .byte   0
+diff --git a/src/virtual_disk.c b/src/virtual_disk.c
+index 6fbdf33..85ef4a6 100644
+--- a/src/virtual_disk.c
++++ b/src/virtual_disk.c
+@@ -627,8 +627,11 @@ int vd_write_block(uint32_t lba, uint8_t *buf)
+             return sysstatus >= STAT_CONFIGURED ? VD_IOERR : VD_NOTREADY;
+         if (diskinfo[id].type == DTYPE_REMOTECOMM && lba >= NETPIPE_WLBA && lba < NETPIPE_WLBA + 8)
+             return netpipe_write(lba, buf);     /* netpipe は SMB の接続を待たない */
+-#endif
++        if (diskinfo[id].type != DTYPE_REMOTECOMM)
++            vd_sync();                          /* 設定画面 (ID 6 の vd_command) は接続を待たない (待ち IPL から入る) */
++#else
+         vd_sync();
++#endif
+ 
+         if (diskinfo[id].type == DTYPE_HDS && diskinfo[id].sfh != NULL) {
+             if (hds_cache_write(diskinfo[id].smb2, diskinfo[id].sfh, lba, buf) < 0)
+@@ -648,9 +651,21 @@ int vd_write_block(uint32_t lba, uint8_t *buf)
+             if (b->header.page == b->header.maxpage) {
+                 // last page copy
+                 int rsize;
++#if BOOTWAIT
++                /* 接続タスクが繋ぎにいっている間 (Wi-Fi は最大 30 秒) は USB タスクを止めず NOT READY で待たせる
++                   (msc_disk.c が呼び直し、Z の Linux が出し直す) */
++                if (xSemaphoreTake(remote_sem, 0) != pdTRUE)
++                    return VD_NOTREADY;
++#else
+                 xSemaphoreTake(remote_sem, portMAX_DELAY);
++#endif
+                 cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
+                 if ((rsize = vd_command(vdbuf_write, vdbuf_read)) < 0) {
++#if BOOTWAIT
++                    if (sysstatus < STAT_CONFIGURED)
++                        rsize = -1;             /* リモートドライブ (B:) はまだ使えない */
++                    else
++#endif
+                     rsize = remote_serv(vdbuf_write, vdbuf_read);
+                 }
+                 cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 0);
+diff --git a/test/bootwait/waiter_test.py b/test/bootwait/waiter_test.py
+index 13c3f51..25cfcff 100644
+--- a/test/bootwait/waiter_test.py
++++ b/test/bootwait/waiter_test.py
+@@ -2,7 +2,8 @@
+ """待ち IPL (driver/bootwait1.S + bootwait.S) を Unicorn の 68000 で動かし、Pico 側 (src/bootwait.c をそのまま
+ ホスト向けに組んだ libbw) と組み合わせて試す: make -C test/bootwait waiter
+ 
+-IOCS (trap #15) は ここで真似る: B_BITSNS (F1)、B_PRINT (画面の記録)、ONTIME (偽の時計)、SCSIDRV S_READEXT。
++IOCS (trap #15) は ここで真似る: B_BITSNS (F1)、B_KEYSNS / B_KEYINP (S)、B_PRINT (画面の記録)、ONTIME (偽の時計)、
++SCSIDRV S_READEXT。
+ SCSI の読み込みは Z の Linux と同じく LBA ごとにキャッシュし、同じ LBA は二度と Pico に聞かない。
+ """
+ import ctypes, os, shutil, struct, sys, tempfile
+@@ -101,10 +102,11 @@ class Pico:
+ class Z:
+     """X68000 Z の側: 68000 + ROM の真似 + Linux の読み込みキャッシュ"""
+ 
+-    def __init__(self, pico, on_poll=None, f1_at=None, noreply=0, clock=1234500):
++    def __init__(self, pico, on_poll=None, f1_at=None, key_at=None, noreply=0, clock=1234500):
+         self.pico = pico
+         self.on_poll = on_poll or (lambda z, n: None)
+         self.f1_at = f1_at
++        self.key_at = key_at                        # (何回目の問い合わせのあと, キーコード)
+         self.noreply = noreply
+         self.clock = clock                          # ONTIME (1/100 秒)
+         self.mono = 0                               # Pico の起動からの時間 (戻らない)
+@@ -141,6 +143,13 @@ class Z:
+         if fn == 0x04:                              # B_BITSNS
+             v = 0x08 if (self.f1_at is not None and len(self.polls) >= self.f1_at and d[1] == 0x0c) else 0
+             u.reg_write(D[0], v)
++        elif fn == 0x01:                            # B_KEYSNS
++            k = self.key_at
++            u.reg_write(D[0], k[1] if (k and len(self.polls) >= k[0]) else 0)
++        elif fn == 0x00:                            # B_KEYINP
++            k = self.key_at
++            u.reg_write(D[0], k[1] if k else 0)
++            self.key_at = None
+         elif fn == 0x21:                            # B_PRINT
+             s = bytearray()
+             p = a[1]
+@@ -258,10 +267,15 @@ def scenario_wait_then_ready(fl):
+     check(r[0] == 'jumped' and r[3] == 0, 'd4 (SCSI ID from the ROM) restored to 0')
+     t = z.text()
+     check('Pico: SMB 接続待ち' in t, 'title shown')
++    check('#   #   ###    ###    ###    ###    ###        #####' in t and '\\' not in t, 'X68000 Z banner shown (no backslash: it is a yen sign on the X68k)')
++    check('[S] 設定画面 (Wi-Fi / SMB / HDS)' in t and '電源を入れ直してください' in t, 'setup key and power-cycle note shown')
++    anim = [l for l in t.split('\n') if '[Pico W]' in l]
++    check(len(anim) >= 3 and len(set(anim)) >= 3 and all(l.split('[Pico W] ')[1][:24].count('o') == 1 for l in anim),
++          'animation line moves (%d frames)' % len(set(anim)))
+     for s in ('Wi-Fi 未接続', 'Wi-Fi 接続中', 'SMB 接続待ち', 'SMB 接続中'):
+         check(s in t, 'status "%s" shown' % s)
+     check('IP 192.168.1.118' in t, 'IP shown once Wi-Fi is up')
+-    check(' 秒 ' in t and any(c in t for c in '|/-\\'), 'elapsed seconds and spinner shown')
++    check(' 秒 ' in t and all(c in t for c in '.oO'), 'elapsed seconds and spinner shown')
+     check(len(z.polls) >= 12 and len(set(z.polls)) == len(z.polls), 'every poll at a fresh LBA (%d polls)' % len(z.polls))
+     check(all(BW_BAND <= l < BW_BAND_END and (l - BW_BAND) % BW_STRIDE == 0 for l in z.polls), 'polls in the band, 64-sector aligned')
+     gaps = [b - a for a, b in zip(z.polls, z.polls[1:])]
+@@ -342,6 +356,13 @@ def scenario_f1(fl):
+     check(r[0] == 'jumped' and r[2] == 0x77, 'F1 loads the setting menu from ID 6 (%r)' % (r,))
+ 
+ 
++def scenario_key_s(fl):
++    p = Pico(fl)
++    z = Z(p, key_at=(3, 0x1f73))                   # 's' (スキャンコード 0x1f)
++    r = z.boot()
++    check(r[0] == 'jumped' and r[2] == 0x77 and r[3] == 6, 'S loads the setting UI from ID 6 (%r)' % (r,))
++
++
+ def scenario_nohds(fl):
+     p = Pico(fl)
+     p.sysstat = 5                                   # つながったが HDS が開けない
+@@ -363,6 +384,7 @@ def main():
+     scenario_stale(fl)
+     scenario_ready_at_once(fl)
+     scenario_f1(fl)
++    scenario_key_s(fl)
+     scenario_nohds(fl)
+     print('FAILED %d' % fails if fails else 'all passed')
+     return 1 if fails else 0
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,0 +1,478 @@
+From 43192ebddac82c303d27df690283b9a2f31094c6 Mon Sep 17 00:00:00 2001
+From: moto <j3tm0t0@gmail.com>
+Date: Thu, 22 Oct 2026 19:52:09 +0900
+Subject: [PATCH] bootwait: 9-line X68000 Z banner; elapsed seconds from the
+ Pico's clock; next-retry countdown
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- The banner is now a framed 7-row block font (9 lines, plain ASCII, no
+  backslash). Rows: banner 2-10, subtitle 11, title 13, status 15,
+  animation 17, keys 19-20.
+- On the Z the seconds were reported counting down. The waiter no longer
+  uses IOCS _ONTIME for the number: it shows "経過 N 秒" from the
+  difference of the Pico's uptime in the replies (+12), which only goes
+  up. _ONTIME is still used for pacing and the poll slot, now with the
+  absolute difference, so a clock running backwards still polls every
+  0.5 s at fresh slots.
+- The reply carries the time until the Pico's next connection attempt
+  (+24; connect.c keeps connect_next_ms): "(次の再接続まで N 秒)", or
+  "(接続を試しています)" during an attempt; nothing once connected.
+- waiter_test.py: banner lines from art.txt, seconds count up, retry
+  texts, a backwards ONTIME.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PrGdt1XK1exBgERrMmLA1u
+---
+ driver/bootwait.S            | 101 +++++++++++++++++++++++++----------
+ src/bootwait.c               |   3 +-
+ src/bootwait.h               |   2 +-
+ src/bootwait_proto.h         |   2 +
+ src/connect.c                |  13 +++++
+ src/virtual_disk.c           |  12 ++++-
+ test/bootwait/art.txt        |   9 ++++
+ test/bootwait/waiter_test.py |  34 ++++++++++--
+ 8 files changed, 141 insertions(+), 35 deletions(-)
+ create mode 100644 test/bootwait/art.txt
+
+diff --git a/driver/bootwait.S b/driver/bootwait.S
+index 2f7ef28..7c041cc 100644
+--- a/driver/bootwait.S
++++ b/driver/bootwait.S
+@@ -23,6 +23,7 @@ V_T0        = 0x3804                    /* 始めた時刻 (1/100 秒) */
+ V_LAST      = 0x3808                    /* 最後に問い合わせた時刻 */
+ V_UP        = 0x380c                    /* 最後に受け取った Pico の起動からの ms */
+ V_SPIN      = 0x3810
++V_UP0       = 0x3814                    /* 最初に受け取った Pico の起動からの ms (経過秒の起点) */
+ LINE        = 0x3900                    /* 表示する行を組み立てる */
+ ANIM_LEN    = 24
+ BUF         = 0x4000                    /* 応答 3 セクタ */
+@@ -36,6 +37,7 @@ main:
+     subi.l  #100,%d0
+     move.l  %d0,V_LAST.w                /* 最初はすぐ問い合わせる */
+     clr.l   V_UP.w
++    clr.l   V_UP0.w
+     clr.w   V_SPIN.w
+     lea.l   %pc@(m_screen),%a1
+     moveq.l #0x21,%d0
+@@ -62,7 +64,9 @@ loop:
+     trap    #15
+     move.l  %d0,%d6
+     sub.l   V_LAST.w,%d0
+-    bmi     poll                        /* 日付が変わった */
++    bpl     1f
++    neg.l   %d0                         /* 逆に進む時計でも 0.5 秒ごとに (日付の変わり目はすぐ問い合わせる) */
++1:
+     cmpi.l  #50,%d0
+     blt     loop
+ 
+@@ -95,6 +99,10 @@ poll:
+     cmp.l   V_UP.w,%d0
+     bcs     loop                        /* 前に読んだものより古い (キャッシュ): 見ない */
+     move.l  %d0,V_UP.w
++    tst.l   V_UP0.w
++    bne     7f
++    move.l  %d0,V_UP0.w
++7:
+     move.b  %a0@(4),%d0
+     cmpi.b  #1,%d0
+     beq     ready
+@@ -115,7 +123,9 @@ poll:
+     bra     show
+ 
+ noresp:
+-    clr.l   BUF+8.w                     /* IP は出さない */
++    clr.l   BUF+8.w                     /* IP と再接続の予定は出さない */
++    moveq.l #-1,%d0
++    move.l  %d0,BUF+24.w
+     lea.l   %pc@(m_noresp),%a2
+ 
+ show:                                   /* a2 の文言 + IP + 経過秒 + くるくる */
+@@ -138,22 +148,29 @@ show:                                   /* a2 の文言 + IP + 経過秒 + く
+     dbra    %d5,1b
+     subq.l  #1,%a3                      /* 最後の '.' */
+ 2:
+-    move.b  #' ',%a3@+
+-    move.b  #' ',%a3@+
+-    move.l  V_LAST.w,%d0
+-    sub.l   V_T0.w,%d0
+-    bpl     3f
+-    addi.l  #8640000,%d0
+-3:
+-    cmpi.l  #6553500,%d0
+-    bcs     4f
+-    move.l  #6553500,%d0
+-4:
+-    divu.w  #100,%d0
+-    andi.l  #0xffff,%d0
+-    bsr     putdec
++    lea.l   %pc@(m_elapsed),%a4         /* 経過秒は Pico の時計で数える (Z の ONTIME は使わない) */
++    bsr     copystr
++    move.l  V_UP.w,%d0
++    sub.l   V_UP0.w,%d0
++    bsr     putsec
+     lea.l   %pc@(m_sec),%a4
+     bsr     copystr
++    movea.w #BUF,%a0
++    move.l  %a0@(24),%d0                /* 次の再接続までの ms (0: 試している最中、-1: 予定なし) */
++    cmpi.l  #-1,%d0
++    beq     8f
++    lea.l   %pc@(m_trying),%a4
++    tst.l   %d0
++    beq     9f
++    lea.l   %pc@(m_next),%a4
++    bsr     copystr
++    addi.l  #999,%d0
++    bsr     putsec
++    lea.l   %pc@(m_secp),%a4
++9:
++    bsr     copystr
++8:
++    move.b  #' ',%a3@+
+     move.w  V_SPIN.w,%d0
+     addq.w  #1,V_SPIN.w
+     andi.w  #3,%d0
+@@ -230,6 +247,16 @@ copystr:
+ 1:
+     rts
+ 
++/* d0 (ms) を秒にして a3 に足す */
++putsec:
++    cmpi.l  #65535000,%d0
++    bcs     1f
++    move.l  #65535000,%d0
++1:
++    divu.w  #1000,%d0
++    andi.l  #0xffff,%d0
++    bra     putdec
++
+ /* d0 (0-65535) を 10 進で a3 に足す */
+ putdec:
+     moveq.l #0,%d1
+@@ -301,37 +328,45 @@ m_screen:
+     .byte   0x1b
+     .ascii  "[2J"
+     .byte   0x1b
+-    .ascii  "[3;22H#   #   ###    ###    ###    ###    ###        #####"
++    .ascii  "[2;13H+---------------------------------------------------------------------+"
++    .byte   0x1b
++    .ascii  "[3;13H|  #     #    ####    #####    #####    #####    #####       #######  |"
+     .byte   0x1b
+-    .ascii  "[4;22H # #   #      #   #  #  ##  #  ##  #  ##          #"
++    .ascii  "[4;13H|   #   #    #       #     #  #    ##  #    ##  #    ##           #   |"
+     .byte   0x1b
+-    .ascii  "[5;22H  #    ####    ###   # # #  # # #  # # #         #"
++    .ascii  "[5;13H|    # #    #        #     #  #   # #  #   # #  #   # #          #    |"
+     .byte   0x1b
+-    .ascii  "[6;22H # #   #   #  #   #  ##  #  ##  #  ##  #        #"
++    .ascii  "[6;13H|     #     ######    #####   #  #  #  #  #  #  #  #  #         #     |"
+     .byte   0x1b
+-    .ascii  "[7;22H#   #   ###    ###    ###    ###    ###        #####"
++    .ascii  "[7;13H|    # #    #     #  #     #  # #   #  # #   #  # #   #        #      |"
+     .byte   0x1b
+-    .ascii  "[9;22H-- Raspberry Pi Pico W / x68kzremotedrv --"
++    .ascii  "[8;13H|   #   #   #     #  #     #  ##    #  ##    #  ##    #       #       |"
+     .byte   0x1b
+-    .ascii  "[11;5H"
++    .ascii  "[9;13H|  #     #   #####    #####    #####    #####    #####       #######  |"
++    .byte   0x1b
++    .ascii  "[10;13H+---------------------------------------------------------------------+"
++    .byte   0x1b
++    .ascii  "[11;27H-- Raspberry Pi Pico W / x68kzremotedrv --"
++    .byte   0x1b
++    .ascii  "[13;5H"
+     /* Pico: SMB 接続待ち… (Wi-Fi/SMB を確認してください) */
+     .byte   0x50,0x69,0x63,0x6f,0x3a,0x20,0x53,0x4d,0x42,0x20,0x90,0xda,0x91,0xb1,0x91,0xd2,0x82,0xbf,0x81,0x63,0x20,0x28,0x57,0x69,0x2d,0x46,0x69,0x2f,0x53,0x4d,0x42,0x20,0x82,0xf0,0x8a,0x6d,0x94,0x46,0x82,0xb5,0x82,0xc4,0x82,0xad,0x82,0xbe,0x82,0xb3,0x82,0xa2,0x29
+     .byte   0x1b
+-    .ascii  "[17;5H"
++    .ascii  "[19;5H"
+     /* [S] 設定画面 (Wi-Fi / SMB / HDS)   ([F1] でも入れます) */
+     .byte   0x5b,0x53,0x5d,0x20,0x90,0xdd,0x92,0xe8,0x89,0xe6,0x96,0xca,0x20,0x28,0x57,0x69,0x2d,0x46,0x69,0x20,0x2f,0x20,0x53,0x4d,0x42,0x20,0x2f,0x20,0x48,0x44,0x53,0x29,0x20,0x20,0x20,0x28,0x5b,0x46,0x31,0x5d,0x20,0x82,0xc5,0x82,0xe0,0x93,0xfc,0x82,0xea,0x82,0xdc,0x82,0xb7,0x29
+     .byte   0x1b
+-    .ascii  "[18;5H"
++    .ascii  "[20;5H"
+     /* ※ 設定で HDS を変えたら、Z の電源を入れ直してください */
+     .byte   0x81,0xa6,0x20,0x90,0xdd,0x92,0xe8,0x82,0xc5,0x20,0x48,0x44,0x53,0x20,0x82,0xf0,0x95,0xcf,0x82,0xa6,0x82,0xbd,0x82,0xe7,0x81,0x41,0x5a,0x20,0x82,0xcc,0x93,0x64,0x8c,0xb9,0x82,0xf0,0x93,0xfc,0x82,0xea,0x92,0xbc,0x82,0xb5,0x82,0xc4,0x82,0xad,0x82,0xbe,0x82,0xb3,0x82,0xa2
+     .byte   0
+ e_row2:
+     .byte   0x1b
+-    .ascii  "[13;5H"
++    .ascii  "[15;5H"
+     .byte   0
+ m_anim1:
+     .byte   0x1b
+-    .ascii  "[15;5H[Pico W] "
++    .ascii  "[17;5H[Pico W] "
+     .byte   0
+ m_anim2:
+     .ascii  " [X68000 Z]"
+@@ -360,11 +395,19 @@ m_ip:
+     .ascii  "  IP "
+     .byte   0
+ m_sec:      /* 秒 */
+-    .byte   0x20,0x95,0x62,0x20,0
++    .byte   0x20,0x95,0x62,0
++m_elapsed:  /* 経過 */
++    .byte   0x20,0x20,0x8c,0x6f,0x89,0xdf,0x20,0
++m_trying:   /*   (接続を試しています) */
++    .byte   0x20,0x20,0x28,0x90,0xda,0x91,0xb1,0x82,0xf0,0x8e,0x8e,0x82,0xb5,0x82,0xc4,0x82,0xa2,0x82,0xdc,0x82,0xb7,0x29,0
++m_next:     /*   (次の再接続まで */
++    .byte   0x20,0x20,0x28,0x8e,0x9f,0x82,0xcc,0x8d,0xc4,0x90,0xda,0x91,0xb1,0x82,0xdc,0x82,0xc5,0x20,0
++m_secp:     /*  秒) */
++    .byte   0x20,0x95,0x62,0x29,0
+ m_spin:
+     .ascii  ".oOo"                      /* \ は X68k では円記号なので使わない */
+ m_pad:
+-    .ascii  "          "
++    .ascii  "                              "
+     .byte   0
+     .even
+ 
+diff --git a/src/bootwait.c b/src/bootwait.c
+index 043d71c..eed5bb9 100644
+--- a/src/bootwait.c
++++ b/src/bootwait.c
+@@ -163,7 +163,7 @@ static int ipl_sector(int k, uint8_t *buf, bw_read_fn rd, void *ctx)
+ }
+ 
+ void bw_reply(uint32_t lba, uint8_t *buf, int hds_open, int sysstat, uint32_t ip, uint32_t uptime_ms,
+-              bw_read_fn rd, void *ctx)
++              uint32_t retry_ms, bw_read_fn rd, void *ctx)
+ {
+     uint32_t j = (lba - BW_BAND) % BW_STRIDE;
+     int st;
+@@ -200,6 +200,7 @@ void bw_reply(uint32_t lba, uint8_t *buf, int hds_open, int sysstat, uint32_t ip
+         put32(buf + 12, uptime_ms);
+         put32(buf + 16, lba);
+         put32(buf + 20, st == BW_READY ? ipl_sum : 0);
++        put32(buf + 24, retry_ms);
+     } else if (j <= 2 && st == BW_READY) {
+         if (ipl_sector(j - 1, buf, rd, ctx) != 0)
+             memset(buf, 0, 512);
+diff --git a/src/bootwait.h b/src/bootwait.h
+index c69d1b3..48bf4f1 100644
+--- a/src/bootwait.h
++++ b/src/bootwait.h
+@@ -20,7 +20,7 @@ int bw_disk_read(uint32_t lba, uint8_t *buf);           /* 控えから LBA 0-31
+ int bw_stage2_read(uint32_t lba, uint8_t *buf);         /* ID 6 の BW_STAGE2: 待ち IPL の後半 */
+ void bw_check(const char *path, uint64_t size, bw_read_fn rd, void *ctx);   /* HDS を開いたあと: 比べて、違えば控え直す */
+ void bw_reply(uint32_t lba, uint8_t *buf, int hds_open, int sysstat, uint32_t ip, uint32_t uptime_ms,
+-              bw_read_fn rd, void *ctx);                /* ID 6 の BW_BAND の読み込みに答える */
++              uint32_t retry_ms, bw_read_fn rd, void *ctx); /* ID 6 の BW_BAND の読み込みに答える */
+ const char *bw_state(const char *path);                 /* status 用: none / stored / ok / updated / served / changed */
+ 
+ /* 書き込み (ホスト試験では差し替える) */
+diff --git a/src/bootwait_proto.h b/src/bootwait_proto.h
+index e1bbb00..53dbe3d 100644
+--- a/src/bootwait_proto.h
++++ b/src/bootwait_proto.h
+@@ -5,6 +5,8 @@
+  *
+  * 待ち IPL は SCSI ID 6 の BW_BAND〜BW_BAND_END のどこか (毎回違う番地) から 3 セクタ読む:
+  *   セクタ 0: +0 "X6BW" +4 状態 (BW_*) +5 sysstatus +6 0 +8 Pico の IP (4) +12 Pico の起動からの ms (4) +16 読んだ LBA (4)
++ *            +20 IPL の和 (BW_READY のとき) +24 次の再接続までの ms (0: 試している最中、0xffffffff: 予定なし)
++ *   待ち IPL は経過秒を +12 の差で数える (Z の IOCS _ONTIME ではなく Pico の時計)
+  *   セクタ 1-2: 状態が BW_READY なら本物の IPL (HDS の LBA 2-3、1KB)
+  * Z の Linux は読んだページをキャッシュするので、同じ番地は二度と読まない (時刻から決め、BW_STRIDE ずつ離す。
+  * Linux は 1 回に 16KB 先読みするので、続きの番地にすると先読みした古い答えを読んでしまう)。
+diff --git a/src/connect.c b/src/connect.c
+index d763a3f..461b49e 100644
+--- a/src/connect.c
++++ b/src/connect.c
+@@ -54,6 +54,14 @@
+ uint64_t boottime = 0;
+ 
+ volatile int sysstatus = STAT_WIFI_DISCONNECTED;
++#if BOOTWAIT_SCREEN
++volatile uint32_t connect_next_ms;  /* 次に繋ぎにいく時刻 (0: 試している最中、UINT32_MAX: 予定なし)。待ち IPL に見せる */
++#define NEXT_IN(ms) (connect_next_ms = to_ms_since_boot(get_absolute_time()) + (ms))
++#define NEXT_SET(v) (connect_next_ms = (v))
++#else
++#define NEXT_IN(ms) ((void)0)
++#define NEXT_SET(v) ((void)0)
++#endif
+ #if HID_KEYBOARD
+ volatile bool connect_finished;     /* 起動時の接続 (繰り直しを含む) が終わった。hidkbd の status 用 */
+ #endif
+@@ -241,8 +249,10 @@ void connect_task(void *params)
+         if (i > 0) {
+             printf("Retry connection (%d)\n", i);
+             msclog_mark("retry connection %d", i);
++            NEXT_IN(1000);
+             vTaskDelay(pdMS_TO_TICKS(1000));
+         }
++        NEXT_SET(0);
+         connection(sysstatus >= STAT_WIFI_CONNECTED ? CONNECT_SMB2 : CONNECT_WIFI);
+     }
+     if (sysstatus >= STAT_SMB2_CONNECTED) {
+@@ -259,8 +269,10 @@ void connect_task(void *params)
+     /* 5 回で通らなくても諦めず、裏で繰り直し続ける (smbd が遅れて上がる、Wi-Fi が遠い など)。
+        その間 Z からの HDS の読み書きは NOT READY で待たせている (virtual_disk.c / msc_disk.c) */
+     for (int i = 5; sysstatus < STAT_CONFIGURED && strlen(config.wifi_ssid) > 0 && strlen(config.smb2_server) > 0; i++) {
++        NEXT_IN(5000);
+         vTaskDelay(pdMS_TO_TICKS(5000));
+         xSemaphoreTake(remote_sem, portMAX_DELAY);
++        NEXT_SET(0);
+         if (sysstatus < STAT_SMB2_CONNECTED) {
+             printf("Retry connection (%d)\n", i);
+             msclog_mark("retry connection %d", i);
+@@ -273,6 +285,7 @@ void connect_task(void *params)
+         xSemaphoreGive(remote_sem);
+     }
+ #endif
++    NEXT_SET(UINT32_MAX);
+ 
+     while (1) {
+         uint32_t nvalue;
+diff --git a/src/virtual_disk.c b/src/virtual_disk.c
+index 85ef4a6..ff800ac 100644
+--- a/src/virtual_disk.c
++++ b/src/virtual_disk.c
+@@ -303,6 +303,16 @@ int vdbuf_rcnt;
+ struct vdbuf_header vdbuf_header;
+ 
+ #if BOOTWAIT_SCREEN
++extern volatile uint32_t connect_next_ms;   /* connect.c: 次に繋ぎにいく時刻 (0: 試している最中、UINT32_MAX: 予定なし) */
++
++static uint32_t connect_retry_ms(void)
++{
++    uint32_t next = connect_next_ms, now = to_ms_since_boot(get_absolute_time());
++    if (next == 0 || next == UINT32_MAX)
++        return next;
++    return (int32_t)(next - now) > 0 ? next - now : 0;
++}
++
+ static int bw_hds0_read(void *ctx, uint32_t lba, uint8_t *buf)
+ {
+     return hds_cache_read(diskinfo[0].smb2, diskinfo[0].sfh, lba, buf) < 0 ? -1 : 0;
+@@ -547,7 +557,7 @@ int vd_read_block(uint32_t lba, uint8_t *buf)
+                 uint32_t ip = lwip_ntohl(ip4_addr_get_u32(netif_ip4_addr(&cyw43_state.netif[CYW43_ITF_STA])));
+                 bw_reply(lba, buf, !remoteboot && diskinfo[0].type == DTYPE_HDS && diskinfo[0].sfh != NULL,
+                          sysstatus, sysstatus >= STAT_WIFI_CONNECTED ? ip : 0,
+-                         to_ms_since_boot(get_absolute_time()), bw_hds0_read, NULL);
++                         to_ms_since_boot(get_absolute_time()), connect_retry_ms(), bw_hds0_read, NULL);
+                 return 0;
+             }
+ #endif
+diff --git a/test/bootwait/art.txt b/test/bootwait/art.txt
+new file mode 100644
+index 0000000..11566ef
+--- /dev/null
++++ b/test/bootwait/art.txt
+@@ -0,0 +1,9 @@
+++---------------------------------------------------------------------+
++|  #     #    ####    #####    #####    #####    #####       #######  |
++|   #   #    #       #     #  #    ##  #    ##  #    ##           #   |
++|    # #    #        #     #  #   # #  #   # #  #   # #          #    |
++|     #     ######    #####   #  #  #  #  #  #  #  #  #         #     |
++|    # #    #     #  #     #  # #   #  # #   #  # #   #        #      |
++|   #   #   #     #  #     #  ##    #  ##    #  ##    #       #       |
++|  #     #   #####    #####    #####    #####    #####       #######  |
+++---------------------------------------------------------------------+
+diff --git a/test/bootwait/waiter_test.py b/test/bootwait/waiter_test.py
+index 25cfcff..c7bbd27 100644
+--- a/test/bootwait/waiter_test.py
++++ b/test/bootwait/waiter_test.py
+@@ -6,7 +6,7 @@ IOCS (trap #15) は ここで真似る: B_BITSNS (F1)、B_KEYSNS / B_KEYINP (S)
+ SCSIDRV S_READEXT。
+ SCSI の読み込みは Z の Linux と同じく LBA ごとにキャッシュし、同じ LBA は二度と Pico に聞かない。
+ """
+-import ctypes, os, shutil, struct, sys, tempfile
++import ctypes, os, re, shutil, struct, sys, tempfile
+ from unicorn import Uc, UC_ARCH_M68K, UC_MODE_BIG_ENDIAN, UC_HOOK_CODE, UcError
+ from unicorn.m68k_const import *
+ 
+@@ -65,6 +65,7 @@ class Pico:
+         self.lib.bw_state.restype = ctypes.c_char_p
+         self.hds_open = 0
+         self.sysstat = 0
++        self.retry = 0xffffffff                     # 次の再接続までの ms
+         self.image = None
+         self._rd = READFN(self._read)
+ 
+@@ -92,6 +93,7 @@ class Pico:
+             self.lib.bw_stage2_read(lba, b)
+         elif BW_BAND <= lba < BW_BAND_END:
+             self.lib.bw_reply(lba, b, self.hds_open, self.sysstat, IP if self.sysstat >= 2 else 0, uptime,
++                              ctypes.c_uint32(self.retry if callable(self.retry) is False else self.retry()),
+                               self._rd, None)
+         return bytes(b)
+ 
+@@ -110,6 +112,7 @@ class Z:
+         self.noreply = noreply
+         self.clock = clock                          # ONTIME (1/100 秒)
+         self.mono = 0                               # Pico の起動からの時間 (戻らない)
++        self.step = 2                               # ONTIME 1 回で進む 1/100 秒
+         self.cache = {}
+         self.polls = []
+         self.poll_clock = []
+@@ -161,7 +164,7 @@ class Z:
+                 p += 1
+             self.screen.append(bytes(s).decode('cp932', 'replace'))
+         elif fn == 0x7f:                            # ONTIME
+-            self.clock += 2
++            self.clock += self.step
+             self.mono += 2
+             u.reg_write(D[0], self.clock % 8640000)
+             u.reg_write(D[1], 0)
+@@ -250,8 +253,10 @@ def first_boot_flash():
+ def scenario_wait_then_ready(fl):
+     p = Pico(fl)
+     steps = {3: 1, 6: 2, 9: 3}
++    p.retry = 0
+ 
+     def on_poll(z, n):
++        p.retry = {7: 3200, 8: 2700}.get(n, 0)     # 7, 8 回目は「次の再接続まで」
+         if n in steps:
+             p.sysstat = steps[n]
+         if n == 12:
+@@ -267,7 +272,11 @@ def scenario_wait_then_ready(fl):
+     check(r[0] == 'jumped' and r[3] == 0, 'd4 (SCSI ID from the ROM) restored to 0')
+     t = z.text()
+     check('Pico: SMB 接続待ち' in t, 'title shown')
+-    check('#   #   ###    ###    ###    ###    ###        #####' in t and '\\' not in t, 'X68000 Z banner shown (no backslash: it is a yen sign on the X68k)')
++    art = open(os.path.join(HERE, 'art.txt'), encoding='ascii').read().splitlines()
++    check(len(art) >= 8 and all(l in t for l in art) and '\\' not in t, 'X68000 Z banner (%d lines) shown, no backslash (a yen sign on the X68k)' % len(art))
++    secs = [int(m) for m in re.findall(r'経過 (\d+) 秒', t)]
++    check(len(secs) >= 10 and secs == sorted(secs) and secs[-1] > secs[0], 'elapsed seconds count up (%s)' % secs)
++    check('(次の再接続まで 4 秒)' in t and '(次の再接続まで 3 秒)' in t and '(接続を試しています)' in t, 'next-retry countdown and "trying" shown')
+     check('[S] 設定画面 (Wi-Fi / SMB / HDS)' in t and '電源を入れ直してください' in t, 'setup key and power-cycle note shown')
+     anim = [l for l in t.split('\n') if '[Pico W]' in l]
+     check(len(anim) >= 3 and len(set(anim)) >= 3 and all(l.split('[Pico W] ')[1][:24].count('o') == 1 for l in anim),
+@@ -349,6 +358,24 @@ def scenario_ready_at_once(fl):
+     check(r[0] == 'jumped' and r[2] == 0x55 and len(z.polls) == 1, 'already open: chain-loads on the first poll (%r, %d polls)' % (r, len(z.polls)))
+ 
+ 
++def scenario_clock_backwards(fl):
++    """Z の ONTIME が逆に進んでも 0.5 秒ごとに新しい番地を読み、経過秒は Pico の時計で増える"""
++    p = Pico(fl)
++
++    def on_poll(z, n):
++        if n == 10:
++            p.check(hds_image())
++            p.sysstat = 5
++            p.hds_open = 1
++
++    z = Z(p, on_poll)
++    z.step = -2
++    r = z.boot()
++    secs = [int(m) for m in re.findall(r'経過 (\d+) 秒', z.text())]
++    check(r[0] == 'jumped' and len(set(z.polls)) == len(z.polls) and secs == sorted(secs),
++          'backwards ONTIME: fresh polls, seconds still count up (%r, %s)' % (r[0], secs))
++
++
+ def scenario_f1(fl):
+     p = Pico(fl)
+     z = Z(p, f1_at=2)
+@@ -383,6 +410,7 @@ def main():
+     scenario_noreply(fl)
+     scenario_stale(fl)
+     scenario_ready_at_once(fl)
++    scenario_clock_backwards(fl)
+     scenario_f1(fl)
+     scenario_key_s(fl)
+     scenario_nohds(fl)
+-- 
+2.54.0 (Apple Git-157)
+

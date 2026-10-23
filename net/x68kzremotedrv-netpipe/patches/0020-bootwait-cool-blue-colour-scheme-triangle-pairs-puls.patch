@@ -1,0 +1,240 @@
+From 8826efcda080c502b2d20fd4a967b4ccedee84d1 Mon Sep 17 00:00:00 2001
+From: moto <j3tm0t0@gmail.com>
+Date: Thu, 22 Oct 2026 20:13:19 +0900
+Subject: [PATCH] bootwait: cool blue colour scheme; triangle pairs pulse
+ alternately
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- Text palette: 1 deep blue (frame, track line), 2 light blue (connected
+  ● values, subtitle, ◆, key bar in reverse), 3 white (labels, waiting ○
+  values, title); warnings in white reverse (no amber/red/teal).
+- Emblem: wordmark and triangle pair A light cyan-blue (4), pair B blue
+  (12), wordmark shadow navy (8).
+- Palette 12 toggles between blue and a very light blue on every poll
+  (0.5 s), so the two triangle pairs light up in turn; the palette is
+  restored before the IPL / setting UI as before.
+- waiter_test.py: palette 12 takes exactly the two pulse values.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PrGdt1XK1exBgERrMmLA1u
+---
+ driver/bootwait.S            | 22 +++++++++++++++-------
+ driver/bootwait_gen.S        | 17 ++++++++++-------
+ driver/mkbootwait.py         | 25 +++++++++++++++----------
+ test/bootwait/waiter_test.py |  5 ++++-
+ 4 files changed, 44 insertions(+), 25 deletions(-)
+
+diff --git a/driver/bootwait.S b/driver/bootwait.S
+index 4761dfa..ce34f9f 100644
+--- a/driver/bootwait.S
++++ b/driver/bootwait.S
+@@ -159,7 +159,7 @@ redraw:
+ changed:
+     bsr     draw_status
+     lea.l   %pc@(m_changed),%a4
+-    moveq.l #C_WARN+8,%d6               /* 反転の黄 */
++    moveq.l #C_WARN,%d6                 /* 反転 */
+     bsr     draw_msg
+ halt:
+     bra     halt
+@@ -249,6 +249,7 @@ screen_init:
+     moveq.l #C_DIM,%d6
+     lea.l   %pc@(s_frame),%a1
+     bsr     cprint
++    moveq.l #C_OK,%d6
+     lea.l   %pc@(s_sub),%a1
+     bsr     cprint
+     moveq.l #C_TEXT,%d6
+@@ -314,14 +315,14 @@ draw_status:
+     /* Wi-Fi: 0 未接続 / 1 接続中 / 2 以上 接続済み */
+     lea.l   %pc@(e_wifi),%a1
+     lea.l   %pc@(v_wifi0),%a4
+-    moveq.l #C_WARN,%d6
++    moveq.l #C_TEXT,%d6
+     tst.b   %d2
+     beq     1f
+     lea.l   %pc@(v_wifi1),%a4
+     cmpi.b  #1,%d2
+     beq     1f
+     lea.l   %pc@(v_wifi2),%a4
+-    moveq.l #C_DIM,%d6
++    moveq.l #C_OK,%d6
+ 1:
+     bsr     field
+     /* SMB: 2 未満 ― / 2 接続待ち / 3 接続中 / 4 以上 接続済み */
+@@ -331,20 +332,20 @@ draw_status:
+     cmpi.b  #2,%d2
+     bcs     2f
+     lea.l   %pc@(v_smb1),%a4
+-    moveq.l #C_WARN,%d6
++    moveq.l #C_TEXT,%d6
+     cmpi.b  #2,%d2
+     beq     2f
+     lea.l   %pc@(v_smb2),%a4
+     cmpi.b  #3,%d2
+     beq     2f
+     lea.l   %pc@(v_smb3),%a4
+-    moveq.l #C_DIM,%d6
++    moveq.l #C_OK,%d6
+ 2:
+     bsr     field
+     /* HDS: 開けた / 開けない / sysstatus 4 以上 開いています / 待っています */
+     lea.l   %pc@(e_hds),%a1
+     lea.l   %pc@(v_hds3),%a4
+-    moveq.l #C_DIM,%d6
++    moveq.l #C_OK,%d6
+     move.b  V_HDR+H_STATE.w,%d0
+     cmpi.b  #1,%d0
+     beq     3f
+@@ -353,6 +354,7 @@ draw_status:
+     cmpi.b  #3,%d0
+     beq     3f
+     lea.l   %pc@(v_hds1),%a4
++    moveq.l #C_TEXT,%d6
+     cmpi.b  #4,%d2
+     bcc     3f
+     lea.l   %pc@(v_hds0),%a4
+@@ -449,6 +451,12 @@ draw_track:
+     divu.w  #TRACK_LEN,%d0
+     swap    %d0
+     move.w  %d0,%d3                     /* ◆ の位置 */
++    move.w  #PAL12,%d1                  /* 紋章の三角形の組 B を 0.5 秒ごとに明るく / 元に (組 A と交互に光って見える) */
++    btst    #0,%d3
++    beq     3f
++    move.w  #PAL12_PULSE,%d1
++3:
++    move.w  %d1,TPAL+12*2
+     lea.l   %pc@(e_track),%a1
+     moveq.l #C_DIM,%d6
+     bsr     cprint
+@@ -459,7 +467,7 @@ draw_track:
+     cmp.w   %d4,%d3
+     bne     2f
+     lea.l   %pc@(m_packet),%a1
+-    moveq.l #C_WARN,%d6
++    moveq.l #C_OK,%d6
+ 2:
+     bsr     cprint
+     addq.w  #1,%d4
+diff --git a/driver/bootwait_gen.S b/driver/bootwait_gen.S
+index b2bdf12..27ae46f 100644
+--- a/driver/bootwait_gen.S
++++ b/driver/bootwait_gen.S
+@@ -8,17 +8,20 @@ VALUE_W     = 16
+ EXTRA_W     = 50
+ MSG_W       = 80
+ C_DIM       = 1
+-C_WARN      = 2
++C_OK        = 2
+ C_TEXT      = 3
+-C_BAR       = 11
++C_WARN      = 11
++C_BAR       = 10
++PAL12       = 0x697c
++PAL12_PULSE = 0xedbe
+ 
+ pal_set:                                /* (パレット番号 * 2, 色) の組、0xffff で終わり */
+-    .word   2, 0xb1a8
+-    .word   4, 0xcfcc
++    .word   2, 0x38ac
++    .word   4, 0xc33e
+     .word   6, 0xfffe
+-    .word   8, 0x3f0a
+-    .word   16, 0x1a48
+-    .word   24, 0x9fcc
++    .word   8, 0xd3be
++    .word   16, 0x185a
++    .word   24, 0x697c
+     .word   0xffff
+ s_cls:
+     .byte   0x1b,0x5b,0x32,0x4a,0x00
+diff --git a/driver/mkbootwait.py b/driver/mkbootwait.py
+index e7fc91c..2d637a5 100644
+--- a/driver/mkbootwait.py
++++ b/driver/mkbootwait.py
+@@ -23,17 +23,20 @@ COL_LABEL, COL_VALUE, COL_EXTRA = 12, 20, 36
+ VALUE_W, EXTRA_W, MSG_W = 16, 50, 80
+ TRACK_COL, TRACK_LEN = 23, 20   # ◆ が走る線 (全角 20 文字 = 40 桁)
+ 
+-# 文字の色 (IOCS _B_COLOR: 0-3 が色、+8 で反転)。テキストパレット 1-3 を入れ替える
+-C_DIM, C_WARN, C_TEXT, C_BAR = 1, 2, 3, 3 + 8
++# 文字の色 (IOCS _B_COLOR: 0-3 が色、+8 で反転)。テキストパレット 1-3 を入れ替える (青系)
++#   C_DIM 深い青 (枠・線)、C_OK 水色 (つながった・副題・◆)、C_TEXT 白 (見出し・待ち)、C_WARN 白の反転 (知らせ)、C_BAR 水色の反転
++C_DIM, C_OK, C_TEXT = 1, 2, 3
++C_WARN, C_BAR = C_TEXT + 8, C_OK + 8
+ # テキストパレット (GRB 各 5 ビット + I)。待ち IPL が始めに控えて書き、本物の IPL に飛ぶ前に戻す
+-PALETTE = {
+-    1: (6, 22, 20),             # 青緑 (枠・副題・つながった ●)
+-    2: (31, 25, 6),             # 黄 (待ち ○・注意)
++PALETTE = {                     # (R, G, B) 各 0-31
++    1: (2, 7, 22),              # 深い青 (枠・線)
++    2: (12, 24, 31),            # 水色 (つながった ●・副題・◆)
+     3: (31, 31, 31),            # 白
+-    4: (28, 7, 5),              # 紋章の赤
+-    8: (9, 3, 4),               # 影
+-    12: (31, 19, 6),            # 紋章の明るい橙
++    4: (14, 26, 31),            # 紋章: 字と三角形の組 A (明るい水色)
++    8: (1, 3, 13),              # 紋章: 字の影 (紺)
++    12: (5, 13, 30),            # 紋章: 三角形の組 B (青)。待っている間は PULSE と交互に光る
+ }
++PULSE = (22, 29, 31)            # 組 B が明るくなるとき
+ 
+ 
+ def grb(r, g, b):
+@@ -109,7 +112,7 @@ def strings():
+ 
+ def emblem(size):
+     """中心で向き合う 4 つの三角形の X (隙間あり)。各三角形は頂点が中心のそば、底辺が角を斜めに切る線。
+-    左上・右下は明るい橙 (両プレーン)、右上・左下は赤 (プレーン 2 だけ)"""
++    左上・右下は組 B (両プレーン = 色 12)、右上・左下は組 A (プレーン 2 だけ = 色 4、字と同じ)"""
+     img = Image.new('L', (size, size), 0)
+     d = ImageDraw.Draw(img)
+     m = size - 1
+@@ -190,7 +193,9 @@ def main():
+              'ART_OFF     = %d                  /* テキスト VRAM の中の位置: 行 * 128 + 桁 */' % ((ART_ROW - 1) * 16 * 128 + xb),
+              'TRACK_LEN   = %d' % TRACK_LEN,
+              'VALUE_W     = %d' % VALUE_W, 'EXTRA_W     = %d' % EXTRA_W, 'MSG_W       = %d' % MSG_W,
+-             'C_DIM       = %d' % C_DIM, 'C_WARN      = %d' % C_WARN, 'C_TEXT      = %d' % C_TEXT, 'C_BAR       = %d' % C_BAR,
++             'C_DIM       = %d' % C_DIM, 'C_OK        = %d' % C_OK, 'C_TEXT      = %d' % C_TEXT,
++             'C_WARN      = %d' % C_WARN, 'C_BAR       = %d' % C_BAR,
++             'PAL12       = 0x%04x' % grb(*PALETTE[12]), 'PAL12_PULSE = 0x%04x' % grb(*PULSE),
+              '']
+     lines.append('pal_set:                                /* (パレット番号 * 2, 色) の組、0xffff で終わり */')
+     for i, (r, g, b) in sorted(PALETTE.items()):
+diff --git a/test/bootwait/waiter_test.py b/test/bootwait/waiter_test.py
+index 164b00c..138e22e 100644
+--- a/test/bootwait/waiter_test.py
++++ b/test/bootwait/waiter_test.py
+@@ -383,8 +383,10 @@ def scenario_wait_then_ready(fl):
+     z = Z(p, on_poll)
+     z.art_ok = z.pal_ok = z.cur_off = False
+     z.bar_attr = 0
++    z.pal12 = set()
+ 
+     def on_snap(zz, n):
++        zz.pal12.add(struct.unpack('>H', bytes(zz.uc.mem_read(TPAL + 24, 2)))[0])
+         if n == 8:                                  # 待っている最中の画面を確かめて PNG にする
+             W_, H_, a2, a3 = G.art()
+             off = (G.ART_ROW - 1) * 16 * 128 + (768 - W_) // 2 // 8
+@@ -395,7 +397,7 @@ def scenario_wait_then_ready(fl):
+                     ok &= row == im.tobytes()[y * W_ // 8:(y + 1) * W_ // 8]
+             zz.art_ok = ok
+             pal = struct.unpack('>16H', bytes(zz.uc.mem_read(TPAL, 32)))
+-            zz.pal_ok = all(pal[i] == G.grb(*c) for i, c in G.PALETTE.items())
++            zz.pal_ok = all(pal[i] == G.grb(*c) or (i == 12 and pal[i] == G.grb(*G.PULSE)) for i, c in G.PALETTE.items())
+             zz.cur_off = not zz.scr.cur
+             zz.bar_attr = max(zz.scr.attr_at(G.ROW_BAR, c) for c in range(1, 97))
+             render(zz, PREVIEW)
+@@ -436,6 +438,7 @@ def scenario_wait_then_ready(fl):
+     check('S: 設定画面' in T(bar) and '電源を入れ直してください' in T(bar) and z.bar_attr & 8, 'bottom bar in reverse video')
+     check(z.art_ok, 'emblem bitmap in text VRAM planes 2-3 while waiting')
+     check(z.pal_ok, 'waiter palette set while waiting')
++    check(z.pal12 == {G.grb(*G.PALETTE[12]), G.grb(*G.PULSE)}, 'triangle pair B pulses (palette 12: %s)' % sorted(map(hex, z.pal12)))
+     check(z.cur_off, 'text cursor hidden while waiting')
+     j = getattr(z, 'at_jump', {})
+     check(j and all(j.values()), 'before the real IPL: planes 2-3 clear, palette restored, cursor on, colour 3, screen cleared (%s)' % j)
+-- 
+2.54.0 (Apple Git-157)
+
