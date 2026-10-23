@@ -3,6 +3,7 @@
  * x68k_shim.c が #include する (select シムがキーの読み取り kbuf_fill / in_ready を使う)。
  * ホストでの試験 (tests/vcshim.c) は IOCS とチャネルを真似て、このファイルだけを組む。
  */
+#include <signal.h>
 /* --- VT100 端末 (term/vt100) --- */
 #include "vt100.h"
 #include <stdarg.h>
@@ -401,7 +402,13 @@ int x68k_chan_write(int chan, int fd, const void *p, unsigned int n)
 #endif
   if (vt_active) {
     vcon_t *v = &vc[k];
+    static int lastc, lastr;
+    int c, r;
     vt_write((const unsigned char *)p, (int)n);
+    /* zos.x のペインの大きさが変わったら (term/vt100 が枠についていく)、相手にも窓の大きさを送る (dropbear の SIGWINCH) */
+    vt_get_size(&c, &r);
+    if (lastc && (c != lastc || r != lastr)) raise(SIGWINCH);
+    lastc = c; lastr = r;
     v->kbuf_len += vt_reply(v->kbuf + v->kbuf_len, (int)sizeof v->kbuf - v->kbuf_len);   /* DSR/DA の応答はこのチャネルへ */
     return (int)n;
   }

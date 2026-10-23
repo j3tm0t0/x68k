@@ -79,6 +79,9 @@ typedef unsigned int u32;  /* 32bit 転送用 (ホストの long は 8 バイト
 static volatile unsigned char *vt_base = TVRAM_PHYS;
 static int vt_pane;            /* 枠の中に描いている */
 static int pane_x, pane_y, pane_w, pane_h;   /* 枠 (桁・行) */
+static int pane_dyn;           /* 起動時に枠だった: vt_write のたびに枠を見直す (-DVT_VCONS のとき) */
+static int pane_dynhid;        /* 枠が見えていないので、こちらで裏にしている */
+static int pane_read(int *px, int *py, int *pw, int *ph);
 #define TVRAM vt_base
 
 /* ---- セル ---- */
@@ -703,6 +706,18 @@ static void rotate_rows(cell_t **t, unsigned char *lo, unsigned char *hi, int a,
 }
 
 /* スクロール領域 [top,bot] を n 行上へ (正: 上スクロール / 負: 下スクロール) */
+/* 枠の中 (vt_pane) では TXRASCOPY (全幅) が使えず、VRAM をソフトで写す (4 プレーン x 行数 x 16 ライン)。1 行送るたびに
+ * 写すと、ssh.x で 1 行ずつ流れる出力が全面の 6 倍遅かった (Z 実機)。そこで上へのスクロールは VRAM を動かさずに
+ * 行数をためておき (vs_pend)、次に VRAM に描く前 (flush の頭など) にまとめて 1 回だけ写す。論理画面と drawn は
+ * その場で回し、空いた行の drawn は「分からない」にする (まとめて写した後のそこの絵は 1 行ずつ写した場合と違うので)。 */
+static int vs_pend, vs_top, vs_bot;
+static void vs_apply(void)
+{
+  int n = vs_pend, h = vs_bot - vs_top + 1;
+  vs_pend = 0;
+  if (n > 0 && n < h) vram_move_lines(vs_top * CH, (vs_top + n) * CH, (h - n) * CH);
+}
+
 static void scroll(int n)
 {
   int r, col, keep, m;
@@ -724,6 +739,22 @@ static void scroll(int n)
       for (col = 0; col < COLS; col++) l[col] = clr_cell;
       TOUCH(rr);
     }
+    return;
+  }
+  if (vs_pend && (n < 0 || vs_top != top || vs_bot != bot)) vs_apply();
+  if (vt_pane && n > 0 && keep > 0) {   /* 枠の中の上スクロール: VRAM は後でまとめて (vs_apply) */
+    cell_t z;
+    rotate_rows(cur, rlo, rhi, top, bot, n);
+    rotate_rows(drawn, 0, 0, top, bot, n);
+    z.cp = 0xffff; z.at = F_EMOJI | F_WIDECONT;
+    for (r = 0; r < m; r++) {
+      int rr = bot - m + 1 + r;
+      cell_u32 *l = (cell_u32 *)cur[rr];
+      for (col = 0; col < COLS; col++) { l[col] = clr_cell; drawn[rr][col] = z; }
+      TOUCH(rr);
+    }
+    vs_top = top; vs_bot = bot; vs_pend += n;
+    if (vs_pend > bot - top + 1) vs_pend = bot - top + 1;
     return;
   }
   for (r = 0; r < m; r++) {
@@ -786,6 +817,7 @@ static NOINLINE void flush(void)
   if (VT_HIDDEN) return;   /* 裏の端末は描かない (表に出すとき vt_con_visible が全面を描く) */
   PROF(4, 1);
   s = sup_enter();
+  if (vs_pend) vs_apply();
   if (csr_shown) { cursor_xor(csr_x, csr_y); csr_shown = 0; }   /* 先にカーソルを消す */
   for (r = 0; r < ROWS; r++) {
     cell_t *lrow, *drow;
@@ -1542,6 +1574,26 @@ static int csi_feed(const unsigned char *p, int n, int fresh)
   return k;
 }
 
+#if defined(VT_VCONS) && !defined(VT_ZOS)
+/* zos.x のペインの中: ペインの枠が変わった (割り直し・最大化) / 隠れた (裏のタブ) / また見えたら、それに合わせる。
+ * 隠れている間は論理画面だけ (VRAM に描かない)。見えたら新しい枠に全面を描き直す。ssh.x の仮想コンソールで
+ * 裏にしている端末 (vt_hidden で、こちらが隠したのではないもの) には触らない */
+void vt_con_rect(int col, int row, int w, int h);
+void vt_con_visible(int on);
+static void pane_follow(void)
+{
+  int x = pane_x, y = pane_y, w = pane_w, h = pane_h, r;
+  if (vt_hidden && !pane_dynhid) return;
+  r = pane_read(&x, &y, &w, &h);
+  if (r == 2) { if (!pane_dynhid) { vt_hidden = 1; pane_dynhid = 1; csr_shown = 0; } return; }
+  if (r != 1) return;
+  if (pane_dynhid || x != pane_x || y != pane_y || w != pane_w || h != pane_h) {
+    pane_dynhid = 0;
+    vt_con_rect(x, y, w, h);
+    vt_con_visible(1);
+  }
+}
+#endif
 void vt_write(const unsigned char *p, int n)
 {
   int i, sup;
@@ -1551,6 +1603,9 @@ void vt_write(const unsigned char *p, int n)
   sup = sup_enter();
   /* 解析中の scroll() が VRAM をラスタ単位で動かすので、描いてあるソフトカーソルを先に消す
    * (消さないとカーソルの塊ごとスクロールし、flush の消去 XOR が旧位置に塊を残す。実機で確認)。 */
+#if defined(VT_VCONS) && !defined(VT_ZOS)
+  if (pane_dyn) pane_follow();   /* カーソルを消すより先に (隠れたなら、そこはもうほかのペインの絵) */
+#endif
   if (csr_shown) { cursor_xor(csr_x, csr_y); csr_shown = 0; }
   for (i = 0; i < n; ) {
     unsigned char b = p[i];
@@ -1637,13 +1692,15 @@ void vt_host_pane(int x, int y, int w, int h) { host_pane_x = x; host_pane_y = y
 #endif
 /* _B_CONSOL (IOCS $2E) を d1 = d2 = -1 で呼ぶと、変えずに今の枠を d1 = 原点 (x ドット << 16 | y ドット)、
  * d2 = (桁数-1) << 16 | (行数-1) で返す */
-static void pane_probe(void)
+/* 0 = 全面 (枠ではない)、1 = 枠 (x,y,w,h)、2 = 枠だが今は見えていない (zos.x の裏のタブ・最大化で隠れたペイン。
+ * zos.x は d1 = -1 で知らせ、d2 は大きさ) */
+static int pane_read(int *px, int *py, int *pw, int *ph)
 {
   long org, size;
   int x, y, w, h;
 #ifdef VT_HOSTTEST
-  if (host_pane_x < 0) { vt_pane = 0; return; }
-  org = ((long)host_pane_x * CW << 16) | (host_pane_y * CH);
+  if (host_pane_x == -1) return 0;
+  org = host_pane_x == -2 ? -1L : ((long)host_pane_x * CW << 16) | (host_pane_y * CH);
   size = ((long)(host_pane_w - 1) << 16) | (host_pane_h - 1);
 #else
   {
@@ -1654,15 +1711,25 @@ static void pane_probe(void)
     org = d1; size = d2;
   }
 #endif
-  x = ((org >> 16) & 0xffff) / CW; y = (org & 0xffff) / CH;
   w = ((size >> 16) & 0xffff) + 1; h = (size & 0xffff) + 1;
-  vt_pane = 0;
-  if (w < MAXCOLS || x != 0) {
+  if (org == -1L) {
+    if (w >= 8 && w <= MAXCOLS && h >= 4 && h <= MAXROWS) { *pw = w; *ph = h; return 2; }
+    return 0;
+  }
+  x = ((org >> 16) & 0xffff) / CW; y = (org & 0xffff) / CH;
+  if (w < MAXCOLS || x != 0 || y != 0) {   /* zos.x のペインはいちばん上の行 (タブの列) より下 */
     /* 枠らしいものだけ (左端が 4 桁の倍数、画面に収まる) */
     if ((x & 3) == 0 && w >= 8 && h >= 4 && x + w <= MAXCOLS && y + h <= MAXROWS) {
-      vt_pane = 1; pane_x = x; pane_y = y; pane_w = w; pane_h = h;
+      *px = x; *py = y; *pw = w; *ph = h; return 1;
     }
   }
+  return 0;
+}
+static void pane_probe(void)
+{
+  int x = 0, y = 0, w = MAXCOLS, h = MAXROWS, r = pane_read(&x, &y, &w, &h);
+  vt_pane = 0; pane_dyn = 0; pane_dynhid = 0;
+  if (r) { vt_pane = 1; pane_x = x; pane_y = y; pane_w = w; pane_h = h; pane_dyn = 1; pane_dynhid = (r == 2); }
 }
 
 void vt_init(int cols, int rows)
@@ -1677,6 +1744,11 @@ void vt_init(int cols, int rows)
   if (cols > MAXCOLS) cols = MAXCOLS;
   if (rows > MAXROWS) rows = MAXROWS;
   pane_probe();
+#if defined(VT_VCONS) && !defined(VT_ZOS)
+  if (pane_dynhid) vt_hidden = 1;
+#else
+  pane_dyn = pane_dynhid = 0;
+#endif
   vt_base = TVRAM_PHYS;
   if (vt_pane) {
     vt_base = TVRAM_PHYS + (unsigned long)pane_y * CH * VBYTES + pane_x;
@@ -1703,7 +1775,7 @@ void vt_init(int cols, int rows)
   palette_setup();
   _iocs_b_curoff();           /* BIOS のカーソルは使わない (自前で描く) */
   for (r = 0; r < ROWS; r++)
-    { for (c = 0; c < COLS; c++) { clear_cell(&cur[r][c]); drawn[r][c] = cur[r][c]; } row_fill(r, c_bg); }
+    { for (c = 0; c < COLS; c++) { clear_cell(&cur[r][c]); drawn[r][c] = cur[r][c]; } if (!VT_HIDDEN) row_fill(r, c_bg); }
   for (r = 0; r < MAXROWS; r++) { rlo[r] = MAXCOLS; rhi[r] = 0; }
   sa_off();
   sup_leave(s);
@@ -1841,6 +1913,7 @@ int vt_con_scrsize(void) { return (int)(3 * sizeof store_main); }   /* main・al
 
 void vt_con_save(void *st)
 {
+  if (vs_pend) { int s = sup_enter(); vs_apply(); sup_leave(s); }
   vc_state *s = (vc_state *)st;
 #define X(v) s->v = v;
   VC_VARS
@@ -1899,6 +1972,7 @@ static void vc_unknown(int r, int c0, int c1)
 /* 表に出す (VRAM を全部この端末の絵に描き直す) / 裏に回す (以後 VRAM に描かない) */
 void vt_con_visible(int on)
 {
+  vs_pend = 0;   /* 描き直す (表) か描かない (裏) ので、ためたスクロールは要らない */
   int r, s;
   if (!on) { vt_hidden = 1; csr_shown = 0; return; }
   vt_hidden = 0; csr_shown = 0;   /* VRAM のカーソル (前の端末の) は全面の描き直しで消える */
@@ -1915,6 +1989,7 @@ void vt_con_visible(int on)
 void vt_con_rect(int col, int row, int w, int h)
 {
   int r;
+  vs_pend = 0;
   if (w > MAXCOLS) w = MAXCOLS;
   if (h > MAXROWS) h = MAXROWS;
   pane_x = col; pane_y = row; pane_w = w; pane_h = h;

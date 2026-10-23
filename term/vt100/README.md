@@ -61,6 +61,13 @@ VRAM 1 枚で複数の端末を切り替える (ssh.x の Ctrl+F1..F4)。端末�
   端末ごとの状態に入れた (`vt_con_scrsize` は main・alt・drawn の 3 面)。`vt_con_rect(桁,行,幅,高さ)` でいまの端末を枠に置き、
   `vt_con_visible(1)` で描く。表の端末どうしは drawn が別なので干渉しない。`vt_jis_ucs` は JIS → Unicode (Shift_JIS の出力を UTF-8 にする)。
   試験: run.sh の 8 (`tests/mptest.c` 4 枚に混ぜて流し途中で枠を入れ替え、`tests/mpcmp.py` で各枠 = 単独の結果)
+- **枠についていく** (`-DVT_VCONS` で `VT_ZOS` でないもの = ssh.x): 起動時に枠だったら、`vt_write` のたびに `_B_CONSOL` を見直す。
+  zos.x は表に出ていないペインには d1 = -1 を返すので、その間は論理画面だけ (VRAM に描かない)。枠が変わったら (割り直し・最大化)
+  新しい枠に全面を描き直す。ssh.x は大きさが変わったら SIGWINCH を起こし、dropbear が相手に窓の大きさを送る。
+  試験: run.sh の 9 (`tests/dyntest.c`)。zos.x 側は x68k-zos の kernel/tests/ssh_test.sh (MODE=tabs)
+- **枠の中のスクロールはまとめる**: 枠の中では TXRASCOPY (全幅) を使えず VRAM をソフトで写すので、1 行送るたびに写すと
+  Z 実機で ssh.x の 1 行ずつの出力が全面の 6 倍遅かった (100KB で 409 秒 / 69 秒)。上へのスクロールは行数をためて、
+  VRAM に描く前にまとめて 1 回写す (`vs_pend`)。全面と同じ速さになった (68 秒)
 
 ## 画面と描画
 - 既定 96x32 (768x512, 8x16 フォント)。`vt_init(cols,rows)` で指定可 (横最大 96・縦最大 32)。

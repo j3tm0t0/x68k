@@ -134,5 +134,15 @@ if cc -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=undefined -DVT_H
 else
   fail "multipane (mptest をコンパイルできない)"
 fi
+# ---- 9. zos.x のペインの枠の変化についていく (ssh.x、-DVT_VCONS): 隠れる・別の枠で見える (tests/dyntest.c) ----
+if cc -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=undefined -DVT_HOSTTEST -DVT_VCONS -I. -o "$OUT/dyntest" tests/dyntest.c vt100.c 2>/dev/null ||
+   cc -O2 -DVT_HOSTTEST -DVT_VCONS -I. -o "$OUT/dyntest" tests/dyntest.c vt100.c 2>/dev/null; then
+  for n in shell app_vimjp app_top; do
+    if msg=$("$OUT/dyntest" ${CGOPT[@]+"${CGOPT[@]}"} tests/fixtures/$n.rec 2>&1); then pass "pane follow $n"
+    else fail "pane follow $n"; echo "$msg" | tail -5; fi
+  done
+else
+  fail "pane follow (dyntest をコンパイルできない)"
+fi
 echo "---- $npass PASS, $nfail FAIL  (PNG: $OUT/*.png)"
 [ $nfail = 0 ]
