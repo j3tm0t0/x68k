@@ -1,0 +1,27 @@
+--- dropbear-2022.83/cli-authinteract.c
++++ x68k/cli-authinteract.c
+@@ -39,6 +39,16 @@
+ 	char buf[DROPBEAR_MAX_CLI_PASS];
+ 	char* ret = NULL;
+ 
++#if DROPBEAR_X68K
++	/* x68k: /dev/tty は無い。エコー付きでキーを読む (x68k_pass.c)。ESC / Ctrl-C は取り消し */
++	(void)tty;
++	ret = x68k_readpass(prompt, 1);
++	if (ret == NULL) {
++		dropbear_close("Interrupted.");
++	}
++	strlcpy(buf, ret, sizeof(buf));
++	m_burn(ret, strlen(ret));
++#else
+ 	fprintf(stderr, "%s", prompt);
+ 
+ 	tty = fopen(_PATH_TTY, "r");
+@@ -48,6 +58,7 @@
+ 	} else {
+ 		ret = fgets(buf, sizeof(buf), stdin);
+ 	}
++#endif
+ 
+ 	if (ret == NULL) {
+ 		response = m_strdup("");
