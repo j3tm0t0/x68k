@@ -160,6 +160,7 @@ static u32 clr_cell;          /* 空白 + c_fg/c_bg そのまま (bold/reverse �
 static int decckm;            /* アプリケーションカーソルキーモード */
 static int decawm = 1;        /* 自動折り返し (既定 ON) */
 static int cur_vis = 1;       /* カーソル表示 */
+static int csr_ok = 1;        /* この端末のカーソルを描いてよい (zos.x は前面のペインだけ 1。vt_con_cursor) */
 static int alt_active;        /* 代替画面を表示中か */
 static int g_special[2];      /* G0/G1 が DEC 特殊グラフィックか */
 static int gl;                /* いま GL に割り当てている G 番号 (0/1) */
@@ -1049,7 +1050,7 @@ static NOINLINE void flush(void)
     }
   }
   sa_off();
-  if (cur_vis) { cursor_xor(cx, cy); csr_shown = 1; csr_x = cx; csr_y = cy; }
+  if (cur_vis && csr_ok) { cursor_xor(cx, cy); csr_shown = 1; csr_x = cx; csr_y = cy; }
   sup_leave(s);
 }
 
@@ -2094,7 +2095,7 @@ unsigned long vt_emoji_cp(int idx) { return (idx >= 0 && idx < EMOJITAB_N) ? emo
   X(decckm) X(decawm) X(cur_vis) X(alt_active) X(gl) X(sv_cx) X(sv_cy) X(sv_fg) X(sv_bg) X(sv_bold) X(sv_ul) X(sv_rev) \
   X(sv_sp0) X(sv_sp1) X(sv_gl) X(csr_shown) X(csr_x) X(csr_y) X(state) X(csi_priv) X(csi_inter) X(nparam) X(str_kind) \
   X(str_esc) X(str_len) X(cs_which) X(u_cp) X(u_need) X(outq_len) X(vt_hidden) \
-  X(vt_base) X(COLS) X(ROWS) X(vt_pane) X(pane_x) X(pane_y) X(pane_w) X(pane_h) X(pane_px) X(pane_py)
+  X(vt_base) X(COLS) X(ROWS) X(vt_pane) X(pane_x) X(pane_y) X(pane_w) X(pane_h) X(pane_px) X(pane_py) X(csr_ok)
 #define VC_ARRS X(g_special) X(tabstop) X(param) X(str_buf) X(outq) X(rows_main) X(rows_alt) X(drawn)
 typedef struct {
 #define X(v) __typeof__(v) v;
@@ -2195,6 +2196,17 @@ void vt_con_rect(int col, int row, int w, int h)
   clamp_cursor();
   csr_shown = 0;
   for (r = 0; r < ROWS; r++) vc_unknown(r, 0, COLS - 1);
+}
+
+/* いまの端末のカーソルを描く / 描かない (zos.x の前面のペインの印: 前面のペインだけカーソルを出す) */
+void vt_con_cursor(int on)
+{
+  int s = sup_enter();
+  if (!on && csr_shown && !vt_hidden) cursor_xor(csr_x, csr_y);
+  if (!on) csr_shown = 0;
+  csr_ok = on ? 1 : 0;
+  if (on) flush();
+  sup_leave(s);
 }
 
 /* JIS X 0208 -> Unicode (kanjitab の逆。最初の呼び出しで 94x94 の表を作る)。見つからなければ 0。
