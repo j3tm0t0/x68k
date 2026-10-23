@@ -1,0 +1,84 @@
+From 8f9162457d1b5edbb9e26632bd9e1ff29a4329dc Mon Sep 17 00:00:00 2001
+From: moto <j3tm0t0@gmail.com>
+Date: Thu, 22 Oct 2026 20:52:26 +0900
+Subject: [PATCH] =?UTF-8?q?bootwait:=20last=20stage=20label=20BOOT=20(ASCI?=
+ =?UTF-8?q?I)=20instead=20of=20=E8=B5=B7=E5=8B=95?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PrGdt1XK1exBgERrMmLA1u
+---
+ driver/bootwait.S            | 2 +-
+ driver/bootwait_gen.S        | 2 +-
+ driver/mkbootwait.py         | 4 ++--
+ test/bootwait/waiter_test.py | 4 ++--
+ 4 files changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/driver/bootwait.S b/driver/bootwait.S
+index a9efafb..4d45523 100644
+--- a/driver/bootwait.S
++++ b/driver/bootwait.S
+@@ -481,7 +481,7 @@ calc_stage:
+ 1:
+     rts
+ 
+-/* 進み具合の行 "Wi-Fi ━━ SMB ━━ HDS ━━ 起動" (d7 = 今の段階)。済んだ段階は水色、今の段階は見出しが白で、
++/* 進み具合の行 "Wi-Fi ━━ SMB ━━ HDS ━━ BOOT" (d7 = 今の段階)。済んだ段階は水色、今の段階は見出しが白で、
+    その区間に ◆ (0.5 秒ごとに動く)。SMB を待っている間は区間が次の再接続までの残りに合わせて埋まる。
+    まだの段階はくすんだ青。ロゴの輪 (色 12) もここで 0.5 秒ごとに明るく / 元に */
+ draw_stages:
+diff --git a/driver/bootwait_gen.S b/driver/bootwait_gen.S
+index b66d3b4..72be0e9 100644
+--- a/driver/bootwait_gen.S
++++ b/driver/bootwait_gen.S
+@@ -111,7 +111,7 @@ m_stage1:
+ m_stage2:
+     .byte   0x20,0x48,0x44,0x53,0x20,0x00
+ m_stage3:
+-    .byte   0x20,0x8b,0x4e,0x93,0xae,0x00
++    .byte   0x20,0x42,0x4f,0x4f,0x54,0x00
+ v_wifi0:
+     .byte   0x81,0x9b,0x20,0x96,0xa2,0x90,0xda,0x91,0xb1,0x20,0x20,0x20,0x20,0x20,0x20,0x20
+     .byte   0x00
+diff --git a/driver/mkbootwait.py b/driver/mkbootwait.py
+index 9488129..94cb868 100644
+--- a/driver/mkbootwait.py
++++ b/driver/mkbootwait.py
+@@ -33,8 +33,8 @@ COL_LABEL = (96 - BLOCK_W) // 2 + 1
+ COL_VALUE, COL_EXTRA = COL_LABEL + 8, COL_LABEL + 8 + VALUE_W
+ MSG_W = 66                      # 知らせは状態欄の左にそろえ、枠の手前まで
+ # ◆ の行: "[Pico W]" 8 + 空き 2 + 線 (全角 20 = 40 桁) + 空き 2 + "[X68000 Z]" 10 = 62 桁を中央に
+-# 進み具合の行: "Wi-Fi ━━… SMB ━━… HDS ━━… 起動"。区間は全角 STAGE_SEG 文字。真ん中に
+-STAGE_LABELS = ['Wi-Fi ', ' SMB ', ' HDS ', ' 起動']
++# 進み具合の行: "Wi-Fi ━━… SMB ━━… HDS ━━… BOOT"。区間は全角 STAGE_SEG 文字。真ん中に
++STAGE_LABELS = ['Wi-Fi ', ' SMB ', ' HDS ', ' BOOT']
+ STAGE_SEG = 8
+ RETRY_MS = 5000                 # 接続の繰り直しの間 (connect.c)。SMB の区間はこれに対する残りで埋まる
+ STAGE_ROW_W = sum(len(l.encode('cp932')) for l in STAGE_LABELS) + STAGE_SEG * 2 * 3
+diff --git a/test/bootwait/waiter_test.py b/test/bootwait/waiter_test.py
+index 83e3b6d..b04e2f8 100644
+--- a/test/bootwait/waiter_test.py
++++ b/test/bootwait/waiter_test.py
+@@ -448,7 +448,7 @@ def scenario_wait_then_ready(fl):
+         seg_start.append(x)
+         x += G.STAGE_SEG * 2
+     row_t = T(last[G.ROW_TRACK - 1][4:92]).strip()
+-    check(all(l.strip() in row_t for l in G.STAGE_LABELS), 'stage row shows Wi-Fi / SMB / HDS / 起動 (%r)' % row_t)
++    check(all(l.strip() in row_t for l in G.STAGE_LABELS), 'stage row shows Wi-Fi / SMB / HDS / BOOT (%r)' % row_t)
+     k = [i for i, x in enumerate(S) if '(次の再接続まで 4 秒)' in T(x[G.ROW_SMB - 1])][0]
+     at, tx = z.snapattr[k][G.ROW_TRACK - 1], S[k][G.ROW_TRACK - 1]
+     fill = G.STAGE_SEG - -(-3200 * G.STAGE_SEG // G.RETRY_MS)
+@@ -463,7 +463,7 @@ def scenario_wait_then_ready(fl):
+     check(len(wpos) >= 2, 'packet moves within the current (Wi-Fi) segment (%s)' % sorted(wpos))
+     ch, ats = z.final_stage
+     lit = [ats[c] for c in range(c0, c0 + G.STAGE_ROW_W) if ch[c] not in (' ', '')]
+-    check(lit and set(lit) == {G.C_OK}, 'all stages lit (incl. 起動) before the hand-over')
++    check(lit and set(lit) == {G.C_OK}, 'all stages lit (incl. BOOT) before the hand-over')
+     check(z.jump_ontime - z.poll_ontime >= 50, 'lit stages shown for >= 0.5 s (%d cs)' % (z.jump_ontime - z.poll_ontime))
+     # 左右の釣り合い: 状態欄の塊・◆ の行・下のバーが画面 (= 枠) の中央にある
+     def span(rs):
+-- 
+2.54.0 (Apple Git-157)
+

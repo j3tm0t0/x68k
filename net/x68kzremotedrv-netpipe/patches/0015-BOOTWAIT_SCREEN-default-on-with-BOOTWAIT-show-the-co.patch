@@ -1,0 +1,1475 @@
+From f141fa620ad3e8f7e4529151b4708c7bf8ee057f Mon Sep 17 00:00:00 2001
+From: moto <j3tm0t0@gmail.com>
+Date: Thu, 22 Oct 2026 19:36:55 +0900
+Subject: [PATCH] BOOTWAIT_SCREEN (default on with BOOTWAIT): show the
+ connection wait on the Z's screen
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The Z's Linux reads HDS LBA 0-31 (signature, IPL, partition table, SCSI
+driver) in one 16 KB readahead and serves soft resets from that cache,
+so anything fake returned there while the HDS is down stays for the
+whole power cycle. So:
+
+- After each successful open of the boot HDS (ID 0), compare LBA 0-31
+  with a snapshot in flash at 0x1e0000 (4 KB header + 16 KB, keyed by the
+  config HDS path and file size, FNV-1a over the data; header written
+  last) and rewrite it only when different. Done before the open handle
+  is published to the USB task. Writes go through flash_safe_execute.
+- While the HDS is not open and a valid snapshot exists for that path,
+  serve LBA 0-31 from it exactly, except LBA 2 (IPL) = driver/bootwait1.S
+  and LBA 3 = zeros. Without a snapshot: 0014's NOT READY as before.
+- bootwait1.S keeps the ROM's d4, loads the waiter (driver/bootwait.S,
+  < 4 KB, static) from ID 6 LBA 0x80 to $2800 and jumps there.
+- The waiter shows "Pico: SMB 接続待ち… (Wi-Fi/SMB を確認してください)",
+  the Wi-Fi/SMB state, the Pico's IP, elapsed seconds and a spinner, and
+  polls ID 6 LBA 0x40000-0xfffff every 0.5 s at a fresh, time-derived,
+  32 KB-apart slot. Replies (src/bootwait_proto.h) echo the LBA and the
+  Pico's uptime so cached old answers are ignored.
+  - HDS open and equal to the snapshot: the reply carries the real IPL
+    (from the snapshot) and its checksum; the waiter copies it to $2000,
+    restores d4 and jumps.
+  - HDS different: "HDS が変わりました。Z の電源を入れ直してください" and
+    stop (never boot with a stale partition table); the snapshot is
+    updated for the next power-on.
+  - F1: the setting menu, as hdsboot.S.
+- status: snap=none|stored|ok|updated|served|changed.
+- test/bootwait: waiter_test.py runs both IPL halves on Unicorn (68000)
+  against the real bootwait.c built for the host, with a Linux-like
+  page cache: snapshot write/reuse/keying/corruption, wait -> ready
+  chain-load with d4, changed -> stop, SCSI errors, stale cached replies,
+  F1, HDS missing.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PrGdt1XK1exBgERrMmLA1u
+---
+ CMakeLists.txt               |   7 +
+ driver/Makefile              |   8 +-
+ driver/bootwait.S            | 312 +++++++++++++++++++++++++++++
+ driver/bootwait1.S           |  46 +++++
+ src/bootwait.c               | 216 ++++++++++++++++++++
+ src/bootwait.h               |  31 +++
+ src/bootwait_pico.c          |  53 +++++
+ src/bootwait_proto.h         |  28 +++
+ src/connect.c                |  33 ++++
+ src/hidkbd.c                 |   5 +
+ src/msclog.c                 |   9 +-
+ src/virtual_disk.c           |  34 +++-
+ test/bootwait/.gitignore     |   1 +
+ test/bootwait/Makefile       |  15 +-
+ test/bootwait/fakeflash.c    |  29 +++
+ test/bootwait/waiter_test.py | 372 +++++++++++++++++++++++++++++++++++
+ 16 files changed, 1192 insertions(+), 7 deletions(-)
+ create mode 100644 driver/bootwait.S
+ create mode 100644 driver/bootwait1.S
+ create mode 100644 src/bootwait.c
+ create mode 100644 src/bootwait.h
+ create mode 100644 src/bootwait_pico.c
+ create mode 100644 src/bootwait_proto.h
+ create mode 100644 test/bootwait/fakeflash.c
+ create mode 100644 test/bootwait/waiter_test.py
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 3d20810..5df720b 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -89,6 +89,13 @@ option(BOOTWAIT "Answer NOT READY until the HDS is open instead of blocking / re
+ if(BOOTWAIT)
+     target_compile_definitions(${PROJECT_NAME} PRIVATE BOOTWAIT=1)
+ endif()
++# BOOTWAIT のとき、HDS の先頭 16KB をフラッシュ (0x1e0000) に控え、開けるまで待ち IPL で Z の画面に接続待ちを出す (src/bootwait.c)
++option(BOOTWAIT_SCREEN "Show a waiting message on the Z while the HDS isn't open (needs BOOTWAIT)" ON)
++if(BOOTWAIT AND BOOTWAIT_SCREEN)
++    target_sources(${PROJECT_NAME} PRIVATE src/bootwait.c src/bootwait_pico.c)
++    target_compile_definitions(${PROJECT_NAME} PRIVATE BOOTWAIT_SCREEN=1)
++    target_link_libraries(${PROJECT_NAME} pico_flash)
++endif()
+ 
+ # 起動時の調査用: Z からの MSC の命令を 1 件 1 行の UDP で MSC_LOG_HOST:6870 に送る (src/msclog.c)。-DMSC_LOG=ON で入れる
+ option(MSC_LOG "Log USB MSC commands over UDP (boot-time investigation)" OFF)
+diff --git a/driver/Makefile b/driver/Makefile
+index 6c16168..a6f61c5 100644
+--- a/driver/Makefile
++++ b/driver/Makefile
+@@ -51,7 +51,7 @@ ifneq ($(DEBUG),)
+ CFLAGS += -DDEBUG
+ endif
+ 
+-all: scsiremote.inc bootloader.inc hdsboot.inc settingui.inc clrconfig.uf2 zrmtrescue.xdf
++all: scsiremote.inc bootloader.inc hdsboot.inc bootwait.inc bootwait1.inc settingui.inc clrconfig.uf2 zrmtrescue.xdf
+ 
+ uitest:
+ 	$(MAKE) CFLAGS_XTEST=-DXTEST clean settingui.x
+@@ -77,6 +77,12 @@ bootloader.bin: bootloader.o
+ hdsboot.bin: hdsboot.o
+ 	$(OBJCOPY) -O binary $< $@
+ 
++bootwait.bin: bootwait.o
++	$(OBJCOPY) -O binary $< $@
++
++bootwait1.bin: bootwait1.o
++	$(OBJCOPY) -O binary $< $@
++
+ rescueboot.bin: rescueboot.o
+ 	$(OBJCOPY) -O binary $< $@
+ 
+diff --git a/driver/bootwait.S b/driver/bootwait.S
+new file mode 100644
+index 0000000..60b4409
+--- /dev/null
++++ b/driver/bootwait.S
+@@ -0,0 +1,312 @@
++/*
++ * bootwait.S -- 起動待ちの IPL (src/bootwait.c、BOOTWAIT_SCREEN)
++ *
++ * Pico が HDS をまだ開けていないとき、HDS の LBA 2-3 (IPL) の代わりにこれを返す。ほかの LBA 0-31 は
++ * 前回控えた本物なので、Z のキャッシュには本物の分割表と SCSI ドライバが入る。
++ * これは後半 (SCSI ID 6 の LBA BW_STAGE2 から $2800 に読まれる)。前半 bootwait1.S が HDS の LBA 2 に入る。
++ * 画面に Pico の状態を出しながら、SCSI ID 6 の BW_BAND (src/bootwait_proto.h) を毎回違う番地で読み、
++ *   BW_READY   -> 返ってきた本物の IPL (1KB) を $2000 に置いて飛ぶ (ROM から来たときの d4 = SCSI ID を戻す)
++ *   BW_CHANGED -> 「電源を入れ直してください」と出して止まる
++ *   それ以外   -> 状態を出して 0.5 秒後にもう一度
++ * F1 を押すと設定メニュー (hdsboot.S と同じ)。
++ * Unicorn (ホスト試験) は movem を扱えないので使わない。
++ */
++
++    .text
++
++BW_BAND     = 0x40000
++BW_SLOTS    = 12288
++BW_STRIDE_SHIFT = 6                     /* 64 セクタ */
++
++V_ID        = 0x3800                    /* ROM から来たときの d4 (前半が置く) */
++V_T0        = 0x3804                    /* 始めた時刻 (1/100 秒) */
++V_LAST      = 0x3808                    /* 最後に問い合わせた時刻 */
++V_UP        = 0x380c                    /* 最後に受け取った Pico の起動からの ms */
++V_SPIN      = 0x3810
++LINE        = 0x3900                    /* 表示する行を組み立てる */
++BUF         = 0x4000                    /* 応答 3 セクタ */
++
++entry:
++    .ascii  "BW2!"                      /* 前半が確かめる */
++main:
++    moveq.l #0x7f,%d0                   /* ONTIME */
++    trap    #15
++    move.l  %d0,V_T0.w
++    subi.l  #100,%d0
++    move.l  %d0,V_LAST.w                /* 最初はすぐ問い合わせる */
++    clr.l   V_UP.w
++    clr.w   V_SPIN.w
++    lea.l   %pc@(m_screen),%a1
++    moveq.l #0x21,%d0
++    trap    #15
++
++loop:
++    moveq.l #0x04,%d0                   /* B_BITSNS */
++    moveq.l #0x0c,%d1
++    trap    #15
++    andi.b  #0x08,%d0                   /* F1 */
++    bne     loadsetting
++
++    moveq.l #0x7f,%d0                   /* ONTIME */
++    trap    #15
++    move.l  %d0,%d6
++    sub.l   V_LAST.w,%d0
++    bmi     poll                        /* 日付が変わった */
++    cmpi.l  #50,%d0
++    blt     loop
++
++poll:
++    move.l  %d6,V_LAST.w
++    move.l  %d6,%d0                     /* 番地 = BW_BAND + ((時刻 >> 5) mod BW_SLOTS) * 64 */
++    lsr.l   #5,%d0
++    divu.w  #BW_SLOTS,%d0
++    clr.w   %d0
++    swap    %d0
++    lsl.l   #BW_STRIDE_SHIFT,%d0
++    addi.l  #BW_BAND,%d0
++    move.l  %d0,%d2
++    move.l  %d0,%d7
++    moveq.l #3,%d3
++    moveq.l #6,%d4                      /* SCSI ID 6 */
++    moveq.l #1,%d5
++    movea.w #BUF,%a1
++    move.l  #0xf5,%d0
++    moveq.l #0x26,%d1
++    trap    #15
++    tst.l   %d0
++    bne     noresp
++    movea.w #BUF,%a0
++    cmpi.l  #0x58364257,%a0@            /* "X6BW" */
++    bne     noresp
++    cmp.l   %a0@(16),%d7                /* 読んだ番地の答えか */
++    bne     noresp
++    move.l  %a0@(12),%d0
++    cmp.l   V_UP.w,%d0
++    bcs     loop                        /* 前に読んだものより古い (キャッシュ): 見ない */
++    move.l  %d0,V_UP.w
++    move.b  %a0@(4),%d0
++    cmpi.b  #1,%d0
++    beq     ready
++    cmpi.b  #2,%d0
++    beq     changed
++    lea.l   %pc@(m_nohds),%a2
++    cmpi.b  #3,%d0
++    beq     show
++    moveq.l #0,%d0                      /* 待ち: sysstatus で言い分ける */
++    move.b  %a0@(5),%d0
++    cmpi.b  #4,%d0
++    bls     1f
++    moveq.l #4,%d0
++1:
++    add.w   %d0,%d0
++    lea.l   %pc@(t_stat),%a2
++    adda.w  %a2@(%d0.w),%a2
++    bra     show
++
++noresp:
++    clr.l   BUF+8.w                     /* IP は出さない */
++    lea.l   %pc@(m_noresp),%a2
++
++show:                                   /* a2 の文言 + IP + 経過秒 + くるくる */
++    movea.w #LINE,%a3
++    lea.l   %pc@(e_row2),%a4
++    bsr     copystr
++    movea.l %a2,%a4
++    bsr     copystr
++    move.l  BUF+8.w,%d6
++    beq     2f
++    lea.l   %pc@(m_ip),%a4
++    bsr     copystr
++    moveq.l #3,%d5
++1:
++    rol.l   #8,%d6
++    moveq.l #0,%d0
++    move.b  %d6,%d0
++    bsr     putdec
++    move.b  #'.',%a3@+
++    dbra    %d5,1b
++    subq.l  #1,%a3                      /* 最後の '.' */
++2:
++    move.b  #' ',%a3@+
++    move.b  #' ',%a3@+
++    move.l  V_LAST.w,%d0
++    sub.l   V_T0.w,%d0
++    bpl     3f
++    addi.l  #8640000,%d0
++3:
++    cmpi.l  #6553500,%d0
++    bcs     4f
++    move.l  #6553500,%d0
++4:
++    divu.w  #100,%d0
++    andi.l  #0xffff,%d0
++    bsr     putdec
++    lea.l   %pc@(m_sec),%a4
++    bsr     copystr
++    move.w  V_SPIN.w,%d0
++    addq.w  #1,V_SPIN.w
++    andi.w  #3,%d0
++    lea.l   %pc@(m_spin),%a4
++    move.b  %a4@(%d0.w),%a3@+
++    lea.l   %pc@(m_pad),%a4
++    bsr     copystr
++    bsr     print
++    bra     loop
++
++changed:
++    movea.w #LINE,%a3
++    lea.l   %pc@(e_row2),%a4
++    bsr     copystr
++    lea.l   %pc@(m_changed),%a4
++    bsr     copystr
++    lea.l   %pc@(m_pad),%a4
++    bsr     copystr
++    bsr     print
++    bra     halt
++
++ready:                                  /* IPL の和を確かめてから $2000 に写して飛ぶ (ここは $2800 から上) */
++    movea.w #BUF+512,%a1
++    move.w  #255,%d1
++    moveq.l #0,%d0
++1:
++    add.l   %a1@+,%d0
++    dbra    %d1,1b
++    cmp.l   %a0@(20),%d0
++    bne     noresp
++    lea.l   %pc@(e_clear),%a1
++    moveq.l #0x21,%d0
++    trap    #15
++    movea.w #BUF+512,%a0
++    movea.w #0x2000,%a1
++    move.w  #255,%d0
++2:
++    move.l  %a0@+,%a1@+
++    dbra    %d0,2b
++    move.l  V_ID.w,%d4
++    jmp     0x2000.w
++
++halt:
++    bra     halt
++
++/* a4 の文字列 (0 終わり) を a3 に足す */
++copystr:
++    move.b  %a4@+,%d0
++    beq     1f
++    move.b  %d0,%a3@+
++    bra     copystr
++1:
++    rts
++
++/* d0 (0-65535) を 10 進で a3 に足す */
++putdec:
++    moveq.l #0,%d1
++1:
++    divu.w  #10,%d0
++    swap    %d0
++    addi.w  #'0',%d0
++    move.w  %d0,-(%sp)
++    addq.w  #1,%d1
++    clr.w   %d0
++    swap    %d0
++    tst.w   %d0
++    bne     1b
++2:
++    move.w  (%sp)+,%d0
++    move.b  %d0,%a3@+
++    subq.w  #1,%d1
++    bne     2b
++    rts
++
++print:
++    clr.b   %a3@
++    movea.w #LINE,%a1
++    moveq.l #0x21,%d0
++    trap    #15
++    rts
++
++loadsetting:                            /* hdsboot.S と同じ: ID 6 の設定メニューを読んで飛ぶ */
++    move.l  #(0x20000/512),%d2
++    moveq.l #6,%d4
++    moveq.l #1,%d3
++    moveq.l #1,%d5
++    movea.w #0x67c0,%a1
++    move.l  #0xf5,%d0
++    moveq.l #0x26,%d1
++    trap    #15
++    cmpi.w  #0x4855,0x67c0.w
++    bne     halt
++    move.l  0x67cc.w,%d3
++    add.l   0x67d0.w,%d3
++    add.l   #(0x40+511),%d3
++    lsr.l   #8,%d3
++    lsr.l   #1,%d3
++    movea.w #0x67c0,%a1
++    move.l  #0xf5,%d0
++    moveq.l #0x26,%d1
++    trap    #15
++    movea.l 0x67c4.w,%a0
++    adda.l  0x67cc.w,%a0
++    adda.l  0x67d0.w,%a0
++    move.l  0x67d4.w,%d0
++    addq.l  #3,%d0
++    lsr.l   #2,%d0
++    bra     3f
++2:
++    clr.l   %a0@+
++3:
++    dbra    %d0,2b
++    movea.l 0x67c8.w,%a0
++    jmp     %a0@
++
++t_stat:                                 /* sysstatus 0-4 */
++    .word   m_wifi0-t_stat, m_wifi1-t_stat, m_smb0-t_stat, m_smb1-t_stat, m_hds-t_stat
++
++m_screen:
++    .byte   0x1b
++    .ascii  "[2J"
++    .byte   0x1b
++    .ascii  "[12;5H"
++    /* Pico: SMB 接続待ち… (Wi-Fi/SMB を確認してください) */
++    .byte   0x50,0x69,0x63,0x6f,0x3a,0x20,0x53,0x4d,0x42,0x20,0x90,0xda,0x91,0xb1,0x91,0xd2,0x82,0xbf,0x81,0x63,0x20,0x28,0x57,0x69,0x2d,0x46,0x69,0x2f,0x53,0x4d,0x42,0x20,0x82,0xf0,0x8a,0x6d,0x94,0x46,0x82,0xb5,0x82,0xc4,0x82,0xad,0x82,0xbe,0x82,0xb3,0x82,0xa2,0x29
++    .byte   0x1b
++    .ascii  "[17;5H"
++    /* F1: 設定メニュー */
++    .byte   0x46,0x31,0x3a,0x20,0x90,0xdd,0x92,0xe8,0x83,0x81,0x83,0x6a,0x83,0x85,0x81,0x5b
++    .byte   0
++e_row2:
++    .byte   0x1b
++    .ascii  "[14;5H"
++    .byte   0
++e_clear:
++    .byte   0x1b
++    .ascii  "[2J"
++    .byte   0
++m_wifi0:    /* Wi-Fi 未接続 */
++    .byte   0x57,0x69,0x2d,0x46,0x69,0x20,0x96,0xa2,0x90,0xda,0x91,0xb1,0
++m_wifi1:    /* Wi-Fi 接続中 */
++    .byte   0x57,0x69,0x2d,0x46,0x69,0x20,0x90,0xda,0x91,0xb1,0x92,0x86,0
++m_smb0:     /* SMB 接続待ち */
++    .byte   0x53,0x4d,0x42,0x20,0x90,0xda,0x91,0xb1,0x91,0xd2,0x82,0xbf,0
++m_smb1:     /* SMB 接続中 */
++    .byte   0x53,0x4d,0x42,0x20,0x90,0xda,0x91,0xb1,0x92,0x86,0
++m_hds:      /* HDS を開いています */
++    .byte   0x48,0x44,0x53,0x20,0x82,0xf0,0x8a,0x4a,0x82,0xa2,0x82,0xc4,0x82,0xa2,0x82,0xdc,0x82,0xb7,0
++m_nohds:    /* HDS を開けません (config.txt の HDS を確認) */
++    .byte   0x48,0x44,0x53,0x20,0x82,0xf0,0x8a,0x4a,0x82,0xaf,0x82,0xdc,0x82,0xb9,0x82,0xf1,0x20,0x28,0x63,0x6f,0x6e,0x66,0x69,0x67,0x2e,0x74,0x78,0x74,0x20,0x82,0xcc,0x20,0x48,0x44,0x53,0x20,0x82,0xf0,0x8a,0x6d,0x94,0x46,0x29,0
++m_noresp:   /* Pico の応答がありません */
++    .byte   0x50,0x69,0x63,0x6f,0x20,0x82,0xcc,0x89,0x9e,0x93,0x9a,0x82,0xaa,0x82,0xa0,0x82,0xe8,0x82,0xdc,0x82,0xb9,0x82,0xf1,0
++m_changed:  /* HDS が変わりました。Z の電源を入れ直してください */
++    .byte   0x48,0x44,0x53,0x20,0x82,0xaa,0x95,0xcf,0x82,0xed,0x82,0xe8,0x82,0xdc,0x82,0xb5,0x82,0xbd,0x81,0x42,0x5a,0x20,0x82,0xcc,0x93,0x64,0x8c,0xb9,0x82,0xf0,0x93,0xfc,0x82,0xea,0x92,0xbc,0x82,0xb5,0x82,0xc4,0x82,0xad,0x82,0xbe,0x82,0xb3,0x82,0xa2,0
++m_ip:
++    .ascii  "  IP "
++    .byte   0
++m_sec:      /* 秒 */
++    .byte   0x20,0x95,0x62,0x20,0
++m_spin:
++    .ascii  "|/-\\"
++m_pad:
++    .ascii  "          "
++    .byte   0
++    .even
++
++    .end
+diff --git a/driver/bootwait1.S b/driver/bootwait1.S
+new file mode 100644
+index 0000000..933caf8
+--- /dev/null
++++ b/driver/bootwait1.S
+@@ -0,0 +1,46 @@
++/*
++ * bootwait1.S -- 起動待ちの IPL の前半 (src/bootwait.c、BOOTWAIT_SCREEN)
++ *
++ * Pico が HDS をまだ開けていないとき、HDS の LBA 2 (IPL) の代わりにこれを返す。ROM から来たときの d4 (SCSI ID) を
++ * 控え、後半 (bootwait.S) を SCSI ID 6 の LBA BW_STAGE2 から $2800 に読んで飛ぶ。後半を ID 6 に置くのは、
++ * HDS の LBA 0-31 は 16KB まとめて Z にキャッシュされ、IPL に使えるのが LBA 2-3 の 1KB だけだから。
++ */
++
++    .text
++
++BW_STAGE2   = 0x80                      /* src/bootwait_proto.h */
++V_ID        = 0x3800
++
++entry:
++    bra.w   start
++    .space  4*15
++
++start:
++    move.l  %d4,V_ID.w
++    move.l  #BW_STAGE2,%d2
++    moveq.l #8,%d3                      /* 4KB */
++    moveq.l #6,%d4                      /* SCSI ID 6 */
++    moveq.l #1,%d5
++    movea.w #0x2800,%a1
++    move.l  #0xf5,%d0                   /* SCSIDRV */
++    moveq.l #0x26,%d1                   /* S_READEXT */
++    trap    #15
++    tst.l   %d0
++    bne     error
++    cmpi.l  #0x42573221,0x2800.w        /* "BW2!" */
++    bne     error
++    jmp     0x2804.w
++
++error:
++    lea.l   %pc@(msg),%a1
++    moveq.l #0x21,%d0                   /* B_PRINT */
++    trap    #15
++1:
++    bra     1b
++
++msg:
++    .byte   0x1b
++    .ascii  "[14;5Hbootwait: no reply from the Pico (SCSI ID 6)"
++    .byte   0
++
++    .end
+diff --git a/src/bootwait.c b/src/bootwait.c
+new file mode 100644
+index 0000000..043d71c
+--- /dev/null
++++ b/src/bootwait.c
+@@ -0,0 +1,216 @@
++/*
++ * bootwait.c -- HDS が開けるまで Z の画面に接続待ちを出して待たせる (BOOTWAIT_SCREEN)
++ *
++ * Z の Linux は HDS を読み始めるとき (電源投入から約 35 秒) に LBA 0-31 (16KB: 署名・IPL・分割表・SCSI ドライバ) を
++ * まとめて読み、ソフトリセットのあとも読み直さずキャッシュから起動する。だから Wi-Fi / SMB が間に合わないとき
++ * そこに偽物を返すと、分割表とドライバが偽物のまま電源を切るまで残る。そこで:
++ *
++ *   1. HDS を開けたら LBA 0-31 を控え (フラッシュ BW_FLASH_OFFSET) と比べ、違えば (HDS のパスと大きさも) 控え直す。
++ *   2. HDS がまだ開けていない間は、LBA 0-31 を控えのとおりに返す。ただし IPL (LBA 2-3) は待ち IPL の前半
++ *      (driver/bootwait1.S、後半 bootwait.S は ID 6 の BW_STAGE2) にする (開けているときに hdsboot に差し替えている
++ *      のと同じ場所)。控えが無ければ
++ *      0014 と同じく NOT READY で待たせる (偽物は返さない)。
++ *   3. 待ち IPL は画面に状態を出しながら ID 6 の BW_BAND を読みに来る (bootwait_proto.h)。開けて控えと同じなら
++ *      本物の IPL を渡す (キャッシュには本物と同じ分割表・ドライバが入っている)。控えと違えば BW_CHANGED を返し、
++ *      待ち IPL は「電源を入れ直してください」と出して止まる (古い分割表のまま起動させない)。
++ *
++ * 書き込みや比較は接続タスク、bw_disk_read / bw_reply は USB タスクから呼ばれる。
++ */
++#include <stdio.h>
++#include <string.h>
++
++#include "bootwait.h"
++#include "bootwait1.inc"                /* driver/bootwait1.S: 待ち IPL の前半 (HDS の LBA 2) */
++#include "bootwait.inc"                 /* driver/bootwait.S: 後半 (ID 6 の BW_STAGE2) */
++
++#define HDR_MAGIC       "X6Z BootSnap v1"
++#define DATA_OFF        4096
++#define DATA_SIZE       (BW_SNAP_SECTS * 512)
++
++struct bw_hdr {
++    char magic[16];
++    uint32_t hash;                      /* 中身 16KB の FNV-1a */
++    uint32_t size_lo, size_hi;          /* HDS の大きさ */
++    uint32_t pad;
++    char path[128];                     /* config の HDS0 */
++};
++
++_Static_assert(sizeof(bootwait1) <= 512, "bootwait1.S must fit in LBA 2");
++_Static_assert(sizeof(bootwait) <= BW_STAGE2_SECTS * 512, "bootwait.S must fit in BW_STAGE2");
++
++static int usable = -1;                 /* 控えが壊れていないか (-1: まだ見ていない) */
++static volatile bool served;            /* この USB の接続で控えを Z に返した */
++static volatile bool checked, match;    /* HDS を開いて比べた / 控えと同じだった */
++static uint32_t ipl_sum;                /* BW_READY で渡す IPL の和 (待ち IPL が確かめる) */
++
++static const struct bw_hdr *hdr(void)
++{
++    return (const struct bw_hdr *)bw_flash_ptr();
++}
++
++static const uint8_t *snap(void)
++{
++    return bw_flash_ptr() + DATA_OFF;
++}
++
++static uint32_t fnv(uint32_t h, const uint8_t *p, int n)
++{
++    while (n-- > 0)
++        h = (h ^ *p++) * 16777619u;
++    return h;
++}
++
++static void put32(uint8_t *p, uint32_t v)
++{
++    p[0] = v >> 24;
++    p[1] = v >> 16;
++    p[2] = v >> 8;
++    p[3] = v;
++}
++
++static uint32_t get32(const uint8_t *p)
++{
++    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
++}
++
++bool bw_usable(const char *path)
++{
++    if (usable < 0)
++        usable = memcmp(hdr()->magic, HDR_MAGIC, sizeof HDR_MAGIC) == 0 &&
++                 hdr()->hash == fnv(2166136261u, snap(), DATA_SIZE);
++    return usable && path[0] != '\0' && strncmp(hdr()->path, path, sizeof hdr()->path) == 0;
++}
++
++int bw_disk_read(uint32_t lba, uint8_t *buf)
++{
++    if (lba >= BW_SNAP_SECTS)
++        return -1;
++    if (lba == 2 || lba == 3) {
++        memset(buf, 0, 512);
++        if (lba == 2)
++            memcpy(buf, bootwait1, sizeof(bootwait1));
++    } else {
++        memcpy(buf, snap() + lba * 512, 512);
++    }
++    served = true;
++    return 0;
++}
++
++int bw_stage2_read(uint32_t lba, uint8_t *buf)
++{
++    uint32_t off = (lba - BW_STAGE2) * 512;
++    memset(buf, 0, 512);
++    if (lba < BW_STAGE2 || lba >= BW_STAGE2 + BW_STAGE2_SECTS)
++        return -1;
++    if (off < sizeof(bootwait))
++        memcpy(buf, bootwait + off, sizeof(bootwait) - off < 512 ? sizeof(bootwait) - off : 512);
++    return 0;
++}
++
++void bw_check(const char *path, uint64_t size, bw_read_fn rd, void *ctx)
++{
++    static uint8_t buf[512];
++    bool same = bw_usable(path) && hdr()->size_lo == (uint32_t)size && hdr()->size_hi == (uint32_t)(size >> 32);
++
++    for (int i = 0; i < BW_SNAP_SECTS; i++) {
++        if (rd(ctx, i, buf) != 0) {
++            printf("bootwait: cannot read HDS LBA %d\n", i);
++            match = false;
++            checked = true;
++            return;
++        }
++        if (same && memcmp(buf, snap() + i * 512, 512) != 0)
++            same = false;
++    }
++    match = same;
++    checked = true;
++    if (same) {
++        printf("bootwait: snapshot matches %s\n", path);
++        return;
++    }
++
++    /* 控え直す。見出しを最後に書くので、途中で止まっても壊れた控えは使われない */
++    printf("bootwait: writing snapshot of %s\n", path);
++    bw_flash_erase(0, BW_FLASH_SIZE);
++    uint32_t h = 2166136261u;
++    for (int i = 0; i < BW_SNAP_SECTS; i++) {
++        if (rd(ctx, i, buf) != 0)
++            return;
++        h = fnv(h, buf, 512);
++        bw_flash_program(DATA_OFF + i * 512, buf, 512);
++    }
++    static uint8_t hb[256];
++    struct bw_hdr *n = (struct bw_hdr *)hb;
++    memset(hb, 0xff, sizeof hb);
++    memset(n, 0, sizeof *n);
++    memcpy(n->magic, HDR_MAGIC, sizeof HDR_MAGIC);
++    n->hash = h;
++    n->size_lo = (uint32_t)size;
++    n->size_hi = (uint32_t)(size >> 32);
++    strncpy(n->path, path, sizeof n->path - 1);
++    bw_flash_program(0, hb, sizeof hb);
++    usable = -1;
++}
++
++/* IPL (HDS の LBA 2-3) の 1 セクタ。控えと同じならフラッシュから (SMB を読まない) */
++static int ipl_sector(int k, uint8_t *buf, bw_read_fn rd, void *ctx)
++{
++    if (match) {
++        memcpy(buf, snap() + (2 + k) * 512, 512);
++        return 0;
++    }
++    return rd(ctx, 2 + k, buf);
++}
++
++void bw_reply(uint32_t lba, uint8_t *buf, int hds_open, int sysstat, uint32_t ip, uint32_t uptime_ms,
++              bw_read_fn rd, void *ctx)
++{
++    uint32_t j = (lba - BW_BAND) % BW_STRIDE;
++    int st;
++
++    if (!hds_open)
++        st = sysstat >= 5 ? BW_NOHDS : BW_WAIT;         /* 5 = STAT_CONFIGURED */
++    else if (!checked)
++        st = BW_WAIT;
++    else if (served && !match)
++        st = BW_CHANGED;
++    else
++        st = BW_READY;
++
++    memset(buf, 0, 512);
++    if (j == 0) {
++        if (st == BW_READY) {
++            /* 和を先に出す (セクタ 1-2 はこのあとすぐ読まれる。READY は戻らないので同じ中身) */
++            uint32_t sum = 0;
++            for (int k = 0; k < 2; k++) {
++                if (ipl_sector(k, buf, rd, ctx) != 0) {
++                    st = BW_WAIT;
++                    break;
++                }
++                for (int i = 0; i < 512; i += 4)
++                    sum += get32(buf + i);
++            }
++            ipl_sum = sum;
++            memset(buf, 0, 512);
++        }
++        memcpy(buf, "X6BW", 4);
++        buf[4] = st;
++        buf[5] = sysstat;
++        put32(buf + 8, ip);
++        put32(buf + 12, uptime_ms);
++        put32(buf + 16, lba);
++        put32(buf + 20, st == BW_READY ? ipl_sum : 0);
++    } else if (j <= 2 && st == BW_READY) {
++        if (ipl_sector(j - 1, buf, rd, ctx) != 0)
++            memset(buf, 0, 512);
++    }
++}
++
++const char *bw_state(const char *path)
++{
++    if (!checked)
++        return bw_usable(path) ? "stored" : "none";
++    if (served)
++        return match ? "served" : "changed";
++    return match ? "ok" : "updated";
++}
+diff --git a/src/bootwait.h b/src/bootwait.h
+new file mode 100644
+index 0000000..c69d1b3
+--- /dev/null
++++ b/src/bootwait.h
+@@ -0,0 +1,31 @@
++#ifndef _BOOTWAIT_H_
++#define _BOOTWAIT_H_
++#include <stdint.h>
++#include <stdbool.h>
++#include "bootwait_proto.h"
++
++/* BOOTWAIT_SCREEN=1 (cmake -DBOOTWAIT_SCREEN=ON、BOOTWAIT と一緒に既定オン): HDS が開けるまで、控えておいた HDS の先頭と
++   待ち IPL で起動を始め、Z の画面に接続待ちを出す (bootwait.c) */
++#ifndef BOOTWAIT_SCREEN
++#define BOOTWAIT_SCREEN 0
++#endif
++
++#define BW_FLASH_OFFSET 0x1e0000        /* 見出し 4KB + 中身 16KB (0x1e0000-0x1e4fff)。設定は 0x1f0000 */
++#define BW_FLASH_SIZE   (4096 + BW_SNAP_SECTS * 512)
++
++typedef int (*bw_read_fn)(void *ctx, uint32_t lba, uint8_t *buf);   /* HDS を 1 セクタ読む (0 なら成功) */
++
++bool bw_usable(const char *path);                       /* 控えが壊れておらず、この HDS のものか */
++int bw_disk_read(uint32_t lba, uint8_t *buf);           /* 控えから LBA 0-31 を返す (2 は待ち IPL の前半)。bw_usable のときだけ */
++int bw_stage2_read(uint32_t lba, uint8_t *buf);         /* ID 6 の BW_STAGE2: 待ち IPL の後半 */
++void bw_check(const char *path, uint64_t size, bw_read_fn rd, void *ctx);   /* HDS を開いたあと: 比べて、違えば控え直す */
++void bw_reply(uint32_t lba, uint8_t *buf, int hds_open, int sysstat, uint32_t ip, uint32_t uptime_ms,
++              bw_read_fn rd, void *ctx);                /* ID 6 の BW_BAND の読み込みに答える */
++const char *bw_state(const char *path);                 /* status 用: none / stored / ok / updated / served / changed */
++
++/* 書き込み (ホスト試験では差し替える) */
++void bw_flash_erase(uint32_t off, uint32_t len);
++void bw_flash_program(uint32_t off, const uint8_t *data, uint32_t len);
++const uint8_t *bw_flash_ptr(void);
++
++#endif
+diff --git a/src/bootwait_pico.c b/src/bootwait_pico.c
+new file mode 100644
+index 0000000..87011ca
+--- /dev/null
++++ b/src/bootwait_pico.c
+@@ -0,0 +1,53 @@
++/*
++ * bootwait_pico.c -- bootwait.c の控えをフラッシュに書く部分 (Pico)。ホスト試験では test/bootwait が差し替える
++ *
++ * flash_safe_execute (pico_flash) の中で消して書く。このファームの FreeRTOS は 1 コア (コア 1 は動かさない) なので、
++ * 実際には割り込みを止めるだけになる (config_write と同じ)。消すのは 1 回に 4KB (約 45ms) ずつ
++ */
++#include <stdio.h>
++#include "pico/stdlib.h"
++#include "pico/flash.h"
++#include "hardware/flash.h"
++
++#include "bootwait.h"
++
++struct op {
++    bool erase;
++    uint32_t off, len;
++    const uint8_t *data;
++};
++
++static void do_op(void *p)
++{
++    const struct op *o = p;
++    if (o->erase)
++        flash_range_erase(BW_FLASH_OFFSET + o->off, o->len);
++    else
++        flash_range_program(BW_FLASH_OFFSET + o->off, o->data, o->len);
++}
++
++static void run(struct op *o)
++{
++    int rc = flash_safe_execute(do_op, o, 1000);
++    if (rc != PICO_OK)
++        printf("bootwait: flash %s 0x%lx failed (%d)\n", o->erase ? "erase" : "program", (unsigned long)o->off, rc);
++}
++
++void bw_flash_erase(uint32_t off, uint32_t len)
++{
++    for (uint32_t a = 0; a < len; a += FLASH_SECTOR_SIZE) {
++        struct op o = { .erase = true, .off = off + a, .len = FLASH_SECTOR_SIZE };
++        run(&o);
++    }
++}
++
++void bw_flash_program(uint32_t off, const uint8_t *data, uint32_t len)
++{
++    struct op o = { .erase = false, .off = off, .len = len, .data = data };
++    run(&o);
++}
++
++const uint8_t *bw_flash_ptr(void)
++{
++    return (const uint8_t *)(XIP_BASE + BW_FLASH_OFFSET);
++}
+diff --git a/src/bootwait_proto.h b/src/bootwait_proto.h
+new file mode 100644
+index 0000000..e1bbb00
+--- /dev/null
++++ b/src/bootwait_proto.h
+@@ -0,0 +1,28 @@
++#ifndef _BOOTWAIT_PROTO_H_
++#define _BOOTWAIT_PROTO_H_
++
++/* 起動待ちの IPL (driver/bootwait.S) と Pico (bootwait.c) の取り決め。数値はビッグエンディアン
++ *
++ * 待ち IPL は SCSI ID 6 の BW_BAND〜BW_BAND_END のどこか (毎回違う番地) から 3 セクタ読む:
++ *   セクタ 0: +0 "X6BW" +4 状態 (BW_*) +5 sysstatus +6 0 +8 Pico の IP (4) +12 Pico の起動からの ms (4) +16 読んだ LBA (4)
++ *   セクタ 1-2: 状態が BW_READY なら本物の IPL (HDS の LBA 2-3、1KB)
++ * Z の Linux は読んだページをキャッシュするので、同じ番地は二度と読まない (時刻から決め、BW_STRIDE ずつ離す。
++ * Linux は 1 回に 16KB 先読みするので、続きの番地にすると先読みした古い答えを読んでしまう)。
++ */
++#define BW_BAND         0x40000         /* ID 6 の LBA。settingui (0x100-0x1ff) と netpipe (0x100000-) の間 */
++#define BW_BAND_END     0x100000
++#define BW_STRIDE       64              /* セクタ (32KB) */
++#define BW_SLOTS        ((BW_BAND_END - BW_BAND) / BW_STRIDE)  /* 12288 */
++#define BW_REPLY_SECTS  3
++
++#define BW_WAIT         0               /* まだ (sysstatus を見て表示) */
++#define BW_READY        1               /* セクタ 1-2 の IPL を $2000 に置いて飛ぶ */
++#define BW_CHANGED      2               /* HDS の先頭が控えと違う: 電源を入れ直してもらう */
++#define BW_NOHDS        3               /* SMB にはつながったが HDS を開けない */
++
++#define BW_STAGE2       0x80            /* ID 6 の LBA: 待ち IPL の後半 (driver/bootwait.S、4KB まで。中身は変わらない) */
++#define BW_STAGE2_SECTS 8
++
++#define BW_SNAP_SECTS   32              /* 控える HDS の先頭 (LBA 0-31、16KB: 署名・IPL・分割表・SCSI ドライバ) */
++
++#endif
+diff --git a/src/connect.c b/src/connect.c
+index 0da1229..d763a3f 100644
+--- a/src/connect.c
++++ b/src/connect.c
+@@ -45,6 +45,7 @@
+ #include "virtual_disk.h"
+ #include "config_file.h"
+ #include "msclog.h"
++#include "bootwait.h"
+ 
+ //****************************************************************************
+ // Global variables
+@@ -134,6 +135,19 @@ static void connection(int mode)
+     }
+ }
+ 
++#if BOOTWAIT_SCREEN
++struct bw_ctx {
++    struct smb2_context *smb2;
++    struct smb2fh *sfh;
++};
++
++static int bw_hds_read(void *ctx, uint32_t lba, uint8_t *buf)
++{
++    struct bw_ctx *c = ctx;
++    return hds_cache_read(c->smb2, c->sfh, lba, buf) < 0 ? -1 : 0;
++}
++#endif
++
+ static int vd_mount(void)
+ {
+     uint32_t nvalue;
+@@ -174,6 +188,24 @@ static int vd_mount(void)
+             msclog_mark("HDS%u not found", i);
+             continue;
+         }
++#if BOOTWAIT_SCREEN
++        /* 起動ディスク (ID 0) なら先頭を控えと比べる。USB タスクに見せる (sfh を入れる) 前に済ませる:
++           それまで Z からの読み込みは控えか NOT READY で答えている (libsmb2 の同じ接続を 2 つのタスクで使わない) */
++        struct smb2fh *fh;
++        if ((fh = smb2_open(smb2, shpath, O_RDWR)) == NULL) {
++            printf("File %s open failure.\n", config.hds[i]);
++            msclog_mark("HDS%u open failure", i);
++            continue;
++        }
++        if (id == 0) {
++            struct bw_ctx c = { smb2, fh };
++            bw_check(config.hds[i], st.smb2_size, bw_hds_read, &c);
++            msclog_mark("snapshot %s", bw_state(config.hds[i]));
++        }
++        diskinfo[id].smb2 = smb2;
++        diskinfo[id].size = st.smb2_size;
++        diskinfo[id].sfh = fh;
++#else
+         if ((diskinfo[id].sfh = smb2_open(smb2, shpath, O_RDWR)) == NULL) {
+             printf("File %s open failure.\n", config.hds[i]);
+             msclog_mark("HDS%u open failure", i);
+@@ -181,6 +213,7 @@ static int vd_mount(void)
+         }
+         diskinfo[id].smb2 = smb2;
+         diskinfo[id].size = st.smb2_size;
++#endif
+         printf("HDS%u: %s size=%lld\n", i, config.hds[i], st.smb2_size);
+         msclog_mark("HDS%u opened id%d size=%lld", i, id, st.smb2_size);
+     }
+diff --git a/src/hidkbd.c b/src/hidkbd.c
+index d92aafa..b7c98f7 100644
+--- a/src/hidkbd.c
++++ b/src/hidkbd.c
+@@ -36,6 +36,7 @@
+ #include "virtual_disk.h"
+ #include "netpipe.h"
+ #include "accel.h"
++#include "bootwait.h"
+ #include "hidkbd_cmd.h"
+ #include "hidkbd.h"
+ 
+@@ -170,6 +171,10 @@ static int status_line(char *s, int size)
+ #if BOOTWAIT
+     if (n < size)
+         n += snprintf(s + n, size - n, " notready=%lu ioerr=%lu", (unsigned long)msc_notready, (unsigned long)msc_ioerr);
++#endif
++#if BOOTWAIT_SCREEN
++    if (n < size)
++        n += snprintf(s + n, size - n, " snap=%s", bw_state(config.hds[0]));
+ #endif
+     return n < size ? n : size - 1;
+ }
+diff --git a/src/msclog.c b/src/msclog.c
+index fb87d27..aa9f0d3 100644
+--- a/src/msclog.c
++++ b/src/msclog.c
+@@ -16,7 +16,8 @@
+  *
+  * 記録は USB タスク (と接続タスク) がリングに積み、専用タスクが Wi-Fi がつながってから送る (つながる前の分も残る)。
+  * 多すぎないよう、USB の mount のあとと、2 秒以上命令が途切れたあとの MSCLOG_BUDGET 件だけを送る。
+- * ID 6 の netpipe と scsiremote (B:) の帯 (HDS の LBA 0x100000 以上) は記録せず数だけ数える。
++ * ID 6 の netpipe と scsiremote (B:) の帯 (HDS の LBA 0x100000 以上) と、待ち IPL の問い合わせ (0x80-0x87、
++ * 0x40000-0xfffff) は記録せず数だけ数える。
+  */
+ #include <stdarg.h>
+ #include <stdio.h>
+@@ -122,9 +123,11 @@ static void flush_cur(void)
+ 
+ void msclog_rw(char dir, uint8_t lun, uint32_t lba, int rc, const uint8_t *buf)
+ {
+-    if (lba >= HDS_BASE && (lba - HDS_BASE) / HDS_SPAN == 6 && (lba - HDS_BASE) % HDS_SPAN >= 0x100000) {
++    uint32_t h6 = (lba - HDS_BASE) % HDS_SPAN;
++    if (lba >= HDS_BASE && (lba - HDS_BASE) / HDS_SPAN == 6 &&
++        (h6 >= 0x100000 || (h6 >= 0x40000 && h6 < 0x100000) || (h6 >= 0x80 && h6 < 0x88))) {
+         flush_cur();
+-        skip_count++;                   /* netpipe / scsiremote の帯 */
++        skip_count++;                   /* netpipe / scsiremote の帯、待ち IPL の問い合わせ (BW_BAND / BW_STAGE2) */
+         return;
+     }
+     if (cur_open && (cur.kind != dir || cur.lun != lun || lba != cur.lba + cur.n))
+diff --git a/src/virtual_disk.c b/src/virtual_disk.c
+index 998fc41..6fbdf33 100644
+--- a/src/virtual_disk.c
++++ b/src/virtual_disk.c
+@@ -42,6 +42,7 @@
+ #include "fileop.h"
+ #include "netpipe.h"
+ #include "msclog.h"
++#include "bootwait.h"
+ 
+ #include "scsiremote.inc"
+ #include "bootloader.inc"
+@@ -301,6 +302,13 @@ int vdbuf_rcnt;
+ 
+ struct vdbuf_header vdbuf_header;
+ 
++#if BOOTWAIT_SCREEN
++static int bw_hds0_read(void *ctx, uint32_t lba, uint8_t *buf)
++{
++    return hds_cache_read(diskinfo[0].smb2, diskinfo[0].sfh, lba, buf) < 0 ? -1 : 0;
++}
++#endif
++
+ int vd_read_block(uint32_t lba, uint8_t *buf)
+ {
+     memset(buf, 0, 512);
+@@ -429,8 +437,20 @@ int vd_read_block(uint32_t lba, uint8_t *buf)
+ #if BOOTWAIT
+         /* 接続を待って USB タスクを止めない (止めている間に Z の Linux が 30 秒で諦めてリセットする)。
+            HDS が開けるまでは NOT READY を返し、Z の Linux に待たせる。ID 6 (netpipe など) は接続と関係なく答える */
+-        if (diskinfo[id].type == DTYPE_HDS && diskinfo[id].sfh == NULL)
++        if (diskinfo[id].type == DTYPE_HDS && diskinfo[id].sfh == NULL) {
++#if BOOTWAIT_SCREEN
++            /* 起動ディスクの先頭は控えのとおりに返す (IPL は待ち IPL)。控えが無ければ NOT READY */
++            if (id == 0 && !remoteboot && lba < BW_SNAP_SECTS && bw_usable(config.hds[0])) {
++                static bool marked;
++                if (!marked) {
++                    marked = true;
++                    msclog_mark("snapshot served (waiting IPL)");
++                }
++                return bw_disk_read(lba, buf);
++            }
++#endif
+             return sysstatus >= STAT_CONFIGURED ? VD_IOERR : VD_NOTREADY;
++        }
+         if (diskinfo[id].type == DTYPE_REMOTEBOOT)
+             vd_sync();
+ #else
+@@ -519,6 +539,18 @@ int vd_read_block(uint32_t lba, uint8_t *buf)
+             if (lba >= NETPIPE_RLBA && lba < NETPIPE_REND) {
+                 return netpipe_read(lba, buf);
+             }
++#if BOOTWAIT_SCREEN
++            if (lba >= BW_STAGE2 && lba < BW_STAGE2 + BW_STAGE2_SECTS)
++                return bw_stage2_read(lba, buf);
++            if (lba >= BW_BAND && lba < BW_BAND_END) {
++                // 待ち IPL (driver/bootwait.S) の問い合わせ
++                uint32_t ip = lwip_ntohl(ip4_addr_get_u32(netif_ip4_addr(&cyw43_state.netif[CYW43_ITF_STA])));
++                bw_reply(lba, buf, !remoteboot && diskinfo[0].type == DTYPE_HDS && diskinfo[0].sfh != NULL,
++                         sysstatus, sysstatus >= STAT_WIFI_CONNECTED ? ip : 0,
++                         to_ms_since_boot(get_absolute_time()), bw_hds0_read, NULL);
++                return 0;
++            }
++#endif
+             if (lba >= (0x20000 / 512) && lba < (0x40000 / 512)) {
+                 // settingui.bin
+                 lba -= 0x20000 / 512;
+diff --git a/test/bootwait/.gitignore b/test/bootwait/.gitignore
+index c0ec9c1..1c4daed 100644
+--- a/test/bootwait/.gitignore
++++ b/test/bootwait/.gitignore
+@@ -1 +1,2 @@
+ bootwait_test
++libbw.dylib
+diff --git a/test/bootwait/Makefile b/test/bootwait/Makefile
+index 24b2845..57cb27f 100644
+--- a/test/bootwait/Makefile
++++ b/test/bootwait/Makefile
+@@ -2,13 +2,24 @@
+ TOP = ../..
+ CFLAGS = -w -DHID_KEYBOARD=1 -Istub -I$(TOP)/src
+ 
+-test: bootwait_test
++test: bootwait_test waiter
+ 	./bootwait_test
+ 
++# 待ち IPL (driver/bootwait*.S) を Unicorn の 68000 で、Pico 側 (src/bootwait.c) と組み合わせて試す。
++# m68k-xelf-gcc と python3 の unicorn が要る
++waiter: libbw.dylib
++	python3 waiter_test.py
++
++libbw.dylib: $(TOP)/src/bootwait.c $(TOP)/src/bootwait.h $(TOP)/src/bootwait_proto.h fakeflash.c ../../driver/bootwait.inc ../../driver/bootwait1.inc
++	$(CC) -shared -O2 -Wall -I$(TOP)/src -I$(TOP)/driver -o $@ $(TOP)/src/bootwait.c fakeflash.c
++
++../../driver/bootwait.inc ../../driver/bootwait1.inc: ../../driver/bootwait.S ../../driver/bootwait1.S
++	$(MAKE) -C ../../driver bootwait.inc bootwait1.inc
++
+ bootwait_test: bootwait_test.c $(TOP)/src/msc_disk.c $(TOP)/src/virtual_disk.h stub/tusb.h stub/pico/stdlib.h
+ 	$(CC) $(CFLAGS) -o $@ bootwait_test.c
+ 
+ clean:
+-	rm -f bootwait_test
++	rm -f bootwait_test libbw.dylib
+ 
+ .PHONY: test clean
+diff --git a/test/bootwait/fakeflash.c b/test/bootwait/fakeflash.c
+new file mode 100644
+index 0000000..dcbccea
+--- /dev/null
++++ b/test/bootwait/fakeflash.c
+@@ -0,0 +1,29 @@
++/* bootwait.c のホスト試験用: フラッシュの代わり (消すと 0xff、書くと AND)。中身を出し入れして「再起動」を真似る */
++#include <string.h>
++#include "bootwait.h"
++
++static uint8_t flash[BW_FLASH_SIZE];
++static int erases, programs;
++
++void bw_flash_erase(uint32_t off, uint32_t len)
++{
++    memset(flash + off, 0xff, len);
++    erases++;
++}
++
++void bw_flash_program(uint32_t off, const uint8_t *data, uint32_t len)
++{
++    for (uint32_t i = 0; i < len; i++)
++        flash[off + i] &= data[i];
++    programs++;
++}
++
++const uint8_t *bw_flash_ptr(void)
++{
++    return flash;
++}
++
++void fake_flash_init(void) { memset(flash, 0xff, sizeof flash); erases = programs = 0; }
++void fake_flash_get(uint8_t *dst) { memcpy(dst, flash, sizeof flash); }
++void fake_flash_set(const uint8_t *src) { memcpy(flash, src, sizeof flash); }
++int fake_flash_writes(void) { return erases * 1000 + programs; }
+diff --git a/test/bootwait/waiter_test.py b/test/bootwait/waiter_test.py
+new file mode 100644
+index 0000000..13c3f51
+--- /dev/null
++++ b/test/bootwait/waiter_test.py
+@@ -0,0 +1,372 @@
++#!/usr/bin/env python3
++"""待ち IPL (driver/bootwait1.S + bootwait.S) を Unicorn の 68000 で動かし、Pico 側 (src/bootwait.c をそのまま
++ホスト向けに組んだ libbw) と組み合わせて試す: make -C test/bootwait waiter
++
++IOCS (trap #15) は ここで真似る: B_BITSNS (F1)、B_PRINT (画面の記録)、ONTIME (偽の時計)、SCSIDRV S_READEXT。
++SCSI の読み込みは Z の Linux と同じく LBA ごとにキャッシュし、同じ LBA は二度と Pico に聞かない。
++"""
++import ctypes, os, shutil, struct, sys, tempfile
++from unicorn import Uc, UC_ARCH_M68K, UC_MODE_BIG_ENDIAN, UC_HOOK_CODE, UcError
++from unicorn.m68k_const import *
++
++HERE = os.path.dirname(os.path.abspath(__file__))
++LIB = os.path.join(HERE, 'libbw.dylib')
++BW_BAND, BW_BAND_END, BW_STRIDE, BW_STAGE2 = 0x40000, 0x100000, 64, 0x80
++FLASH_SIZE = 4096 + 32 * 512
++PATH = b'//raspi3/x68000z/x68kcli.hds'
++SIZE = 104890368
++IP = (192 << 24) | (168 << 16) | (1 << 8) | 118
++READFN = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint8))
++D = [UC_M68K_REG_D0 + i for i in range(8)]
++A = [UC_M68K_REG_A0 + i for i in range(8)]
++
++fails = 0
++
++
++def check(cond, what):
++    global fails
++    print(('ok   ' if cond else 'FAIL ') + what)
++    if not cond:
++        fails += 1
++
++
++def fake_ipl(marker):
++    """本物の IPL の代わり: d7 = marker にして IOCS 0xff (試験の終わり) を呼ぶ"""
++    code = struct.pack('>HHH', 0x7e00 | marker, 0x70ff, 0x4e4f)   # moveq #marker,d7 / moveq #-1,d0 / trap #15
++    return code + bytes(1024 - len(code))
++
++
++def hds_image(variant=0):
++    img = bytearray(32 * 512)
++    img[0:8] = b'X68SCSI1'
++    img[0x400:0x800] = fake_ipl(0x55)
++    img[0x800:0x804] = b'X68K'
++    img[0x810:0x818] = b'Human68k'
++    for i in range(0xc00, len(img)):
++        img[i] = (i * 7 + 3) & 0xff                 # SCSI ドライバの代わり
++    if variant:
++        img[0x818] = variant                        # 分割表が変わった
++    return bytes(img)
++
++
++class Pico:
++    """libbw を 1 回の「起動」ごとに読み込み直す (static な状態を消すため)。フラッシュは持ち越す"""
++
++    def __init__(self, flash=None):
++        self.dir = tempfile.mkdtemp()
++        p = os.path.join(self.dir, 'libbw.dylib')
++        shutil.copy(LIB, p)
++        self.lib = ctypes.CDLL(p)
++        self.lib.fake_flash_init()
++        if flash is not None:
++            self.lib.fake_flash_set(flash)
++        self.lib.bw_usable.restype = ctypes.c_bool
++        self.lib.bw_state.restype = ctypes.c_char_p
++        self.hds_open = 0
++        self.sysstat = 0
++        self.image = None
++        self._rd = READFN(self._read)
++
++    def _read(self, ctx, lba, buf):
++        ctypes.memmove(buf, self.image[lba * 512:(lba + 1) * 512], 512)
++        return 0
++
++    def flash(self):
++        b = ctypes.create_string_buffer(FLASH_SIZE)
++        self.lib.fake_flash_get(b)
++        return b.raw
++
++    def check(self, image, size=SIZE, path=PATH):
++        self.image = image
++        self.lib.bw_check(path, ctypes.c_uint64(size), self._rd, None)
++
++    def disk(self, lba):
++        b = (ctypes.c_uint8 * 512)()
++        rc = self.lib.bw_disk_read(lba, b)
++        return bytes(b), rc
++
++    def id6(self, lba, uptime):
++        b = (ctypes.c_uint8 * 512)()
++        if BW_STAGE2 <= lba < BW_STAGE2 + 8:
++            self.lib.bw_stage2_read(lba, b)
++        elif BW_BAND <= lba < BW_BAND_END:
++            self.lib.bw_reply(lba, b, self.hds_open, self.sysstat, IP if self.sysstat >= 2 else 0, uptime,
++                              self._rd, None)
++        return bytes(b)
++
++    def state(self):
++        return self.lib.bw_state(PATH).decode()
++
++
++class Z:
++    """X68000 Z の側: 68000 + ROM の真似 + Linux の読み込みキャッシュ"""
++
++    def __init__(self, pico, on_poll=None, f1_at=None, noreply=0, clock=1234500):
++        self.pico = pico
++        self.on_poll = on_poll or (lambda z, n: None)
++        self.f1_at = f1_at
++        self.noreply = noreply
++        self.clock = clock                          # ONTIME (1/100 秒)
++        self.mono = 0                               # Pico の起動からの時間 (戻らない)
++        self.cache = {}
++        self.polls = []
++        self.poll_clock = []
++        self.screen = []
++        self.result = None
++        u = self.uc = Uc(UC_ARCH_M68K, UC_MODE_BIG_ENDIAN)
++        u.ctl_set_cpu_model(UC_CPU_M68K_M68000)
++        u.mem_map(0, 0x100000)
++        u.hook_add(UC_HOOK_CODE, self._hook)
++        self.trap = False
++
++    def _hook(self, uc, addr, size, data):
++        if uc.mem_read(addr, 2) == b'\x4e\x4f':
++            self.trap = True
++            uc.emu_stop()
++
++    def read(self, scsi_id, lba):
++        key = (scsi_id, lba)
++        if key not in self.cache:                   # Linux のページキャッシュ
++            if scsi_id == 0:
++                self.cache[key] = self.pico.disk(lba)[0]
++            else:
++                self.cache[key] = self.pico.id6(lba, self.mono * 10)
++        return self.cache[key]
++
++    def iocs(self):
++        u = self.uc
++        d = [u.reg_read(r) for r in D]
++        a = [u.reg_read(r) for r in A]
++        fn = d[0] & 0xff
++        if fn == 0x04:                              # B_BITSNS
++            v = 0x08 if (self.f1_at is not None and len(self.polls) >= self.f1_at and d[1] == 0x0c) else 0
++            u.reg_write(D[0], v)
++        elif fn == 0x21:                            # B_PRINT
++            s = bytearray()
++            p = a[1]
++            while True:
++                c = u.mem_read(p, 1)[0]
++                if c == 0:
++                    break
++                s.append(c)
++                p += 1
++            self.screen.append(bytes(s).decode('cp932', 'replace'))
++        elif fn == 0x7f:                            # ONTIME
++            self.clock += 2
++            self.mono += 2
++            u.reg_write(D[0], self.clock % 8640000)
++            u.reg_write(D[1], 0)
++        elif fn == 0xf5 and (d[1] & 0xff) == 0x26:  # SCSIDRV S_READEXT
++            lba, n, sid, buf = d[2], d[3], d[4] & 7, a[1]
++            if sid == 6 and BW_BAND <= lba < BW_BAND_END:
++                self.polls.append(lba)
++                self.poll_clock.append(self.clock)
++                self.on_poll(self, len(self.polls))
++                if self.noreply > 0:
++                    self.noreply -= 1
++                    u.reg_write(D[0], 0xffffffff)
++                    return
++            if sid == 6 and lba == 0x100:           # 設定メニュー: "HU" の見出し + 印を付けて終わる小片
++                hdr = struct.pack('>HHIIIII', 0x4855, 0, 0x6800, 0x6800, 6, 0, 0) + bytes(0x40 - 24)
++                body = struct.pack('>HHH', 0x7e77, 0x70ff, 0x4e4f)
++                u.mem_write(buf, (hdr + body).ljust(512, b'\0'))
++            else:
++                for i in range(n):
++                    u.mem_write(buf + i * 512, self.read(sid, lba + i))
++            u.reg_write(D[0], 0)
++        elif fn == 0xff:                            # 試験の終わり (偽の IPL / 設定メニュー)
++            self.result = ('jumped', u.reg_read(UC_M68K_REG_PC), d[7] & 0xff, d[4])
++        else:
++            raise RuntimeError('IOCS %#x' % fn)
++
++    def boot(self, max_traps=20000):
++        """ROM の真似: ID 0 の LBA 2 (1KB 読む ROM もあるので 3 も) を $2000 に置き、d4 = 0 で飛ぶ"""
++        u = self.uc
++        u.mem_write(0x2000, self.read(0, 2) + self.read(0, 3))
++        u.reg_write(UC_M68K_REG_SR, 0x2700)
++        u.reg_write(UC_M68K_REG_A7, 0x1800)
++        for r in D:
++            u.reg_write(r, 0x11110000)
++        u.reg_write(D[4], 0)
++        pc = 0x2000
++        idle = 0
++        for _ in range(max_traps):
++            self.trap = False
++            try:
++                u.emu_start(pc, 0xfffff, count=20000)
++            except UcError as e:
++                self.result = ('error', u.reg_read(UC_M68K_REG_PC), str(e))
++                return self.result
++            pc = u.reg_read(UC_M68K_REG_PC)
++            if not self.trap:
++                idle += 1
++                if idle > 3:                        # IOCS を呼ばずに回り続けている = 止まった
++                    self.result = ('halted', pc)
++                    return self.result
++                continue
++            idle = 0
++            self.iocs()
++            if self.result:
++                return self.result
++            pc += 2
++        self.result = ('timeout', pc)
++        return self.result
++
++    def text(self):
++        return '\n'.join(self.screen)
++
++
++def first_boot_flash():
++    """1 回目の起動: HDS が先に開けた (控えを書く)"""
++    p = Pico()
++    check(not p.lib.bw_usable(PATH), 'no snapshot in an erased flash')
++    p.check(hds_image())
++    check(p.state() == 'updated', 'first open writes the snapshot (%s)' % p.state())
++    fl = p.flash()
++    check(fl[4096:] == hds_image(), 'snapshot holds HDS LBA 0-31 as is')
++    p2 = Pico(fl)
++    check(p2.lib.bw_usable(PATH), 'snapshot is usable after a reboot')
++    check(not p2.lib.bw_usable(b'//raspi3/other.hds'), 'snapshot is not used for another HDS path')
++    bad = bytearray(fl)
++    bad[4096 + 100] ^= 1
++    check(not Pico(bytes(bad)).lib.bw_usable(PATH), 'corrupted snapshot (hash) is not used')
++    p2.check(hds_image())
++    check(p2.state() == 'ok', 'same HDS: no rewrite (%s)' % p2.state())
++    p3 = Pico(fl)
++    p3.check(hds_image(), size=SIZE + 1024)
++    check(p3.state() == 'updated', 'different size: rewritten (%s)' % p3.state())
++    return fl
++
++
++def scenario_wait_then_ready(fl):
++    p = Pico(fl)
++    steps = {3: 1, 6: 2, 9: 3}
++
++    def on_poll(z, n):
++        if n in steps:
++            p.sysstat = steps[n]
++        if n == 12:
++            p.check(hds_image())                    # SMB がつながり HDS を開けた
++            p.sysstat = 5
++            p.hds_open = 1
++
++    z = Z(p, on_poll)
++    r = z.boot()
++    check(z.read(0, 0)[:8] == b'X68SCSI1' and z.read(0, 4)[:4] == b'X68K', 'served LBA 0/4 from the snapshot')
++    check(z.read(0, 2)[:2] == b'\x60\x00', 'LBA 2 is the waiter (bra.w)')
++    check(r[0] == 'jumped' and r[1] == 0x2004 and r[2] == 0x55, 'chain-loaded the real IPL at $2000 (%r)' % (r,))
++    check(r[0] == 'jumped' and r[3] == 0, 'd4 (SCSI ID from the ROM) restored to 0')
++    t = z.text()
++    check('Pico: SMB 接続待ち' in t, 'title shown')
++    for s in ('Wi-Fi 未接続', 'Wi-Fi 接続中', 'SMB 接続待ち', 'SMB 接続中'):
++        check(s in t, 'status "%s" shown' % s)
++    check('IP 192.168.1.118' in t, 'IP shown once Wi-Fi is up')
++    check(' 秒 ' in t and any(c in t for c in '|/-\\'), 'elapsed seconds and spinner shown')
++    check(len(z.polls) >= 12 and len(set(z.polls)) == len(z.polls), 'every poll at a fresh LBA (%d polls)' % len(z.polls))
++    check(all(BW_BAND <= l < BW_BAND_END and (l - BW_BAND) % BW_STRIDE == 0 for l in z.polls), 'polls in the band, 64-sector aligned')
++    gaps = [b - a for a, b in zip(z.polls, z.polls[1:])]
++    check(all(g >= BW_STRIDE or g < 0 for g in gaps), 'consecutive polls at least 32KB apart')
++    check(p.state() == 'served', 'status snap=served (%s)' % p.state())
++    return z
++
++
++def scenario_changed(fl):
++    p = Pico(fl)
++
++    def on_poll(z, n):
++        if n == 4:
++            p.check(hds_image(variant=0x42))       # 同じパスに別の HDS
++            p.sysstat = 5
++            p.hds_open = 1
++
++    z = Z(p, on_poll)
++    r = z.boot()
++    check(r[0] == 'halted', 'changed HDS: the waiter stops (%r)' % (r,))
++    check('HDS が変わりました' in z.text(), 'changed message shown')
++    check(p.state() == 'changed', 'status snap=changed (%s)' % p.state())
++    check(p.flash()[4096:] == hds_image(variant=0x42), 'snapshot updated for the next power-on')
++
++
++def scenario_noreply(fl):
++    p = Pico(fl)
++
++    def on_poll(z, n):
++        if n == 6:
++            p.check(hds_image())
++            p.sysstat = 5
++            p.hds_open = 1
++
++    z = Z(p, on_poll, noreply=3)
++    r = z.boot()
++    check('Pico の応答がありません' in z.text(), 'no-reply message on SCSI errors')
++    check(r[0] == 'jumped' and r[2] == 0x55, 'recovers and boots after errors (%r)' % (r,))
++
++
++def scenario_stale(fl):
++    """前の待ちの答えがキャッシュに残っている番地を読んだら (時計が 1 日戻ったことにする)、古いものとして飛ばす"""
++    p = Pico(fl)
++    z = Z(p, clock=1234500)
++    state = {'phase': 0}
++
++    def on_poll(zz, n):
++        if n == 5 and state['phase'] == 0:
++            state['phase'] = 1
++            zz.clock = zz.poll_clock[1] - 2         # 次は 2 回目と同じ番地 (キャッシュの「待ち」) を読む
++        elif n == 6:
++            p.check(hds_image())                    # その間に開けた: キャッシュの古い答えを信じずに次で起動する
++            p.sysstat = 5
++            p.hds_open = 1
++
++    z.on_poll = on_poll
++    r = z.boot()
++    check(r[0] == 'jumped' and r[2] == 0x55, 'stale cached "waiting" pages are skipped, then boots (%r)' % (r,))
++    check(len(z.polls) != len(set(z.polls)), 'the test really re-read cached LBAs')
++
++
++def scenario_ready_at_once(fl):
++    """待って起動したあとのソフトリセット: キャッシュの LBA 2 は待ち IPL のまま、Pico はもう開けている"""
++    p = Pico(fl)
++    p.disk(0)                                       # 控えを返した (served)
++    p.check(hds_image())
++    p.sysstat = 5
++    p.hds_open = 1
++    z = Z(p)
++    r = z.boot()
++    check(r[0] == 'jumped' and r[2] == 0x55 and len(z.polls) == 1, 'already open: chain-loads on the first poll (%r, %d polls)' % (r, len(z.polls)))
++
++
++def scenario_f1(fl):
++    p = Pico(fl)
++    z = Z(p, f1_at=2)
++    r = z.boot()
++    check(r[0] == 'jumped' and r[2] == 0x77, 'F1 loads the setting menu from ID 6 (%r)' % (r,))
++
++
++def scenario_nohds(fl):
++    p = Pico(fl)
++    p.sysstat = 5                                   # つながったが HDS が開けない
++
++    def on_poll(z, n):
++        if n == 5:
++            z.f1_at = 0                             # 抜け出すために F1
++
++    z = Z(p, on_poll)
++    z.boot()
++    check('HDS を開けません' in z.text(), 'HDS-not-found message')
++
++
++def main():
++    fl = first_boot_flash()
++    scenario_wait_then_ready(fl)
++    scenario_changed(fl)
++    scenario_noreply(fl)
++    scenario_stale(fl)
++    scenario_ready_at_once(fl)
++    scenario_f1(fl)
++    scenario_nohds(fl)
++    print('FAILED %d' % fails if fails else 'all passed')
++    return 1 if fails else 0
++
++
++if __name__ == '__main__':
++    sys.exit(main())
+-- 
+2.54.0 (Apple Git-157)
+
