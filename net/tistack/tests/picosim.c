@@ -39,6 +39,7 @@ static int oldlen;
 static uint64_t deadline;
 static void (*on_yield)(void);
 
+static int npd_paused;                  /* 1: npd.x が回ってこない (Z-OS で他の仕事が CPU を取っている) */
 static int no_tsp_fw;                   /* 1: Pico が 0xA6 を知らない (今のファーム): 要求を捨てて応答を返さない */
 uint32_t pico_host_clock_cs(void) { return (uint32_t)(world_us / 10000 % 8640000); }
 
@@ -49,6 +50,8 @@ static void exchange(void)
   long a[3] = { (long)zbuf, 0, 0 }, b[2];
   int n, r, more = 0, f;
   uint32_t tx0 = pstat.tx_bytes, rx0 = pstat.rx_bytes;
+  if (npd_paused)
+    return;
   ti_dispatch(TIS_NP_OUT, a);           /* 問い合わせ: 急ぎがあるか */
   if (!a[2] && !pmore && world_us < next_x)
     return;
@@ -648,6 +651,38 @@ static void x_notsp(void)
   settle("no TSP");
 }
 
+/* npd.x が 8 秒回ってこない (Z-OS の試験で ssh.x が "Error writing: I/O error" で落ちた形):
+   つながっているソケットは残って、npd.x が戻れば続きが運ばれる */
+static void x_stall(void)
+{
+  long s, c, r;
+  char b[4];
+  uint32_t nd0 = pstat.netdown, st0 = pstat.stall;
+  int i;
+  s = sock(0);
+  conn(s, PICO_IP, 7);
+  wr(s, "a", 1);
+  rd(s, b, 1);
+  npd_paused = 1;
+  CHECK("npd stalled: write is queued", wr(s, "x", 1) == 1);
+  c = sock(0);
+  r = conn(c, PICO_IP, 7);              /* CONNECT が待ち行列に残ったまま npd.x が来ない */
+  CHECK("npd stalled: a new blocking connect ends with \"Network is down\"", r == -1 && !strcmp(serr(c), "Network is down"));
+  cls(c);
+  for (i = 0; i < 30; i++) {            /* さらに 3 秒 */
+    world_us += 100000;
+    (void)serr(s);
+  }
+  CHECK("npd stalled: counted as a stall, not a netdown", pstat.stall > st0 && pstat.netdown == nd0);
+  CHECK("npd stalled: the established socket is still ESTABLISHED", !strcmp(st(s), "ESTABLISHED"));
+  npd_paused = 0;
+  r = rd(s, b, 1);
+  CHECK("npd back: the queued byte is echoed", r == 1 && b[0] == 'x');
+  CHECK("npd back: the socket keeps working", wr(s, "y", 1) == 1 && rd(s, b, 1) == 1 && b[0] == 'y');
+  cls(s);
+  settle("stall");
+}
+
 /* 記録形式を直に: 名前でつなぐ (addr 0)、TLS は NOTSUP、同じ要求には同じ応答 */
 static void x_raw(void)
 {
@@ -758,6 +793,7 @@ int main(int argc, char **argv)
   CHECK("Z ring never overran (WINDOW respected)", pstat.overrun == 0);
   x_reboot();
   x_notsp();
+  x_stall();
   x_raw();
   if (!quick)
     throughput();

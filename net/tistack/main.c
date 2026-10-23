@@ -131,7 +131,20 @@ static int show(struct tis_info *in)
   putn(in->rbytes);
   _dos_print(" written ");
   putn(in->wbytes);
-  _dos_print("\r\n");
+  _dos_print("\r\n");  if (in->pstat) {
+    struct pico_stat *q = in->pstat;
+    _dos_print("  pico xchg ");
+    putn(q->xchg);
+    _dos_print(" resend ");
+    putn(q->resend);
+    _dos_print(" stale ");
+    putn(q->stale_rec);
+    _dos_print(" netdown ");
+    putn(q->netdown);
+    _dos_print(" stall ");
+    putn(q->stall);
+    _dos_print("\r\n");
+  }
   for (i = 0; i < in->nsock; i++) {
     struct tsock *t = &in->ts[i];
     if (t->st == S_FREE)
@@ -292,6 +305,7 @@ int tis_main(void)
       pico_init(pool + NSOCK * bs, txs, ((uint32_t)_dos_getdate() << 16) ^ (uint32_t)_dos_gettim2());
       be = &be_pico;
       info.be_name = "pico";
+      info.pstat = &pstat;
       /* 表を用意し終えてから入口を預ける (預けた瞬間から npd.x のスレッドが呼ぶ) */
       if (npd_register(&ti_entry) < 0) {
         _dos_print("tis.x: npd.sys 1.2 が組み込まれていません (-p には npd.sys と npd.x が要る)\r\n");

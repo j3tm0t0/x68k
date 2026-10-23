@@ -20,10 +20,10 @@ $(OBJ): tsp_glue.c lwipopts.h ../tsp_svc.c ../tsp_svc.h ../tsp_lwipopts.h ../../
 	  cc -O2 -g -w $(SAN) -DTSP_PLAT_HOST $(addprefix -I$(CURDIR)/,. .. ../..) -I$(abspath $(HARNESS)) -I$(L)/include \
 	    -I$(LWIP)/contrib/ports/unix/port/include -c $$f || exit 1; done
 	: > build/exports
-	ld -r -o $@ build/o/*.o -exported_symbols_list build/exports
+	$(HARNESS)/tools/ld-hide.sh $@ build/exports build/o/*.o
 
 $(HARNESS)/build/picosim: $(OBJ) $(HARNESS)/picosim.c $(HARNESS)/netpipe.c $(HARNESS)/lan_slirp.c
-	rm -f $@ && $(MAKE) -C $(HARNESS) build/picosim SVC=$(abspath $(OBJ)) $(if $(SAN),CFLAGS="-O1 -g -Wall $(SAN)")
+	rm -f $@ && $(MAKE) -C $(HARNESS) build/picosim TSP=$(abspath $(OBJ)) $(if $(SAN),CFLAGS="-O1 -g -Wall $(SAN)")
 
 clean:
 	rm -rf build

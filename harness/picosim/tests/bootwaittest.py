@@ -28,8 +28,8 @@ def check(name, cond, extra=""):
     if not cond: fails += 1
 
 class Sim:
-    def __init__(self, T):
-        self.p = subprocess.Popen([PICOSIM, "-l", "127.0.0.1:%d" % PORT, "-L", "none", "-0", HDS, "-T", T, "-F", FW, "-v"],
+    def __init__(self, T, extra=()):
+        self.p = subprocess.Popen([PICOSIM, "-l", "127.0.0.1:%d" % PORT, "-L", "none", "-0", HDS, "-T", T, "-F", FW, "-v"] + list(extra),
                                   stderr=open(os.path.join(HERE, "bootwait.log"), "a"))
         for _ in range(50):
             try: self.s = socket.create_connection(("127.0.0.1", PORT)); break
@@ -64,13 +64,22 @@ def ask(sim):
 bw1 = open(os.path.join(FW, "bootwait1.bin"), "rb").read()
 bw2 = open(os.path.join(FW, "bootwait.bin"), "rb").read()
 
-# 1. 控え無し
-sim = Sim("0.2,0.4,1")
+# 1. 控え無し (ID 1 にデータの HDS も: -H 1:file、HDS0 と同じく開くまで NOT READY)
+DATA = os.path.join(tmp, "data.hds")
+dimg = os.urandom(512 * 16)
+open(DATA, "wb").write(dimg)
+sim = Sim("0.2,0.4,1", ["-H", "1:" + DATA])
 st, sense, _ = sim.read(0, 0)
 check("no snapshot: ID0 NOT READY", st == 2 and sense == (2, 4, 1))
+st, sense, _ = sim.read(1, 0)
+check("data HDS on ID1: NOT READY before the HDS opens", st == 2 and sense == (2, 4, 1))
 time.sleep(1.2)
 st, _, d = sim.read(0, 0, 4)
 check("HDS open: ID0 readable", st == 0 and d[:512] == img[:512])
+st, _, d = sim.read(1, 3, 2)
+check("data HDS on ID1 readable", st == 0 and d == dimg[3 * 512:5 * 512])
+sim.write(1, 5, b"\x5a" * 512)
+check("data HDS on ID1 writable", open(DATA, "rb").read()[5 * 512:6 * 512] == b"\x5a" * 512)
 sim.close()
 check("snapshot file written", os.path.exists(SNAP) and os.path.getsize(SNAP) == 4096 + 16384)
 
@@ -99,6 +108,15 @@ sim.write(6, 0x20, (hdr[:8] + struct.pack(">I", 8) + bytes(4) + struct.pack(">H"
 st, _, d = sim.read(6, 0x3fffe8, 4)      # 1700 バイト = 4 ページ (lba % 8 がページ)
 cfg = b"".join(d[i * 512 + 16:(i + 1) * 512] for i in range(4))
 check("vdbuf GETCONFIG (4 pages, ssid and hds0)", d[13] == 3 and cfg[:7] == b"picosim" and cfg[1160:1160 + len(HDS)] == HDS.encode())
+sim.close()
+
+# 5. -Q 1: リモートドライブの顔 (署名・分割表・ドライバ) を ID 1 に。ID 6 は顔を出さない (運ぶ道はそのまま)
+sim = Sim("0,0,0", ["-Q", "1"])
+st, _, d1 = sim.read(1, 0)
+st6, _, d6 = sim.read(6, 0)
+check("-Q 1: the remote-drive face is on ID1, not on ID6", d1[:8] == b"X68SCSI1" and d6[:8] == bytes(8))
+st, _, d = sim.read(6, 0x80, 1)
+check("-Q 1: ID6 still serves the rest (stage 2)", d[:4] == b"BW2!")
 sim.close()
 
 # 3. HDS が変わった

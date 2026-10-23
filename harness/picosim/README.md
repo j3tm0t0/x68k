@@ -84,6 +84,8 @@ make -C driver bootwait1.bin bootwait.bin hdsboot.bin settingui.bin scsiremote.b
 | `-l host:port` | 127.0.0.1:6868 | XEiJ を待つ口 |
 | `-n net/len` `-g gw` `-D dns` | 192.168.1.0/24, .1, .3 | slirp の LAN。ゲートウェイは Mac の 127.0.0.1 に。DNS の口とゲートウェイの UDP 53 番 (zshrc の `NETDNS` の既定) は picosim が Mac の resolver (getaddrinfo / getnameinfo) で答える (A と PTR。仮想の LAN のアドレスの PTR は picosim が名付ける) |
 | `-L [u]PORT:ZPORT` | `2323:2323` | Mac の 127.0.0.1:PORT → Z:ZPORT。`u` で UDP、`none` で無し。何度でも |
+| `-H ID:file.hds[:hold\|:after-remote]` | | ID 1〜5 をデータの HDS に (ファームの HDS1〜、SD のデータディスクの真似)。sysstatus 5 まで NOT READY。`:hold` は制御 (`-C` に `hds N ready`) まで、`:after-remote` は Z が B: (scsiremote.sys) を組み込むまで NOT READY。何度でも |
+| `-Q N` | 6 | リモートドライブの「顔」(LBA 0 の署名・LBA 4 の分割表・LBA 6〜 の scsiremote.sys) を出す ID。運ぶ道は ID 6 のまま (下記「ドライブ名」) |
 | `-0 file.hds` `-N 秒` | | ID 0 を HDS ファイルで答える / 最初の N 秒 NOT READY (`-T 0,0,N` と同じ) |
 | `-T w,s,h` | | Pico Z Loader の起動待ち: 起動から w 秒で Wi-Fi、s 秒で SMB、h 秒で HDS が開く (下記) |
 | `-B file` | `<HDS>.bootsnap` | 起動の控え (フラッシュ 0x1E0000 の代わり: 見出し 4KB + HDS の LBA 0-31) |
@@ -225,6 +227,42 @@ INQUIRY / READ CAPACITY / TEST UNIT READY / REQUEST SENSE / MODE SENSE も含め
   疑似乱数で飛ぶ) で読む理由がそのまま再現される。書き込みは素通しでキャッシュにも入る。電源断 = picosim の再起動
 - **LAN** (`lan_slirp.c`): ファームの代理 ARP と同じく、Z の IP 宛ての ARP に Z の (架空の) MAC で答え、Z 宛ての IPv4 を
   netpipe に渡す。Z からの IP は Ethernet に包んで slirp へ。最初の交換で Z の IP を知ったら -L の転送を張る
+
+## データの HDS (-H) と TSP (tis.x -p)
+
+- `-H 1:data.hds` で ID 1 をデータの HDS にする (XEiJ には `-Dpicosim.ids=1,6` など)。2026-10-23 に XEiJ で、
+  20MB の空の HDS (x68kcli/scripts/mkhds.py) が **B:** になった (A: = ID 0)。B: の Z のリモートドライブ (`-F -R`) も
+  一緒だと A: = ID 0、B: = ID 1、C: = リモートドライブ (`drive.x` の表示)。Z から書いたファイルを Mac の rb-cli で読めた。
+  Human68k が SCSI を調べる時点で NOT READY の ID はドライブにならないので、`-T` の HDS の時刻より前に起動が進むと
+  データディスクは見えない
+- TSP: lwIP (`LWIP=`、既定は pico-sdk の lib/lwip) があれば、build/picosim に net/tistack の tsp_svc + lwIP が既定で入る
+  (`TSP=` で外す)。lwIP は Z の IP (192.168.1.68) を名乗るが、LAN に出るのは最初の 0xA6 が来てから (xip.x + npd.x の Z は
+  今までどおり)。`make test` の `tests/tsptest.sh` が net/tistack/tests/xeij_pico.sh を回して判定する (XEiJ と GUI が要る。
+  NOXEIJ=1 で飛ばす): 名前・echo・put・get・sink・src・ssh.x (Mac の sshd、鍵交換まで)・Mac からの rcmd.x (echo・x68put 300KB)
+
+- Z-OS の煙試験 `tests/zostest.sh` (`make test` に入っている): XEiJ で zos.x (ksh のペイン 2 つ) を立て、右のペインで
+  ssh.x -t を TSP 越しに Mac の試験用 sshd (ユーザ権限、127.0.0.1:2224、鍵 1 つ、ForceCommand) へ。左のペインで echo、
+  右で abc を打ち、テキスト VRAM を x68k-zos の tvram2txt.py で読んで判定する。Z-OS の道具 (zos.x・xeij_run.sh・
+  xeijkeys.py・tvram2txt.py) は x68k-zos の kernel/ から (`ZOS=`、写して使う)。無ければ SKIP。
+  2026-10-23: 5 項目とも PASS、sshd の見た端末は 48x31 (右のペイン)、2 分 14 秒
+
+## ドライブ名 (データの HDS とリモートドライブの順)
+
+Human68k 3.02 は起動の途中で SCSI を **ID の小さい順に**調べ、ディスクごとにドライバを組み込んでドライブ名を振る
+(ID 0 の HDS = A:、ID 1 のデータの HDS = B:、ID 6 のリモートドライブ = C:)。リモートドライブを B: のままにする方法を
+XEiJ + picosim で試した (2026-10-23、`drive.x` で確かめた):
+
+| やり方 | 結果 |
+|---|---|
+| **ファーム: リモートドライブの顔をデータの HDS より小さい ID に** (`-Q 1 -H 2:data.hds`、運ぶ道は ID 6 のまま) | **A: = ID 0、B: = リモートドライブ、C: = データの HDS**。Z 側は何も変えない。netpipe (npd.x) も動く |
+| Z: AUTOEXEC.BAT で SUBST を 4 行 (`SUBST X: B:\` / `SUBST B: C:\` / `SUBST C: X:\` / `SUBST /D X:`) | B: でリモートドライブ、C: でデータの HDS (書き込みも)。`subst /l` は `B: > C:\`、`C: > B:\`。`drive.x` などの物理のドライブを見る道具は元の順のまま |
+| データの HDS を起動の走査の間だけ NOT READY (`:after-remote`) にし、あとで組み込む | 走査では B: = リモートドライブになり、データの HDS はドライブにならない。CONFIG.SYS の最後に SCSI のディスクドライバ (FORMAT.X の SCHDISK を DEVICE= で) を置いても **組み込まれない** (ドライブが増えず、ID 1 を読みにも来ない。SCHDISK は IPL から呼ばれる前提)。Human68k 3.02 にはあとから SCSI ディスクを組み込む道具が無い (SUSIE.X など外の道具は試していない) |
+
+決まった高い名前にするなら [../zremote](../zremote) の `zdrv.x` (ZREMOTE のドライブを探して Z: を _ASSIGN mode 0x50 で割り当てる)。
+ドライバが自分のドライブ名を選ぶ道は無い (Human68k が組み込み順に振る。LASTDRIVE は上限だけ)。
+
+Human68k 3.02 に ASSIGN は無い。`SUBST.X` (DOS の _ASSIGN) は**使われているドライブ名にも**割り当てられる
+(zsh から打つときは `subst.x x: "b:\"` と引用符で。COMMAND.X の .BAT ではそのまま)。
 
 ## サービスを足す (tistack の Pico 側ソケット窓口など)
 

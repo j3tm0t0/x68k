@@ -1,0 +1,77 @@
+From 670fb84f56e8dd54a47ba85286830a89c6f5962f Mon Sep 17 00:00:00 2001
+From: moto <j3tm0t0@gmail.com>
+Date: Fri, 23 Oct 2026 20:45:06 +0900
+Subject: [PATCH] =?UTF-8?q?settings=20UI:=20network=20items=20inside=20the?=
+ =?UTF-8?q?=20=E3=81=9D=E3=81=AE=E4=BB=96=E3=81=AE=E8=A8=AD=E5=AE=9A=20fra?=
+ =?UTF-8?q?me=20(rows=207-11)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The separate ネットワーク設定 heading landed on the bottom line of the frame above on the real
+Z. One frame of 8 rows ends above the HDS heading; the help lines say (再起動後に有効).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PrGdt1XK1exBgERrMmLA1u
+---
+ driver/settingui.c | 22 ++++++++++------------
+ 1 file changed, 10 insertions(+), 12 deletions(-)
+
+diff --git a/driver/settingui.c b/driver/settingui.c
+index 3df6169..82dd6e3 100644
+--- a/driver/settingui.c
++++ b/driver/settingui.c
+@@ -184,28 +184,28 @@ struct itemtbl itemtbl[] = {
+     "#h (クリアする) #i #f  (前に戻る)",
+     -1, -1, NULL, 0, flash_clear },
+ 
+-  /* ネットワーク (表の最後に足す。途中に入れると xn の番号がずれる) */
+-  { 0x010, 52, 8, -1, "HOSTNAME",
+-    "Pico がネットワークで名乗るホスト名を設定します",
++  /* ネットワーク (表の最後に足す。途中に入れると xn の番号がずれる。画面では「その他の設定」の枠の中) */
++  { 0x010, 52, 7, -1, "HOSTNAME",
++    "Pico がネットワークで名乗るホスト名を設定します (再起動後に有効)",
+     "ホスト名を入力してください (空欄なら pico- とボード ID の下 4 桁)",
+     "#e  (確定) #f   (前に戻る)",
+     64, 28, config.hostname,        sizeof(config.hostname),       input_entry },
+-  { 0x000, 52, 9, -1, "IPADDR",
+-    "固定の IP アドレスを設定します",
++  { 0x000, 52, 8, -1, "IPADDR",
++    "固定の IP アドレスを設定します (再起動後に有効)",
+     "IP アドレスを入力してください (空欄なら DHCP)",
+     "#e  (確定) #f   (前に戻る)",
+     64, 16, config.ipaddr,          sizeof(config.ipaddr),         input_entry },
+-  { 0x000, 52, 10, -1, "NETMASK",
++  { 0x000, 52, 9, -1, "NETMASK",
+     "固定 IP のネットマスクを設定します",
+     "ネットマスクを入力してください (空欄なら 255.255.255.0)",
+     "#e  (確定) #f   (前に戻る)",
+     64, 16, config.netmask,         sizeof(config.netmask),        input_entry },
+-  { 0x000, 52, 11, -1, "GATEWAY",
++  { 0x000, 52, 10, -1, "GATEWAY",
+     "固定 IP のゲートウェイを設定します",
+     "ゲートウェイの IP アドレスを入力してください",
+     "#e  (確定) #f   (前に戻る)",
+     64, 16, config.gateway,         sizeof(config.gateway),        input_entry },
+-  { 0x000, 52, 12, -1, "DNS",
++  { 0x000, 52, 11, -1, "DNS",
+     "固定 IP の DNS サーバを設定します",
+     "DNS サーバの IP アドレスを入力してください (空欄ならゲートウェイ)",
+     "#e  (確定) #f   (前に戻る)",
+@@ -274,11 +274,9 @@ int topview(void)
+       drawmsg(38, 3, 2, "未接続");
+     drawframe3(2, 4, 44, 2, 2, 10);
+ 
++    /* ネットワークの項目もこの枠に入れる (別の枠にすると見出しが上の枠の下の線と同じ行になった) */
+     drawmsg(52, 3, 3, "その他の設定");
+-    drawframe3(50, 4, 44, 3, 2, 10);
+-
+-    drawmsg(52, 7, 3, "ネットワーク設定 (再起動後に有効)");
+-    drawframe3(50, 8, 44, 5, 2, 10);
++    drawframe3(50, 4, 44, 8, 2, 10);
+ 
+     drawframe3(80, 27, 14, 1, 2, -1);
+   }
+-- 
+2.54.0 (Apple Git-157)
+

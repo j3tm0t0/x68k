@@ -108,6 +108,7 @@ extern const struct backend *be;
 struct pico_stat {
   uint32_t xchg, resend, stale_rec, stale, netdown, connects, accepts;
   uint32_t tx_bytes, rx_bytes, dgrams_in, dgrams_out, overrun;
+  uint32_t stall;                       /* npd.x が NONPD_CS 来なかった回数 (つながっているソケットは残す) */
 };
 extern struct pico_stat pstat;
 void pico_init(uint8_t *pool, uint32_t txsz, uint32_t seed);
@@ -122,6 +123,7 @@ struct tis_info {
   uint32_t calls, waits, conns, rbytes, wbytes;
   uint32_t tpos;                        /* 呼び出しの記録 (tis.x -t で表示)。poll の空振りは数えない */
   struct { uint8_t cmd, fd; uint16_t len; int32_t ret; } trace[TRACE];
+  struct pico_stat *pstat;              /* -p のとき (tis.x -s で表示) */
 };
 extern struct tis_info info;
 

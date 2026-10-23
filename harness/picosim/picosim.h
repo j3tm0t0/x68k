@@ -49,6 +49,12 @@ int pz_id0_ready(void);
 int pz_id0_read(uint32_t lba, uint8_t *buf);
 int pz_id0_write(uint32_t lba, const uint8_t *buf);
 int pz_id6_read(uint32_t lba, uint8_t *buf);
+void pz_hds_add(int id, const char *path);   /* ID 1〜5 のデータの HDS (-H、末尾 :hold / :after-remote) */
+const char *pz_hds_path(int id);
+void pz_remote_init_seen(void);
+int pz_hds_ready(int id);
+int pz_hds_read(int id, uint32_t lba, uint8_t *buf);
+int pz_hds_write(int id, uint32_t lba, const uint8_t *buf);
 int pz_id6_write(uint32_t lba, const uint8_t *buf);
 
 /* ---- netpipe (netpipe.c): SCSI ID 6 の LBA を受ける ---- */
@@ -78,6 +84,7 @@ void lan_pollfds_done(struct pollfd *pfd, int n);
 void lan_stats(void);
 /* Z (netpipe のブリッジ) を LAN の 1 台にする。zip が変わったら呼ぶ (0 で外す) */
 void lan_set_zip(uint32_t zip_be);
+void lan_forward_to(uint32_t zip_be);
 /* Z からの IP パケット 1 個を LAN に出す */
 void lan_from_z(const uint8_t *ip, int len);
 /* Z 宛ての IP パケット (netpipe.c が受け取る)。LAN 側が呼ぶ */

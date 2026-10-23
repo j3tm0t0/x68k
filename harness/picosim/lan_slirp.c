@@ -16,6 +16,7 @@
 #include <poll.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <strings.h>
 #include "picosim.h"
 #include "libslirp.h"
 
@@ -289,7 +290,14 @@ static int dns_answer(const uint8_t *ip, int len)
   uint8_t *m = r + 28;                  /* IP 20 + UDP 8 の後ろ */
   memcpy(m, q, qend + 4);
   rl = qend + 4;
-  if (qtype == 1) {                     /* A */
+  if (qtype == 1 && !strcasecmp(name, "mac.test")) {
+    /* 試験の名前: mac.test = ゲートウェイ (Mac)。net/tistack の試験と同じ取り決め (tsp_glue.c の dns_local_addhost) */
+    static const uint8_t rr[12] = { 0xc0, 12, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4 };
+    memcpy(m + rl, rr, 12);
+    memcpy(m + rl + 12, &lan_cfg.gw, 4);
+    rl += 16;
+    an = 1;
+  } else if (qtype == 1) {              /* A */
     struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_DGRAM }, *res = NULL, *a;
     if (getaddrinfo(name, NULL, &hints, &res) != 0)
       rcode = 3;
@@ -307,7 +315,10 @@ static int dns_answer(const uint8_t *ip, int len)
   } else if (qtype == 12) {             /* PTR: a.b.c.d.in-addr.arpa */
     unsigned b[4];
     char host[256];
-    struct sockaddr_in sa = { .sin_family = AF_INET, .sin_len = sizeof sa };
+    struct sockaddr_in sa = { .sin_family = AF_INET };
+#ifdef __APPLE__
+    sa.sin_len = sizeof sa;
+#endif
     if (sscanf(name, "%u.%u.%u.%u.in-addr.arpa", &b[3], &b[2], &b[1], &b[0]) == 4) {
       sa.sin_addr.s_addr = htonl(b[0] << 24 | b[1] << 16 | b[2] << 8 | b[3]);
       /* 仮想の LAN のアドレスは Mac に聞かない (家の LAN の同じアドレスの名前が返ってしまう) */
@@ -435,6 +446,12 @@ static void del_fwds(void)
   struct in_addr lo = { htonl(INADDR_LOOPBACK) };
   for (int i = 0; i < lan_cfg.nfwd; i++)
     slirp_remove_hostfwd(slirp, lan_cfg.fwd[i].udp, lo, lan_cfg.fwd[i].hport);
+}
+
+/* Z の IP への -L の転送だけを張る (代理 ARP はしない。--pzl では PZL の netpipe が Z の IP を名乗る) */
+void lan_forward_to(uint32_t z)
+{
+  add_fwds(z);
 }
 
 void lan_set_zip(uint32_t z)

@@ -1,0 +1,477 @@
+From 483429f99b3978d565629738bcac5227017834a0 Mon Sep 17 00:00:00 2001
+From: moto <j3tm0t0@gmail.com>
+Date: Fri, 23 Oct 2026 18:39:03 +0900
+Subject: [PATCH] SD card: HDS files on an SPI SD card ("sd:/path.hds" in an
+ HDS slot), opt-in; one-time fetch from the share
+
+A config HDS entry starting with "sd:" opens that file on a microSD card wired to SPI0
+(GP18 SCK / GP19 MOSI / GP20 MISO / GP21 CS, 25 MHz; SD_SCK/SD_MOSI/SD_MISO/SD_CS/SD_SPI_HZ),
+via no-OS-FatFS-SD-SDIO-SPI-RPi-Pico (lib/FatFs_SD). Port of sdhds 6db6256. Such a disk does
+not wait for Wi-Fi; ID 0 / BOOTWAIT / ID 6 are unchanged.
+
+Opt-in only: an extra SCSI ID is given a drive letter at boot before CONFIG.SYS drivers, so
+e.g. HDS1 = "sd:/x68000z/hds1.hds" takes B: and the remote drive moves to C:.
+
+After the first connect, if the card has no /x68000z/hds1.hds and the HDS0 share has
+sdcopy/hds1.hds, it is copied onto the card once (.part, then rename). Copying does not
+enable it; HDS1 still has to name it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PrGdt1XK1exBgERrMmLA1u
+---
+ .gitmodules        |   3 +
+ CMakeLists.txt     |   7 +++
+ lib/FatFs_SD       |   1 +
+ src/connect.c      |  22 +++++++
+ src/hdscache.c     |  22 +++++--
+ src/hw_config.c    |  56 ++++++++++++++++++
+ src/sdhds.c        | 142 +++++++++++++++++++++++++++++++++++++++++++++
+ src/sdhds.h        |  22 +++++++
+ src/virtual_disk.c |  20 +++++++
+ 9 files changed, 289 insertions(+), 6 deletions(-)
+ create mode 160000 lib/FatFs_SD
+ create mode 100644 src/hw_config.c
+ create mode 100644 src/sdhds.c
+ create mode 100644 src/sdhds.h
+
+diff --git a/.gitmodules b/.gitmodules
+index 535327f..ebe2c76 100644
+--- a/.gitmodules
++++ b/.gitmodules
+@@ -10,3 +10,6 @@
+ [submodule "x68kserremote"]
+ 	path = x68kserremote
+ 	url = https://github.com/yunkya2/x68kserremote.git
++[submodule "lib/FatFs_SD"]
++	path = lib/FatFs_SD
++	url = https://github.com/carlk3/no-OS-FatFS-SD-SDIO-SPI-RPi-Pico.git
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index f83d1a0..c3094cb 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -20,6 +20,10 @@ add_definitions(-DHAVE_CONFIG_H)
+ 
+ # Build libsmb2 as a library
+ add_subdirectory(${LIBSMB2_PATH} libsmb2)
++# SD カード (SPI) と FatFs: HDS を SD に置く (config の HDS を "sd:/ファイル名" にする)
++add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/lib/FatFs_SD/src FatFs_SD)
++# file_stream.c は fopencookie (GNU 拡張) を使う。使わないが、ライブラリがまとめて入れるのでここだけ GNU にする
++set_source_files_properties(${CMAKE_CURRENT_LIST_DIR}/lib/FatFs_SD/src/src/file_stream.c PROPERTIES COMPILE_DEFINITIONS _GNU_SOURCE)
+ 
+ # Application, including in the FreeRTOS-Kernel
+ add_executable(
+@@ -33,6 +37,8 @@ add_executable(
+ 	src/smb2connect.c
+         src/config_file.c
+         src/netpipe.c
++        src/sdhds.c
++        src/hw_config.c
+         src/usb_descriptors.c
+         x68kserremote/service/remoteserv.c
+         iconv/iconv_mini.c
+@@ -140,6 +146,7 @@ target_link_libraries(${PROJECT_NAME}
+         FreeRTOS-Kernel-Heap3
+         tinyusb_device
+         tinyusb_board
++        no-OS-FatFS-SD-SDIO-SPI-RPi-Pico
+ )
+ 
+ pico_add_extra_outputs(${PROJECT_NAME})
+diff --git a/lib/FatFs_SD b/lib/FatFs_SD
+new file mode 160000
+index 0000000..6c644cf
+--- /dev/null
++++ b/lib/FatFs_SD
+@@ -0,0 +1 @@
++Subproject commit 6c644cfc3ab03c161fee2dd7be4877e5b832fa71
+diff --git a/src/connect.c b/src/connect.c
+index 461b49e..902c432 100644
+--- a/src/connect.c
++++ b/src/connect.c
+@@ -42,6 +42,7 @@
+ 
+ #include "config.h"
+ #include "main.h"
++#include "sdhds.h"
+ #include "virtual_disk.h"
+ #include "config_file.h"
+ #include "msclog.h"
+@@ -187,6 +188,8 @@ static int vd_mount(void)
+     for (int i = 0; i < countof(config.hds); i++, id++) {
+         struct smb2_context *smb2;
+         const char *shpath;
++        if (sdhds_is(config.hds[i]))
++            continue;                   /* SD カードの上の HDS は vd_init で開いてある */
+         if ((smb2 = connect_smb2_path(config.hds[i], &shpath)) == NULL)
+             continue;
+ 
+@@ -233,6 +236,24 @@ static int vd_mount(void)
+     sysstatus = STAT_CONFIGURED;
+ }
+ 
++/* SD カードの HDS1 を Wi-Fi 越しに用意する: HDS0 と同じ SMB の共有の SDHDS_FETCH1 を、カードに無ければ写す。
++   USB タスクと libsmb2 の接続を分けるため、写すための接続を別に作って終わったら閉じる */
++static void sd_fetch_once(void)
++{
++    char share[64];
++    const char *slash = strchr(config.hds[0], '/');
++    struct smb2_context *smb2;
++    if (sysstatus < STAT_SMB2_CONNECTED || !slash || slash == config.hds[0] || sdhds_is(config.hds[0]) ||
++        (size_t)(slash - config.hds[0]) >= sizeof share)
++        return;
++    memcpy(share, config.hds[0], slash - config.hds[0]);
++    share[slash - config.hds[0]] = 0;
++    if ((smb2 = connect_smb2(share)) == NULL)
++        return;
++    sdhds_fetch(smb2, SDHDS_FETCH1, SDHDS_AUTO1);
++    disconnect_smb2(smb2);
++}
++
+ //****************************************************************************
+ // WiFi connection task
+ //****************************************************************************
+@@ -259,6 +280,7 @@ void connect_task(void *params)
+         vd_mount();
+     }
+     msclog_mark("connect done, notify USB (sysstatus %d)", sysstatus);
++    sd_fetch_once();
+ #if HID_KEYBOARD
+     connect_finished = true;
+ #endif
+diff --git a/src/hdscache.c b/src/hdscache.c
+index ecc5af8..0cc498c 100644
+--- a/src/hdscache.c
++++ b/src/hdscache.c
+@@ -35,6 +35,7 @@
+ 
+ #include "main.h"
+ #include "virtual_disk.h"
++#include "sdhds.h"
+ 
+ //****************************************************************************
+ // Static variables
+@@ -77,13 +78,20 @@ int hds_cache_read(struct smb2_context *smb2, struct smb2fh *sfh, uint32_t lba,
+     }
+ 
+     struct cache *c = &cache[cache_next];
+-    uint64_t cur;
+-    if (smb2_lseek(smb2, sfh, lba * SECTOR_SIZE, SEEK_SET, &cur) < 0)
+-        return -1;
++    int sz;
+     c->sects = 0;
+-    int sz = smb2_read(smb2, sfh, c->data, DISK_CACHE_SIZE);
+-    if (sz < 0)
+-        return -1;
++    if (smb2 == NULL) {
++        /* SD カードの上の HDS (sfh は sdhds_open の handle) */
++        if ((sz = sdhds_read(sfh, lba, c->data, DISK_CACHE_SECTS)) < 0)
++            return -1;
++    } else {
++        uint64_t cur;
++        if (smb2_lseek(smb2, sfh, lba * SECTOR_SIZE, SEEK_SET, &cur) < 0)
++            return -1;
++        sz = smb2_read(smb2, sfh, c->data, DISK_CACHE_SIZE);
++        if (sz < 0)
++            return -1;
++    }
+     c->sfh = sfh;
+     c->smb2 = smb2;
+     c->lba = lba;
+@@ -103,6 +111,8 @@ int hds_cache_write(struct smb2_context *smb2, struct smb2fh *sfh, uint32_t lba,
+         }
+     }
+ 
++    if (smb2 == NULL)
++        return sdhds_write(sfh, lba, buf, 1) < 0 ? -1 : 0;
+     uint64_t cur;
+     if (smb2_lseek(smb2, sfh, lba * SECTOR_SIZE, SEEK_SET, &cur) < 0)
+         return -1;
+diff --git a/src/hw_config.c b/src/hw_config.c
+new file mode 100644
+index 0000000..359be50
+--- /dev/null
++++ b/src/hw_config.c
+@@ -0,0 +1,56 @@
++/*
++ * hw_config.c -- SD カード (SPI 接続) の配線 (no-OS-FatFS-SD-SDIO-SPI-RPi-Pico 用)
++ *
++ *   SD の基板    Pico W / Pico 2 W (既定。CMake の SD_SCK / SD_MOSI / SD_MISO / SD_CS / SD_SPI_HZ で変えられる)
++ *   3V3          36 番ピン (3V3 OUT)
++ *   GND          38 番ピン
++ *   SCK          GP18 (24 番ピン)
++ *   MOSI (DI)    GP19 (25 番ピン)
++ *   MISO (DO)    GP20 (26 番ピン)
++ *   CS           GP21 (27 番ピン)
++ * Pico 2 WH (2026-10-23): DAT1・DAT2・CS・MISO に 10k の外付けプルアップ (RP2350 の E9)。25MHz で 1MB の書き・読み・照合を
++ * 330 回続けて失敗 0 (x68k-zos pico/test/sdsmoke)、37.5MHz はマウントできなかった
++ * GP0 / GP1 は UART のログ、Wi-Fi (CYW43) は内部の GPIO を使うので、SPI0 の既定の位置が空いている
++ */
++#include "hw_config.h"
++
++#ifndef SD_SCK
++#define SD_SCK      18
++#endif
++#ifndef SD_MOSI
++#define SD_MOSI     19
++#endif
++#ifndef SD_MISO
++#define SD_MISO     20
++#endif
++#ifndef SD_CS
++#define SD_CS       21
++#endif
++#ifndef SD_SPI_HZ
++#define SD_SPI_HZ   (25 * 1000 * 1000)
++#endif
++
++static spi_t spi = {
++    .hw_inst = spi0,
++    .sck_gpio = SD_SCK,
++    .mosi_gpio = SD_MOSI,
++    .miso_gpio = SD_MISO,
++    .baud_rate = SD_SPI_HZ,
++};
++
++static sd_spi_if_t spi_if = {
++    .spi = &spi,
++    .ss_gpio = SD_CS,
++};
++
++static sd_card_t sd_card = {
++    .type = SD_IF_SPI,
++    .spi_if_p = &spi_if,
++};
++
++size_t sd_get_num() { return 1; }
++
++sd_card_t *sd_get_by_num(size_t num)
++{
++    return num == 0 ? &sd_card : NULL;
++}
+diff --git a/src/sdhds.c b/src/sdhds.c
+new file mode 100644
+index 0000000..635d262
+--- /dev/null
++++ b/src/sdhds.c
+@@ -0,0 +1,142 @@
++/*
++ * sdhds.c -- SD カードの上の HDS ファイル (FatFs、no-OS-FatFS-SD-SDIO-SPI-RPi-Pico)
++ *
++ * Wi-Fi の SMB2 を待たずに起動できる (電源を入れた直後の Wi-Fi / SMB2 の接続が間に合わないと
++ * 「ディスクから起動できません」になっていた)。B: (SCSI ID 6) と netpipe は Wi-Fi がつながってから使える。
++ * HDS の大きさは変えない (書き込みは既存の範囲の中だけ) ので、FAT やディレクトリは書き換わらない。
++ * それでも FatFs の中の 1 セクタ分の書き込みを溜めないよう、書いたら f_sync する
++ */
++#include <stdio.h>
++#include <string.h>
++#include <fcntl.h>
++
++#include "ff.h"
++#include "smb2.h"
++#include "libsmb2.h"
++#include "sdhds.h"
++
++#define SDHDS_MAX   6
++
++static FATFS fs;
++static bool mounted;
++static FIL files[SDHDS_MAX];
++static int nfiles;
++
++bool sdhds_is(const char *path)
++{
++    return strncmp(path, "sd:", 3) == 0;
++}
++
++int64_t sdhds_open(const char *path, void **handle)
++{
++    FRESULT fr;
++    if (!mounted) {
++        if ((fr = f_mount(&fs, "", 1)) != FR_OK) {
++            printf("SD: mount failed (%d)\n", fr);
++            return -1;
++        }
++        mounted = true;
++    }
++    if (nfiles >= SDHDS_MAX)
++        return -1;
++    FIL *f = &files[nfiles];
++    const char *name = path + 3;            /* "sd:" の後ろ */
++    if ((fr = f_open(f, name, FA_READ | FA_WRITE)) != FR_OK) {
++        printf("SD: %s open failed (%d)\n", name, fr);
++        return -1;
++    }
++    nfiles++;
++    *handle = f;
++    return (int64_t)f_size(f);
++}
++
++int sdhds_read(void *handle, uint32_t lba, uint8_t *buf, int nsect)
++{
++    FIL *f = handle;
++    UINT br;
++    if (f_lseek(f, (FSIZE_t)lba * 512) != FR_OK)
++        return -1;
++    if (f_read(f, buf, nsect * 512, &br) != FR_OK)
++        return -1;
++    return br;
++}
++
++int sdhds_write(void *handle, uint32_t lba, const uint8_t *buf, int nsect)
++{
++    FIL *f = handle;
++    UINT bw;
++    if (f_lseek(f, (FSIZE_t)lba * 512) != FR_OK)
++        return -1;
++    if (f_write(f, buf, nsect * 512, &bw) != FR_OK || bw != (UINT)nsect * 512)
++        return -1;
++    if (f_sync(f) != FR_OK)
++        return -1;
++    return bw;
++}
++
++/*
++ * SMB の共有から SD カードへ 1 回だけ写す (Wi-Fi 越しにカードへ HDS を載せる道。カードを抜かずに済む)。
++ * SD に sdpath が無く、共有に smbpath があるときだけ。途中で切れたものを使わないよう、別名に書いてから名前を変える。
++ * 戻り値: 写したバイト数 / 0 (写すものが無い・もうある) / -1 (失敗)
++ */
++int64_t sdhds_fetch(struct smb2_context *smb2, const char *smbpath, const char *sdpath)
++{
++    static uint8_t buf[32768];
++    char tmp[128];
++    FILINFO fi;
++    FIL f;
++    FRESULT fr;
++    struct smb2fh *fh;
++    int64_t total = 0;
++    if (!mounted) {
++        if ((fr = f_mount(&fs, "", 1)) != FR_OK)
++            return -1;
++        mounted = true;
++    }
++    if (f_stat(sdpath, &fi) == FR_OK)
++        return 0;
++    if ((fh = smb2_open(smb2, smbpath, O_RDONLY)) == NULL)
++        return 0;
++    snprintf(tmp, sizeof tmp, "%s.part", sdpath);
++    {
++        /* 親ディレクトリ (1 段だけ) */
++        char d[128];
++        snprintf(d, sizeof d, "%s", sdpath);
++        char *p = strrchr(d, '/');
++        if (p && p != d) {
++            *p = 0;
++            f_mkdir(d);
++        }
++    }
++    if ((fr = f_open(&f, tmp, FA_WRITE | FA_CREATE_ALWAYS)) != FR_OK) {
++        printf("SD: fetch %s: create failed (%d)\n", tmp, fr);
++        smb2_close(smb2, fh);
++        return -1;
++    }
++    printf("SD: fetching %s -> %s\n", smbpath, sdpath);
++    for (;;) {
++        int n = smb2_read(smb2, fh, buf, sizeof buf);
++        UINT bw;
++        if (n < 0) {
++            total = -1;
++            break;
++        }
++        if (n == 0)
++            break;
++        if (f_write(&f, buf, n, &bw) != FR_OK || bw != (UINT)n) {
++            total = -1;
++            break;
++        }
++        total += n;
++    }
++    smb2_close(smb2, fh);
++    if (f_close(&f) != FR_OK)
++        total = -1;
++    if (total < 0 || f_rename(tmp, sdpath) != FR_OK) {
++        printf("SD: fetch %s failed\n", smbpath);
++        f_unlink(tmp);
++        return -1;
++    }
++    printf("SD: fetched %lld bytes to %s (used from the next boot)\n", total, sdpath);
++    return total;
++}
+diff --git a/src/sdhds.h b/src/sdhds.h
+new file mode 100644
+index 0000000..57ee8c0
+--- /dev/null
++++ b/src/sdhds.h
+@@ -0,0 +1,22 @@
++#ifndef _SDHDS_H_
++#define _SDHDS_H_
++
++#include <stdint.h>
++#include <stdbool.h>
++
++/* config の HDS の指定が "sd:" で始まれば、Pico に SPI でつないだ SD カードの上のファイルを使う */
++bool sdhds_is(const char *path);
++/* SD カードの上のデータ用ディスクの置き場の既定。使うには HDS1 に "sd:/x68000z/hds1.hds" と明示する
++   (SCSI ID 1 が起動時に B: を取るので、リモートドライブは C: にずれる) */
++#define SDHDS_AUTO1     "/x68000z/hds1.hds"
++/* SD に SDHDS_AUTO1 が無く、SMB の共有 (HDS0 と同じ共有) にこれがあれば、起動時に 1 回だけカードへ写す
++   (写すだけで、HDS1 に指定しない限りディスクにはならない) */
++#define SDHDS_FETCH1    "sdcopy/hds1.hds"
++struct smb2_context;
++int64_t sdhds_fetch(struct smb2_context *smb2, const char *smbpath, const char *sdpath);
++/* 開いて大きさ (バイト) を返す。失敗なら -1。戻り値の handle を hds_cache_* に smb2 = NULL で渡す */
++int64_t sdhds_open(const char *path, void **handle);
++int sdhds_read(void *handle, uint32_t lba, uint8_t *buf, int nsect);
++int sdhds_write(void *handle, uint32_t lba, const uint8_t *buf, int nsect);
++
++#endif  /* _SDHDS_H_ */
+diff --git a/src/virtual_disk.c b/src/virtual_disk.c
+index e66cadd..faf9077 100644
+--- a/src/virtual_disk.c
++++ b/src/virtual_disk.c
+@@ -47,6 +47,7 @@
+ #include "scsiremote.inc"
+ #include "bootloader.inc"
+ #include "hdsboot.inc"
++#include "sdhds.h"
+ #include "settingui.inc"
+ 
+ //****************************************************************************
+@@ -184,9 +185,13 @@ static uint8_t imagedir[32 * 16];
+ static uint8_t pscsiini[256];
+ static int imagedir_init = false;
+ 
++static bool smb2_hds;                   /* SMB2 の上の HDS がある (無ければ Wi-Fi の接続を待たずに見せる) */
++
+ static void vd_sync(void)
+ {
+     static bool synced = false;
++    if (!synced && !smb2_hds && !remoteboot)
++        synced = true;                  /* HDS が全部 SD カードの上: 待たない */
+     if (!synced) {
+ #if MSC_LOG
+         uint32_t t = to_ms_since_boot(get_absolute_time());
+@@ -232,6 +237,21 @@ int vd_init(void)
+             if (strlen(config.hds[i]) == 0)
+                 continue;
+             diskinfo[id].type = DTYPE_HDS;
++            if (sdhds_is(config.hds[i])) {
++                /* SD カードの上の HDS: ここで開いて本当の大きさにする (Wi-Fi を待たない) */
++                void *h;
++                int64_t sz = sdhds_open(config.hds[i], &h);
++                if (sz < 0) {
++                    diskinfo[id].type = DTYPE_NOTUSED;
++                    continue;
++                }
++                diskinfo[id].sfh = h;
++                diskinfo[id].smb2 = NULL;
++                diskinfo[id].size = sz;
++                printf("HDS%u: %s size=%lld (SD)\n", i, config.hds[i], sz);
++                continue;
++            }
++            smb2_hds = true;
+             diskinfo[id].size = 0xfffffe00; /* tentative size */
+         }
+     }
+-- 
+2.54.0 (Apple Git-157)
+
