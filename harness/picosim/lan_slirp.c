@@ -226,9 +226,9 @@ static void readdr(uint8_t *ip, int len, int off, uint32_t addr)
 
 /* DNS: ゲートウェイ (.1、家のルーターと同じく zshrc の NETDNS の既定) と DNS の口 (-D、既定 .3) の UDP 53 番は、
    slirp に渡さず picosim が Mac の resolver (getaddrinfo / getnameinfo) で答える。
-   slirp の DNS の転送は Mac の DNS サーバ (Tailscale の 100.100.100.100 など) に UDP で送るが、macOS の
-   ローカルネットワークの許可が無い picosim からは "No route to host" になった (python からは届く)。
-   getaddrinfo は mDNSResponder 経由なのでこの制限を受けない。問い合わせ 1 個 (A / PTR) だけを扱い、ほかの型は
+   slirp の DNS の転送は Mac の DNS サーバ (Tailscale の 100.100.100.100 など) に UDP で送るが、picosim からは
+   "No route to host" になった (python からは届く。macOS のローカルネットワークの許可のせいと見ている)。
+   getaddrinfo は mDNSResponder が引くので届く。問い合わせ 1 個 (A / PTR) だけを扱い、ほかの型は
    答え無しの NOERROR。名前を引く間 (最大数秒) は picosim のループが止まる */
 static int dns_name(const uint8_t *m, int n, int off, char *out, int max)
 {
