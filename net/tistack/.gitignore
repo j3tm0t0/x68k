@@ -3,4 +3,4 @@
 *.elf
 *.elf.*
 hostsim
-picosim
+/tests/picosim

@@ -145,7 +145,9 @@ static void deliver(const uint8_t *f, int len, int from)
   if (type == 0x0806 && len >= 42) {
     uint32_t tip;
     memcpy(&tip, f + 38, 4);
-    if (f[21] == 1 && zip && tip == zip) {
+    if (f[21] == 1 && zip && tip == zip && find_att_ip(zip) < 0) {
+      /* (つないだ口が Z の IP を名乗っているとき (tistack の tis.x -p: Pico が Z の IP を自分の IP にする) は、
+         代理 ARP をせずにその口に答えさせる) */
       /* Z 宛ての ARP 要求に Z の MAC で答える (ファームの代理 ARP) */
       uint8_t r[42];
       uint32_t sip;
