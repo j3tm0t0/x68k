@@ -66,7 +66,7 @@ make -j8      # x68kzremotedrv.elf / .uf2 (fork の build-p2w/ で作れる。00
 - `my_rtc.c` (FatFs の lib) が `time()` を置き換えている。0037 で always-on タイマーを起動時に 0 から動かし、SMB の時刻で 1 回合わせる (時刻が 1 回前へ飛ぶ)。
 - sdcopy の「HDS として開いているファイルには写さない」は実機で試していない (HDS1 にカードの HDS を指定していないため)。
 - (0043 で直した、実機は未確認) 設定画面の右の「ネットワーク設定」の見出しが上の枠の下の線と重なっていた。ネットワークの項目は「その他の設定」の枠に入れた。PZL 側は Charlie に同じ直しを頼んだ。
-- tistack (TSP): zostest がたまに「Error writing: I/O error」で落ちていた (5 回に 1 回ほど)。原因は tis.x の「npd.x が 5 秒交換しに来ない」の判定で、つながっているソケットまで Z の側だけで死なせていた (tis.x -s で netdown 1・resend 0)。00cc0a6 で、待っている connect などだけを失敗にするよう直した。**なぜ Z-OS の中で npd.x が 5 秒回らないのか** (スレッドの割り当て) は未調査で、Bravo に伝える。
+- tistack (TSP): zostest がたまに「Error writing: I/O error」で落ちていた (5 回に 1 回ほど)。原因は tis.x の「npd.x が 5 秒交換しに来ない」の判定で、つながっているソケットまで Z の側だけで死なせていた (tis.x -s で netdown 1・resend 0)。00cc0a6 で、待っている connect などだけを失敗にするよう直した。**なぜ Z-OS の中で npd.x が 5 秒回らないのか**は未調査。Bravo の見立て: zos.x の IOCS フックの中 (スーパーバイザ、vt100 の描画) が長いとスレッドが切り替わらない (zos.x 自身の主スレッドも 2.4 秒止まったことがある)。測るなら kern.c の zos_switch に npd のスレッドの時刻を入れる。今は接続が切れなくなったので遅れだけの問題。
 - ID1 の HDS を B: をずらさずに使う案 (Delta): リモートドライブの顔 (LBA 0/4/6.. の起動部) を ID1 より小さい ID で見せ、運び (vdbuf/netpipe) は ID6 のまま。harness/picosim/README.md「ドライブ名」。
 - 設定画面は SMB の共有の一覧から選ぶ作り。`sd:` は ENUM の最後に足している (共有が 16 個あると出ない)。
 
