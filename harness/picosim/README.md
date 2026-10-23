@@ -258,6 +258,9 @@ XEiJ + picosim で試した (2026-10-23、`drive.x` で確かめた):
 | Z: AUTOEXEC.BAT で SUBST を 4 行 (`SUBST X: B:\` / `SUBST B: C:\` / `SUBST C: X:\` / `SUBST /D X:`) | B: でリモートドライブ、C: でデータの HDS (書き込みも)。`subst /l` は `B: > C:\`、`C: > B:\`。`drive.x` などの物理のドライブを見る道具は元の順のまま |
 | データの HDS を起動の走査の間だけ NOT READY (`:after-remote`) にし、あとで組み込む | 走査では B: = リモートドライブになり、データの HDS はドライブにならない。CONFIG.SYS の最後に SCSI のディスクドライバ (FORMAT.X の SCHDISK を DEVICE= で) を置いても **組み込まれない** (ドライブが増えず、ID 1 を読みにも来ない。SCHDISK は IPL から呼ばれる前提)。Human68k 3.02 にはあとから SCSI ディスクを組み込む道具が無い (SUSIE.X など外の道具は試していない) |
 
+決まった高い名前にするなら [../zremote](../zremote) の `zdrv.x` (ZREMOTE のドライブを探して Z: を _ASSIGN mode 0x50 で割り当てる)。
+ドライバが自分のドライブ名を選ぶ道は無い (Human68k が組み込み順に振る。LASTDRIVE は上限だけ)。
+
 Human68k 3.02 に ASSIGN は無い。`SUBST.X` (DOS の _ASSIGN) は**使われているドライブ名にも**割り当てられる
 (zsh から打つときは `subst.x x: "b:\"` と引用符で。COMMAND.X の .BAT ではそのまま)。
 
