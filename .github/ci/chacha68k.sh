@@ -16,7 +16,7 @@ if [ ! -f "$M/build/m68kops.c" ]; then
   cc -O2 -o "$M/build/m68kmake" "$M/build/m68kmake.c"
   ( cd "$M/build" && ./m68kmake . m68k_in.c > /dev/null )
 fi
-cc -O2 -w -I"$M/build" -o "$S/csim" csim.c "$M"/build/m68kcpu.c "$M"/build/m68kops.c "$M"/build/m68kdasm.c "$M"/build/softfloat/softfloat.c
+cc -O2 -w -I"$M/build" -o "$S/csim" csim.c "$M"/build/m68kcpu.c "$M"/build/m68kops.c "$M"/build/m68kdasm.c "$M"/build/softfloat/softfloat.c -lm   # Linux では libm を明示する
 D=../../dropbear/work/dropbear-2022.83
 [ -f "$D/chachapoly.o" ] || { echo "chacha68k: $D/chachapoly.o が無い (先に net/ssh/dropbear で ./fetch.sh && FAST=1 ./build.sh)"; exit 1; }
 echo "== csim (asm): cp68k を cryptography と差分 =="
