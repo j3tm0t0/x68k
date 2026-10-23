@@ -8,6 +8,8 @@
  *   送信: npd.sys の送信リングからレコードをまとめて取り出す (ETD 命令 19)。
  *   中身の先頭が ACCEL_MARK (0xA5) のレコードは暗号アクセラレータ (net/accel) の要求 / 応答。要求は npd.sys が
  *   ETD 命令 19 の出力の後ろに載せ、応答は ETD 命令 23 で npd.sys に渡す (Pico が X25519 / Ed25519 を計算する)。
+ *   中身の先頭が TSP_MARK (0xA6) のレコードは tis.x -p (net/tistack) のソケット要求 / 応答。tis.x が npd.sys に
+ *   預けた入口 (ETD 命令 26) を呼んで、交換ごとに 1 個作ってもらい (TIS_NP_OUT)、応答を渡す (TIS_NP_IN)。
  *
  *   npd.x [-iN] a.b.c.d : 常駐してスレッド "npd" を作る (2 回目以降は受信の受け入れを再開するだけ)。a.b.c.d は Z の
  *                         IP アドレス。xip.x の設定 (ifconfig / inetdconf) が済んでから起動する
@@ -22,12 +24,15 @@
 #include <x68k/iocs.h>
 #include <stdint.h>
 #include "../accel/accel_proto.h"
+#include "../tistack/tsp.h"
 
 extern long call_etd(void *entry, long cmd, void *arg);
 extern char *mem_ptr;
 extern unsigned char *cmd_line;
 
 static void *etd;                       /* npd.sys の ETD 入口 */
+static void *tis;                       /* tis.x -p の入口 (交換のたびに npd.sys から取り直す)、0 = 居ない */
+static int tsp_more;                    /* Pico の TSP 応答に続きがある */
 /* 動作確認用のカウンタ (メモリダンプで "SLPDSTAT" の後ろを読む) */
 static struct { char tag[8]; uint32_t loops, rx, tx, bad; } stat = { "SLPDSTAT" };
 static struct dos_prcctrl prc;           /* スレッドのメッセージ受け箱 (xip.x と同じく 4 バイト) */
@@ -235,7 +240,15 @@ static void rec_in(uint8_t *s, int n)
     uint8_t *ip = s + 16;
     if (rl > n)
       break;
-    if (len >= ACCEL_RES_HDR && ip[0] == ACCEL_MARK) {
+    if (len >= TSP_HDR && ip[0] == TSP_MARK) {
+      /* tis.x のソケット応答 */
+      long arg[2];
+      arg[0] = len;
+      arg[1] = (long)ip;
+      tap('S', ip, len);
+      if (tis && (call_etd(tis, TIS_NP_IN, arg) & 1))
+        tsp_more = 1;
+    } else if (len >= ACCEL_RES_HDR && ip[0] == ACCEL_MARK) {
       /* 暗号アクセラレータの応答 (IPv4 のバージョン nibble と重ならない) */
       long arg[2];
       arg[0] = len;
@@ -282,7 +295,7 @@ static void zthread(void)
 {
   int last = 0, hot = 0, act = 0, zfails = 0;
   for (;;) {
-    int n, now, r, more = 0;
+    int n, nip, now, r, more = 0, turg = 0;
     stat.loops++;
     {
       long arg[2];
@@ -292,12 +305,41 @@ static void zthread(void)
       if (n > 2)
         tap('T', zreq + 18, n - 2);
     }
+    nip = n;
+    tis = (void *)call_etd(etd, 26, 0);
+    if (tis == (void *)-1)               /* npd.sys 1.1 (ETD 26 が無い) */
+      tis = 0;
+    if (tis) {
+      long a[3];
+      a[0] = 0;
+      a[1] = 0;                          /* 問い合わせだけ: tis.x に急ぎ (送るもの) があるか */
+      a[2] = 0;
+      call_etd(tis, TIS_NP_OUT, a);
+      turg = a[2];
+    }
     now = ticks();
-    if (n == 0 && hot == 0 && (unsigned)(now - last) < ((unsigned)(now - act) < 200 ? zidle : ZIDLE2)) {
+    if (n == 0 && hot == 0 && !turg && (unsigned)(now - last) < ((unsigned)(now - act) < 200 ? zidle : ZIDLE2)) {
       _dos_change_pr();
       continue;
     }
     last = now;
+    if (tis && n + 2 + TSP_HDR <= ZDATA) {
+      /* TSP レコード [長さ 2][要求][詰め物] を IP / アクセラレータのレコードの後ろに。tis.x は交換のたびに 1 個
+         (送るものが無くても見出しだけ) 返す。前の交換の応答が来ていなければ同じ要求をもう一度 */
+      long a[3], m;
+      a[0] = (long)(zreq + 16 + n + 2);
+      a[1] = ZDATA - n - 2;
+      a[2] = 0;
+      m = call_etd(tis, TIS_NP_OUT, a);
+      if (m > 0) {
+        zreq[16 + n] = m >> 8;
+        zreq[16 + n + 1] = m;
+        if (m & 1)
+          zreq[16 + n + 2 + m] = 0;
+        n += 2 + ((m + 1) & ~1);
+      }
+    }
+    tsp_more = 0;
     r = zxchg(n, &more, (unsigned)(now - act) < 20 ? ZSECTS : 1);
     if (r < 0) {
       /* 送るはずだったレコードは失われる (TCP が再送する)。続けて失敗したときだけ 1 秒待つ
@@ -313,7 +355,7 @@ static void zthread(void)
     {
       uint32_t rx0 = stat.rx;
       rec_in(zres + 16, r);
-      if (n || r) {
+      if (nip || turg || tsp_more || stat.rx != rx0) {
         int k = ztrace.pos++ % ZTRACE;
         act = now;
         ztrace.e[k].t = now;
@@ -324,7 +366,7 @@ static void zthread(void)
     }
     /* Pico に続きがあるときだけ間を置かずに問い合わせる。送るものができたら (TCP の ACK など) その場で交換する。
        空の交換 (SCSI の読み書き) を続けると CPU を食って xip.x の番が回らない */
-    hot = more ? 1 : 0;
+    hot = more || tsp_more ? 1 : 0;
     _dos_change_pr();
   }
 }

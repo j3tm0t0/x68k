@@ -6,10 +6,10 @@ CFLAGS = -m68000 -O2 -fomit-frame-pointer -ffreestanding -fno-builtin -Wall -Wno
 all: tis.x
 
 # start.o を先頭に置く (text の先頭が "TCP/IP" でなければならない)
-tis.x: start.o tis.o lo.o main.o
+tis.x: start.o tis.o lo.o pico.o main.o
 	$(CC) -o $@ $^ -nostartfiles -nostdlib -lgcc -s
 
-%.o: %.c be.h
+%.o: %.c be.h tsp.h
 	$(CC) $(CFLAGS) -c $<
 %.o: %.S
 	$(CC) -m68000 -c $<

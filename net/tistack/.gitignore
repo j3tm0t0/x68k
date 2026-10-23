@@ -3,3 +3,4 @@
 *.elf
 *.elf.*
 hostsim
+picosim

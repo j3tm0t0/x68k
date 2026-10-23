@@ -4,7 +4,7 @@
  * libsocket (elf2x68k) / ESP/X libnetwork のプログラムは、常駐ブロックのうちプログラム領域が "TCP/IP" で
  * 始まるものを探して text + 8 を呼ぶ (start.S)。ここ (ti_dispatch) が命令番号ごとに振り分ける。
  * ソケット表・受信リング・状態・ブロッキングの待ちはここが持ち、相手との間は backend (be.h) に任せる。
- * いまの backend はループバックだけ (lo.c)。
+ * backend はループバック (lo.c) か、TCP / UDP / DNS を Pico に任せるもの (pico.c、-p)。
  *
  *   tis.x [-a a.b.c.d] [-b KB]   常駐する
  *   tis.x -s                     ソケット表を表示する
@@ -213,15 +213,14 @@ static void sock_free(int i)
         break;
       }
   }
-  be->close(i);
-  t->st = S_FREE;
+  t->st = be->close(i) ? S_ZOMBIE : S_FREE;
   t->rx.head = t->rx.len = 0;
   usock[i].refcnt = 0;
 }
 
 static int sk(long fd)
 {
-  if (fd < SOCKBASE || fd >= SOCKBASE + NSOCK || ts[fd - SOCKBASE].st == S_FREE)
+  if (fd < SOCKBASE || fd >= SOCKBASE + NSOCK || ts[fd - SOCKBASE].st == S_FREE || ts[fd - SOCKBASE].st == S_ZOMBIE)
     return -1;
   return fd - SOCKBASE;
 }
@@ -302,7 +301,21 @@ static long t_socket(long *a)
   return i + SOCKBASE;
 }
 
-static long t_bind(long *a)
+/* Pico に listen / bind を頼んだら返事を待つ (使用中のポートをここで -1 にする。待たないと、すぐ来た接続が断られる) */
+static int wait_bound(int i, int *ssp)
+{
+  int r;
+  while (be->pending && (r = be->pending(i)) != 0) {
+    if (r < 0)
+      return -1;
+    yield(ssp);
+    if (ts[i].st == S_FREE || ts[i].st == S_ZOMBIE)
+      return -1;
+  }
+  return 0;
+}
+
+static long t_bind(long *a, int *ssp)
 {
   int i = sk(a[0]), j;
   const uint8_t *sa = (const uint8_t *)a[1];
@@ -331,6 +344,13 @@ static long t_bind(long *a)
   ts[i].laddr = addr;
   ts[i].lport = port;
   ts[i].bound = 1;
+  if (be->bind) {
+    be->bind(i);
+    if (wait_bound(i, ssp) < 0) {
+      ts[i].bound = 0;
+      return fail(i, ts[i].err ? ts[i].err : "Address already in use");
+    }
+  }
   return 0;
 }
 
@@ -342,7 +362,7 @@ static void autobind(int i)
   }
 }
 
-static long t_listen(long *a)
+static long t_listen(long *a, int *ssp)
 {
   int i = sk(a[0]);
   long bl = a[1];
@@ -355,7 +375,12 @@ static long t_listen(long *a)
   if (bl > MAXQ) bl = MAXQ;
   ts[i].backlog = bl;
   ts[i].st = S_LISTEN;
-  return be->listen(i);
+  if (be->listen(i) < 0 || wait_bound(i, ssp) < 0) {
+    if (ts[i].st == S_LISTEN)
+      ts[i].st = S_CLOSED;
+    return fail(i, ts[i].err ? ts[i].err : "Address already in use");
+  }
+  return 0;
 }
 
 static long t_accept(long *a, int *ssp)
@@ -500,7 +525,7 @@ static long do_write(long fd, const uint8_t *buf, uint32_t len, const uint8_t *t
     }
     if (t->st != S_EST || t->tx_shut)
       return done ? (long)done : fail(i, "Not connected");
-    if (t->reset || t->peer < 0)
+    if (t->reset || (t->peer < 0 && !t->remote))
       return done ? (long)done : fail(i, "Connection reset");
     if ((sp = be->sendspace(i)) > 0) {
       uint32_t n = be->send(i, buf + done, len - done < sp ? len - done : sp);
@@ -549,11 +574,11 @@ static long t_socklen(long *a)
   }
   if (t->dgram || t->st == S_LISTEN || t->st == S_SYNSENT || t->st == S_SYNRCVD)
     return 0;
-  if (t->st != S_EST || t->tx_shut || t->peer < 0)
+  if (t->st != S_EST || t->tx_shut || t->reset || (t->peer < 0 && !t->remote))
     return -1;
   if (be->sendspace(i) > 0)
     return 0;
-  return ts[t->peer].rx.len ? (long)ts[t->peer].rx.len : 1;   /* 相手のリングが一杯: POLLOUT にしない */
+  return t->peer >= 0 && ts[t->peer].rx.len ? (long)ts[t->peer].rx.len : 1;   /* 相手のリングが一杯: POLLOUT にしない */
 }
 
 static long t_sockname(long *a, int peer)
@@ -690,17 +715,46 @@ static long t_psocket(const uint8_t *sa)
 /* ---- 名前 ---- */
 
 static char *lo_aliases[] = { "loopback", 0 };
+static char *no_alias_h[] = { 0 };
 static uint32_t lo_addr = 0x7f000001;
 static char *lo_addrs[] = { (char *)&lo_addr, 0 };
 static struct { char *h_name; char **h_aliases; int h_addrtype, h_length; char **h_addr_list; } lo_host = {
   "localhost", lo_aliases, 0, 4, lo_addrs,
 };
 
-static long t_gethostbyname(const char *name)
+/* Pico で引いた名前 (呼ぶたびに上書きする。xip.x も静的な領域を返す) */
+static char net_name[256];
+static uint32_t net_addr;
+static char *net_addrs[] = { (char *)&net_addr, 0 };
+static struct { char *h_name; char **h_aliases; int h_addrtype, h_length; char **h_addr_list; } net_host = {
+  net_name, no_alias_h, 0, 4, net_addrs,
+};
+
+static long t_gethostbyname(const char *name, int *ssp)
 {
-  if (name && (streqi(name, "localhost") || streqi(name, "loopback") || streqi(name, "localhost.localdomain")))
+  int q, r, n;
+  uint32_t addr;
+  if (!name)
+    return 0;
+  if (streqi(name, "localhost") || streqi(name, "loopback") || streqi(name, "localhost.localdomain"))
     return (long)&lo_host;
-  return 0;
+  if (!be->resolve_start)
+    return 0;
+  for (n = 0; name[n] && n < 255; n++)
+    net_name[n] = name[n];
+  net_name[n] = 0;
+  /* 問い合わせの表が一杯なら空くまで待つ。答えは npd.x のスレッドが運んでくる */
+  while ((q = be->resolve_start(net_name)) < 0)
+    yield(ssp);
+  while ((r = be->resolve_poll(q, net_name, &addr)) == 0)
+    yield(ssp);
+  if (r < 0)
+    return 0;
+  for (n = 0; name[n] && n < 255; n++)  /* 待っている間に別のスレッドが net_name を使ったかもしれない */
+    net_name[n] = name[n];
+  net_name[n] = 0;
+  net_addr = addr;
+  return (long)&net_host;
 }
 
 static long t_gethostbyaddr(long *a)
@@ -761,8 +815,8 @@ static long dispatch(long cmd, long *a, int *ssp)
   switch (cmd) {
   case _TI_get_version:   return 0x0100;
   case _TI_socket:        return t_socket(a);
-  case _TI_bind:          return t_bind(a);
-  case _TI_listen:        return t_listen(a);
+  case _TI_bind:          return t_bind(a, ssp);
+  case _TI_listen:        return t_listen(a, ssp);
   case _TI_accept:        return t_accept(a, ssp);
   case _TI_connect:       return t_connect(a, ssp);
   case _TI_read_s:        return do_read(a[0], (uint8_t *)a[1], a[2], 0, 0, ssp);
@@ -808,13 +862,22 @@ static long dispatch(long cmd, long *a, int *ssp)
     }
     return (long)state_str(&ts[i]);
   case _TI_sock_top:      return (long)usock;
-  case _TI_gethostbyname: return t_gethostbyname((const char *)a);
+  case _TI_gethostbyname: return t_gethostbyname((const char *)a, ssp);
   case _TI_gethostbyaddr: return t_gethostbyaddr(a);
   case _TI_getservbyname: return t_getserv(a, 0);
   case _TI_getservbyport: return t_getserv(a, 1);
   case _TI_getprotobyname:   return t_getproto((long)a, 0);
   case _TI_getprotobynumber: return t_getproto((long)a, 1);
   case TIS_INFO:          return (long)&info;
+  case TIS_NP_OUT:
+    if (!be->np_out) return 0;
+    {
+      int urg = 0;
+      long n = be->np_out((uint8_t *)a[0], a[1], &urg);
+      a[2] = urg;
+      return n;
+    }
+  case TIS_NP_IN:         return be->np_in ? be->np_in((const uint8_t *)a[1], a[0]) : 0;
   }
   /* ループバックに無い命令 (ARP / iface / 経路 / DNS / MIB / RIP)。表や構造体を返すものは NULL、
      ほかは -1。FAST_API の問い合わせ (-1) も -1 (trap ではなく jsr で呼んでもらう) */

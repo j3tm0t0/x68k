@@ -17,7 +17,7 @@ static void lo_tick(void)
   int i;
   for (i = 0; i < NSOCK; i++) {
     struct tsock *t = &ts[i];
-    if (t->st != S_SYNSENT)
+    if (t->st != S_SYNSENT || t->remote)   /* Pico 側の connect は Pico の知らせで進む */
       continue;
     if (t->peer < 0) {                  /* 受け付け待ちのうちに listen 側が閉じた */
       t->st = S_CLOSED;
@@ -111,7 +111,7 @@ static int lo_sendto(int s, uint32_t addr, uint16_t port, const void *buf, uint3
   if (n > 0xffff)
     return -1;
   for (i = 0; i < NSOCK; i++)
-    if (ts[i].st != S_FREE && ts[i].dgram && ts[i].bound && ts[i].lport == port && match_addr(ts[i].laddr, addr))
+    if (ts[i].st != S_FREE && ts[i].st != S_ZOMBIE && ts[i].dgram && ts[i].bound && ts[i].lport == port && match_addr(ts[i].laddr, addr))
       break;
   if (i == NSOCK)
     return n;
@@ -135,7 +135,7 @@ static void lo_shutdown(int s, int how)
     ts[p].rx_eof = 1;
 }
 
-static void lo_close(int s)
+static int lo_close(int s)
 {
   int p = ts[s].peer;
   if (p >= 0) {
@@ -143,8 +143,10 @@ static void lo_close(int s)
     ts[p].rx_eof = 1;
     ts[p].reset = 1;
   }
+  return 0;
 }
 
 const struct backend be_loop = {
   "loopback", lo_tick, lo_listen, lo_connect, lo_sendspace, lo_send, lo_sendto, lo_shutdown, lo_close,
+  0, 0, 0, 0, 0, 0,
 };

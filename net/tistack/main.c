@@ -57,6 +57,38 @@ static const char *parse_ip(const char *p, uint32_t *ip)
   return p;
 }
 
+/* npd.sys の ETD 入口 (npd.x と同じ探し方: "NUL" から始まるデバイスチェインで "/dev/ep0" + "EthDNPD ")。
+   スーパーバイザで呼ぶ */
+static void *find_npd(void)
+{
+  uint16_t *p;
+  for (p = (uint16_t *)0x6800; p < (uint16_t *)0x68000; p++)
+    if (p[0] == 0x4e55 && p[1] == 0x4c20 && p[2] == 0x2020 && p[3] == 0x2020) {   /* "NUL     " */
+      uint8_t *d = (uint8_t *)p - 14;
+      while (d != (uint8_t *)0xffffffff) {
+        if (memeq(d + 14, "/dev/ep0", 8) && memeq(d + 22, "EthDNPD ", 8))
+          return d + 30;
+        d = *(uint8_t **)d;
+      }
+      return 0;
+    }
+  return 0;
+}
+
+/* tis.x -p の入口を npd.sys に預ける / 外す (npd.x が交換のたびに取りに来る)。戻り値: 0 / -1 (npd.sys 1.2 が無い) */
+static int npd_register(void *entry)
+{
+  int ssp = _dos_super(0), r = -1;
+  void *etd = find_npd();
+  if (etd) {
+    call_ti(etd, NPD_ETD_TSP_SET, entry);
+    r = call_ti(etd, NPD_ETD_TSP_GET, 0) == (long)entry ? 0 : -1;
+  }
+  if (ssp > 0)
+    _dos_super(ssp);
+  return r;
+}
+
 /* 自分より前の常駐ブロックから "TCP/IP" を探す (libsocket と同じ探し方)。*tis = 1 なら tis.x、0 なら xip.x など */
 static struct dos_mep *find_stack(int *tis)
 {
@@ -155,8 +187,8 @@ static int show_trace(struct tis_info *in)
 int tis_main(void)
 {
   const char *p = (const char *)cmd_line + 1;
-  uint32_t own = 0, kb = 8;
-  int trace = 0;
+  uint32_t own = 0, kb = 8, txkb = 4;
+  int trace = 0, pico = 0;
   int status = 0, remove = 0, force = 0, tis = 0;
   struct dos_mep *m;
 
@@ -178,6 +210,10 @@ int tis_main(void)
         force = 1;
         p++;
       }
+    } else if (p[0] == '-' && p[1] == 'p') {
+      /* TCP / UDP / DNS を Pico に任せる (npd.x の交換に TSP レコードを載せる) */
+      pico = 1;
+      p += 2;
     } else if (p[0] == '-' && p[1] == 'a') {
       p += 2;
       while (*p == ' ')
@@ -195,7 +231,7 @@ int tis_main(void)
         goto usage;
     } else {
     usage:
-      _dos_print("usage: tis.x [-a a.b.c.d] [-b KB(1-64)] | -s | -r[f]\r\n");
+      _dos_print("usage: tis.x [-p] [-a a.b.c.d] [-b KB(1-64)] | -s | -r[f]\r\n");
       return 1;
     }
   }
@@ -220,6 +256,8 @@ int tis_main(void)
       _dos_print("tis.x: ソケットが開いています (-rf で強制的に解除)\r\n");
       return 1;
     }
+    if (in->be_name[0] == 'p')
+      npd_register(0);                  /* npd.x が解放した入口を呼ばないように (Pico は次の zepoch で前のソケットを捨てる) */
     if (_dos_mfree((char *)m + 16) < 0) {
       _dos_print("tis.x: 解除できません\r\n");
       return 1;
@@ -235,9 +273,9 @@ int tis_main(void)
   {
     /* 受信リングは BSS の後ろ。_KEEPPR の大きさに含める */
     uint8_t *pool = (uint8_t *)(((uint32_t)&_end + 3) & ~3);
-    uint32_t bs = kb * 1024, i;
+    uint32_t bs = kb * 1024, txs = pico ? txkb * 1024 : 0, i;
     char *blk_end = ((struct dos_mep *)mem_ptr)->block_end;
-    if (pool + NSOCK * bs > (uint8_t *)blk_end) {
+    if (pool + NSOCK * (bs + txs) > (uint8_t *)blk_end) {
       _dos_print("tis.x: メモリが足りません\r\n");
       return 1;
     }
@@ -248,7 +286,19 @@ int tis_main(void)
     }
     info.bufsz = bs;
     info.own_addr = own;
-    _dos_print("tis.x: TCP/IP loopback stack (127.0.0.0/8");
+    if (pico) {
+      extern char ti_entry;
+      /* 送信リングは受信リングの後ろ。番号と epoch は時刻から (Z のリセットで前の回と重ならないように) */
+      pico_init(pool + NSOCK * bs, txs, ((uint32_t)_dos_getdate() << 16) ^ (uint32_t)_dos_gettim2());
+      be = &be_pico;
+      info.be_name = "pico";
+      /* 表を用意し終えてから入口を預ける (預けた瞬間から npd.x のスレッドが呼ぶ) */
+      if (npd_register(&ti_entry) < 0) {
+        _dos_print("tis.x: npd.sys 1.2 が組み込まれていません (-p には npd.sys と npd.x が要る)\r\n");
+        return 1;
+      }
+    }
+    _dos_print(pico ? "tis.x: TCP/IP via Pico (npd.x), loopback 127.0.0.0/8" : "tis.x: TCP/IP loopback stack (127.0.0.0/8");
     if (own) {
       char b[24];
       fmt_addr(b, own, 0)[-2] = 0;
@@ -258,7 +308,7 @@ int tis_main(void)
     _dos_print("), ");
     putn(kb);
     _dos_print("KB x 32 sockets\r\n");
-    _dos_keeppr((char *)pool + NSOCK * bs - (mem_ptr + 0x100), 0);
+    _dos_keeppr((char *)pool + NSOCK * (bs + txs) - (mem_ptr + 0x100), 0);
   }
   return 0;
 }
