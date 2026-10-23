@@ -40,6 +40,7 @@ X68_HOST=127.0.0.1 X68_PORT=23268 harness/raspi/x68.sh 'ping.x -c 4 192.168.1.1'
 - ID 0 も picosim から: `picosim -0 x68kcli/build/id0.hds -N 15` と `-Dpicosim.ids=0,6` (XEiJ の `-si0` は差し替えられる)。
   `-N 15` で最初の 15 秒は NOT READY (02/04/01、BOOTWAIT の真似)。XEiJ の SCSI ROM は TEST UNIT READY と
   REQUEST SENSE を繰り返して待ち、準備ができたら picosim の HDS から起動した (下記)
+- Pico Z Loader の起動 (待ち画面・控え・設定画面) は下の「Pico Z Loader の起動」
 
 ### XEiJ 側の設定 (システムプロパティ、run.sh の `XEIJ_JAVA_OPTS`)
 
@@ -60,12 +61,49 @@ X68_HOST=127.0.0.1 X68_PORT=23268 harness/raspi/x68.sh 'ping.x -c 4 192.168.1.1'
 | `-l host:port` | 127.0.0.1:6868 | XEiJ を待つ口 |
 | `-n net/len` `-g gw` `-D dns` | 192.168.1.0/24, .1, .3 | slirp の LAN。ゲートウェイは Mac の 127.0.0.1 に、DNS は Mac の resolver に転送される。ゲートウェイの 53 番 (zshrc の `NETDNS` の既定) は DNS の口に付け替える |
 | `-L [u]PORT:ZPORT` | `2323:2323` | Mac の 127.0.0.1:PORT → Z:ZPORT。`u` で UDP、`none` で無し。何度でも |
-| `-0 file.hds` `-N 秒` | | ID 0 を HDS ファイルで答える / 最初の N 秒 NOT READY |
+| `-0 file.hds` `-N 秒` | | ID 0 を HDS ファイルで答える / 最初の N 秒 NOT READY (`-T 0,0,N` と同じ) |
+| `-T w,s,h` | | Pico Z Loader の起動待ち: 起動から w 秒で Wi-Fi、s 秒で SMB、h 秒で HDS が開く (下記) |
+| `-B file` | `<HDS>.bootsnap` | 起動の控え (フラッシュ 0x1E0000 の代わり: 見出し 4KB + HDS の LBA 0-31) |
+| `-F dir` | | フォークの `driver/` (bootwait1.bin・bootwait.bin・hdsboot.bin・settingui.bin を読む)。付けると ID 6 の LBA 0 に署名 |
+| `-C file` | | 制御: 1 行 1 命令を書くと実行して消す。`ready` `close` `status N` `auto` `powercycle` `hds PATH` |
+| `-K file` | | 設定画面の設定 (config_data) を保存するファイル (FLASHCONFIG で書き、起動時に読む) |
 | `-c MB` `-r KB` | 64, 16 | Z の Linux の読み込みキャッシュの大きさ (0 で無し) / 先読み (4KB ページ単位) |
 | `-d µs` | 0 | 命令ごとの遅れ (USB の往復の真似。メールボックスの道では Z の CPU は待ちの間も動く。SPC の道では XEiJ ごと止まる) |
 | `-a 倍率` | 1 | アクセラレータの所要時間 (RP2040 の見積り: X25519 100ms / verify 170ms / sign 50ms) の倍率。0 ですぐ |
 | `-p lan.pcap` | | LAN を流れた Ethernet フレームを pcap に (`tcpdump -nn -r`) |
 | `-s 秒` `-v` | | 統計を定期的に (`kill -USR1` でも) / `-vv` で命令ごと、`-vvv` でフレームごとの記録 |
+
+## Pico Z Loader の起動 (bootwait.c)
+
+フォーク (yunkya2/x68kzremotedrv の j3tm0t0 版、branch bootwait 8f91624) の `src/bootwait.c`・`virtual_disk.c`・
+`vd_command.c` と同じ決まりで答える。Z の上で動く 68000 のバイナリ (待ち IPL、hdsboot、settingui) は git に入れず、
+`-F` でフォークの `driver/` (そこで `make` したもの) から読む。
+
+```sh
+F=~/src/github.com/yunkya2/x68kzremotedrv-hid/driver
+cp x68kcli/build/picosim.hds x68kcli/build/id0.hds
+harness/picosim/build/picosim -L 23268:2323 -0 x68kcli/build/id0.hds -T 15,25,35 -F $F -C /tmp/pz.ctl -v &
+IMG=build/picosim.hds XEIJ_JAVA_OPTS="-Dpicosim=127.0.0.1:6868 -Dpicosim.ids=0,6" \
+  harness/xeij/run.sh -config=default -saveonexit=off -model=SUPER &
+```
+
+- **状態**: 起動 (picosim の起動か `powercycle`) からの時間で sysstatus を 1 (Wi-Fi 接続中) → 3 (SMB 接続中) → 4 → 5 と進め、
+  5 で HDS を開く。待ち IPL の答えの Pico の IP は 192.168.1.118 ということにしている
+- **控え**: HDS を開いたら LBA 0-31 (16KB) を控え (`-B`、見出しは "X6Z BootSnap v1"・FNV-1a・HDS の大きさ・パス) と比べ、
+  違えば書き直す。開く前は、控えがこの HDS (パスが同じ) のものなら LBA 0-31 を控えから返し、LBA 2 を待ち IPL の前半
+  (bootwait1)、3 を 0 にする。控えが無ければ NOT READY、sysstatus 5 で開けなければ MEDIUM ERROR
+- **ID 0 (開いたあと)**: LBA 2 は hdsboot (F1 で設定画面)、LBA 0x20/0x21 は本物の LBA 2/3 (ファームと同じ)
+- **ID 6**: LBA 0 = "X68SCSI1"/"X68000ZRemoteDrv"、LBA 4 = "X68K" (リモートドライブ 0 個)、0x80〜 = 待ち IPL の後半、
+  0x100〜 = settingui、0x40000〜0xfffff = 待ち IPL の問い合わせ (X6BW の答え: WAIT / READY + 本物の IPL と和 /
+  CHANGED / NOHDS)、それ以外の 0x200〜 = 設定画面との vdbuf ("X68Z")
+- **設定画面の命令** (vd_command): GETINFO (版 "picosim") / GETCONFIG / SETCONFIG (HDS0 を変えると開き直し、時間は最初から) /
+  GETSTATUS / FLASHCONFIG (`-K` に保存) / FLASHCLEAR / REBOOT (Pico だけ再起動。Z のキャッシュは残る) /
+  WIFI_SCAN (SSID "picosim" 1 つ) / SMB2_ENUM (共有 "picosim" 1 つ) / SMB2_LIST (HDS のファイル名だけ)。
+  scsiremote.sys (リモートドライブ B:) の命令は無い
+- **Z のキャッシュ**: XEiJ の ROM は最初に ID 0 の LBA 0-3 を読むので、picosim の Z キャッシュの先読みで LBA 0-31 が
+  まとめて入る。その後の読み込み (待ち IPL のあとの分割表・ドライバ) はキャッシュ (= 控え) から。Z で見えた
+  「電源投入で 16KB を一括で読み、ソフトリセットでは読み直さない」の真似になっている。電源の入れ直しは picosim と
+  XEiJ の両方を起動し直す (`-C` の `powercycle` は picosim 側だけ)
 
 ## 横取りの仕方 (XEiJ には手を入れない)
 
@@ -146,6 +184,24 @@ uint64_t picosim_now_us(void);                                                  
 
 ## 確かめたこと (2026-10-23、XEiJ 0.26.10.08 -model=SUPER、MacBook Pro)
 
+Pico Z Loader (`-T`、`-F` はフォークの driver/、HDS は 100MB の x68kcli イメージの写し):
+- 控え無し (`-T 3,6,12`): ID 0 は 12 秒 NOT READY、開いたら控えを書いて (`snapshot ... written (updated)`) そのまま起動
+- 電源を入れ直す (picosim と XEiJ を起動し直し、`-T 15,25,35`): 控えを返し (`serving the snapshot (waiting IPL)`)、
+  待ち画面 (テキスト VRAM を textcopy で読んだもの):
+  `Pico Z Loader ･ Raspberry Pi Pico W / x68kzremotedrv` / `Wi-Fi ○ 接続中` / `SMB ― (接続を試しています)` /
+  `HDS ○ 待っています` / `経過 7 秒` / `S: 設定画面 (Wi-Fi / SMB / HDS)`。35 秒で `snapshot matches` →
+  `state 1 sysstatus 5` (READY) → 本物の IPL に乗り換えて Human68k が起動し、npd.x・rcmd.x まで動いた
+- HDS の LBA 31 の 1 バイトを変えて電源を入れ直す (`-T 2,4,8`): 古い控えを返したあと開いて `CHANGED`、待ち画面に
+  `HDS が変わりました。Z の電源を入れ直してください` で止まる。もう一度入れ直すと新しい控えで READY → 起動
+  (`x68 'echo r4 booted after HDS change + power cycle'` が返った)
+- 待ち画面で S (`XEiJControl` に `typekey s`): settingui が ID 6 から読まれて設定画面 (`Ｒｅｍｏｔｅ Ｄｒｉｖｅ Ｓｅｒｖｉｃｅ
+  ｆｏｒ Ｘ６８０００ Ｚ`、`SSID picosim`) が出た。GETINFO・GETCONFIG のあと GETSTATUS を 2 秒おきに問い合わせてくる
+- XEiJ なしの試験 `tests/bootwaittest.py` (16 項目): NOT READY → 控えの作成 / 控えから待ち IPL / 後半 "BW2!" /
+  WAIT → READY と IPL の和 / CHANGED と控えの書き直し / 入れ直して READY / ID 6 の署名・settingui・vdbuf の
+  GETSTATUS と 4 ページの GETCONFIG
+
+netpipe など (最初の日):
+
 - 起動: PicoUnit は MPU が動き出す前に入り、起動の途中で ID 6 に TEST UNIT READY → REQUEST SENSE → INQUIRY → READ CAPACITY → READ(6) LBA 0 (2KB) が来て、
   0 なのでディスクとしては扱われなかった。npd.x が
   メールボックスで交換を始めた (`netpipe: bridge 192.168.1.68 (records)`)
@@ -157,17 +213,27 @@ uint64_t picosim_now_us(void);                                                  
   (X25519 と ed25519 verify は picosim で)、`No auth methods could be used` で終わる (鍵を置いていないので期待どおり)
 - ID 0: `-0 id0.hds -N 15` で XEiJ の ROM は 15 秒 TEST UNIT READY を繰り返し (約 5000 回)、準備ができたら picosim の
   HDS から起動し、そのまま npd・rcmd まで動いた
-- 速度 (XEiJ の中、rcmd のデータだけ): Z → Mac 11.9KB/s (77,628 バイト 6.5 秒)、Mac → Z 5.4〜5.7KB/s (x68put 全体)。
-  実機の Z (40〜56KB/s) より遅い。picosim の 1 命令は XEiJ 側から見て平均 0.12ms、Z → Mac の送りの間の交換は約 37 回/秒 × 約 340 バイトで、
-  Z 側 (XEiJ の 68000 10MHz、または XEiJ の実時間への合わせ方) が律速と見ているが、確かめていない
+- 速度は MPU のクロックにほぼ比例する (Z の 68000 が律速)。`-model=SUPER -clock=N`、77,628 バイト、ほかに負荷のある Mac で:
+
+  | クロック | Mac → Z (x68put 全体、3 回) | Z → Mac (rcmd のデータ) | ping 192.168.1.1 平均 |
+  |---|---|---|---|
+  | 10 MHz | 10.8 / 10.9 / 18.1 KB/s | 29.2 KB/s | 62ms |
+  | 16.7 MHz | 55.4 / 55.4 / 59.7 KB/s | 50.1 KB/s | 40ms |
+  | 33.3 MHz | 97.0 KB/s (3 回とも) | 99.5 KB/s | 52ms |
+
+  16.7MHz の数字は実機の Z (npd + xip、45〜57KB/s) に近い。最初の日に測った 10MHz の 5.6 / 11.9KB/s は、別の XEiJ が
+  動いていて Mac が混んでいたときのもの (10MHz の x68put は 1 回 1KB/s まで落ちたこともあり、ばらつきが大きい)
 - Z のキャッシュ: npd.x の読みのうち 4 割前後がキャッシュに当たる (先読みした 16KB の残りなど)。古い応答は番号で弾かれる
 
 ## 限り
 
 - XEiJ の CPU が Z より遅く、USB の往復 (実機で 1 命令 0.2〜2.5ms) は -d で足さないと 0 に近い。速度の数字は実機と比べない
 - SPC の道の書き込みの失敗は Z に伝わらない。メールボックスは READ(10)/WRITE(10) だけ
-- ID 6 の LBA 0 / scsiremote.sys / 設定画面 / 起動待ち IPL (Pico Z Loader の BW_BAND 0x40000〜) は未実装。ID 0 の
-  NOT READY は「最初の N 秒」だけ (ファームの 5 秒の保留と control の状態遷移は真似ていない)
+- ID 6 の scsiremote.sys (リモートドライブ) と、ファームの起動ローダ (LBA 2 の bootloader、remoteboot) は無い。
+  NOT READY の前のファームの 5 秒の保留 (TinyUSB に呼び直させる) は真似ていない (XEiJ の ROM はすぐ NOT READY を見る)。
+  Wi-Fi / SMB は時間で進むだけで、設定画面で変えた SSID などは効かない (HDS0 のパスだけ効く)
+- XEiJ の ROM の起動は Z の Linux の起動と違う (Z は Linux が USB の HDS を読んでから X68000 の ROM が動く)。
+  picosim の Z キャッシュの先読みでそれらしくしているだけ
 - LAN は slirp の NAT。外 (インターネットや家の LAN) にも出られるので、試験はゲートウェイ (Mac) 宛てに留める。
   Mac から Z へは -L の転送だけ (Z を LAN の 1 台として外から見ることはできない)
 - DNS はゲートウェイの 53 番を slirp の DNS の口に付け替えて Mac の resolver に送るだけ (中身は確かめていない)
