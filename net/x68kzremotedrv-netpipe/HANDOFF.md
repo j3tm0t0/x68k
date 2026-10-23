@@ -83,6 +83,13 @@ make -j8      # x68kzremotedrv.elf / .uf2 (fork の build-p2w/ で作れる。00
   `-DPZL_MSC=ON` (EP 4096、1 回の呼び出しで 8 セクタ、NOT READY をすぐ)、`-DPZL_CACHE=ON` (32 セクタ × 8 組)、`-DMSC_LOG=ON` と `-DMSCLOG_BUDGET=1000000`、読み込みごとに CRC32
 - raspi3 の /tmp/fork-z-pzl{both,msc,cache}.elf、受け手は raspi3 の `~/bin/msclogrecv.py OUT.txt` (UDP 6870)。試したあとは ~/fw-fork-f0957f45.elf に戻す
 
+## "Out of memory" で落ちる件 (10/24、Delta の p2w の試験)
+
+- 原因 (見込み): HDS の読み書き (USB タスク) と SMB の keepalive (別のタスク) が同じ libsmb2 の接続を同時に使う。最初の keepalive は接続の直後
+  (接続タスクが remote_sem を返した瞬間) に走り、Z が HDS0 を読んでいる最中と重なる。公開した v2026.10.23 (4fb2a2f5) にもある
+- 直し: 0048 (keepalive は USB タスクで)、0047 (status タスクのスタック)。候補 raspi3:~/fw-fork-275c2fef.elf (0001-0048)。Delta の試験の表で確かめ中、実機は未試験
+- 0047 と 0048 が通れば v2026.10.23.1 (0044 + 0047 + 0048) を team-lead が moto に聞く
+
 ## 次にやること
 
 0. (済、21:35) 0043 まで書いた。設定画面の枠は重ならない。SERVER を同じ値で確定 (SETCONFIG CONNECT_SMB2) → SMB を外して開き直し (REMOTE0 / HDS0 を開き直し、C: の SD はそのまま、status 正常)。HOSTNAME を pico-zt にして保存 → 電源を入れ直すと host=pico-zt で DHCP、B: と C: も正常 → 空に戻して保存 → host=pico-f350。最後に netcon / CTTY CON。
