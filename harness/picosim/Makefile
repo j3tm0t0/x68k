@@ -12,6 +12,12 @@ ACCEL = ../../net/accel
 # 無ければ B: 無しでビルドする
 RS ?= $(HOME)/src/github.com/yunkya2/x68kzremotedrv-hid/x68kserremote
 REMOTE_SRC = $(if $(wildcard $(RS)/service/remoteserv.c),build/remote.o build/remoteserv.o)
+# TSP (tis.x -p の相手): net/tistack の tsp_svc + lwIP (pico-sdk の lib/lwip)。lwIP があれば既定で入れる (TSP= で切る)。
+# lwIP は libslirp と名前がぶつかるので、net/tistack/pico/picosim が 1 個の .o にまとめたものをリンクする。
+# lwIP の口は最初の 0xA6 が来てから LAN に出る (それまでは npd.x + xip.x の Z と同じに動く)
+LWIP ?= $(HOME)/src/github.com/yunkya2/x68kzremotedrv/pico-sdk/lib/lwip
+TSPDIR = ../../net/tistack/pico/picosim
+TSP ?= $(if $(wildcard $(LWIP)/src/core/tcp.c),$(TSPDIR)/build/tsp_all.o)
 CFLAGS ?= -O2 -g -Wall
 SVC ?=
 # 待ち IPL / hdsboot / settingui の 68000 のバイナリ (フォークの driver/ でビルドしたもの。git には入れない)
@@ -20,10 +26,13 @@ SVCFLAGS ?=
 
 all: build/picosim
 
-build/picosim: picosim.c netpipe.c lan_slirp.c bootwait.c picosim.h build/libslirp.a $(SVC) $(REMOTE_SRC)
+build/picosim: picosim.c netpipe.c lan_slirp.c bootwait.c picosim.h build/libslirp.a $(SVC) $(REMOTE_SRC) $(TSP)
 	cc $(CFLAGS) -I$(SLIRP_DIR)/src -I$(ACCEL) -I$(ACCEL)/monocypher $(GLIB_CFLAGS) $(SVCFLAGS) -o $@ \
-	  picosim.c netpipe.c lan_slirp.c bootwait.c $(SVC) $(REMOTE_SRC) $(ACCEL)/accel_ops.c $(ACCEL)/monocypher/monocypher.c \
+	  picosim.c netpipe.c lan_slirp.c bootwait.c $(SVC) $(REMOTE_SRC) $(TSP) $(ACCEL)/accel_ops.c $(ACCEL)/monocypher/monocypher.c \
 	  $(ACCEL)/monocypher/monocypher-ed25519.c build/libslirp.a $(GLIB_LIBS) -lresolv -liconv
+
+$(TSPDIR)/build/tsp_all.o: $(TSPDIR)/tsp_glue.c $(wildcard $(TSPDIR)/../tsp_svc.c $(TSPDIR)/../tsp_svc.h)
+	$(MAKE) -C $(TSPDIR) build/tsp_all.o LWIP=$(LWIP)
 
 REMOTE_CFLAGS = -O2 -g -Iremote -I$(RS)/include -I$(RS)/service -I.
 build/remote.o: remote.c remote/config.h picosim.h
@@ -61,6 +70,7 @@ test: build/picosim build/picosim-echo
 	python3 -I tests/bridgetest.py build/picosim-echo
 	python3 -I tests/bootwaittest.py build/picosim $(FW)
 	python3 -I tests/remotetest.py build/picosim $(FW)
+	tests/tsptest.sh
 
 clean:
 	rm -f build/picosim build/picosim-echo

@@ -84,6 +84,7 @@ make -C driver bootwait1.bin bootwait.bin hdsboot.bin settingui.bin scsiremote.b
 | `-l host:port` | 127.0.0.1:6868 | XEiJ を待つ口 |
 | `-n net/len` `-g gw` `-D dns` | 192.168.1.0/24, .1, .3 | slirp の LAN。ゲートウェイは Mac の 127.0.0.1 に。DNS の口とゲートウェイの UDP 53 番 (zshrc の `NETDNS` の既定) は picosim が Mac の resolver (getaddrinfo / getnameinfo) で答える (A と PTR。仮想の LAN のアドレスの PTR は picosim が名付ける) |
 | `-L [u]PORT:ZPORT` | `2323:2323` | Mac の 127.0.0.1:PORT → Z:ZPORT。`u` で UDP、`none` で無し。何度でも |
+| `-H ID:file.hds` | | ID 1〜5 をデータの HDS に (ファームの HDS1〜、SD のデータディスクの真似)。sysstatus 5 まで NOT READY。何度でも |
 | `-0 file.hds` `-N 秒` | | ID 0 を HDS ファイルで答える / 最初の N 秒 NOT READY (`-T 0,0,N` と同じ) |
 | `-T w,s,h` | | Pico Z Loader の起動待ち: 起動から w 秒で Wi-Fi、s 秒で SMB、h 秒で HDS が開く (下記) |
 | `-B file` | `<HDS>.bootsnap` | 起動の控え (フラッシュ 0x1E0000 の代わり: 見出し 4KB + HDS の LBA 0-31) |
@@ -225,6 +226,18 @@ INQUIRY / READ CAPACITY / TEST UNIT READY / REQUEST SENSE / MODE SENSE も含め
   疑似乱数で飛ぶ) で読む理由がそのまま再現される。書き込みは素通しでキャッシュにも入る。電源断 = picosim の再起動
 - **LAN** (`lan_slirp.c`): ファームの代理 ARP と同じく、Z の IP 宛ての ARP に Z の (架空の) MAC で答え、Z 宛ての IPv4 を
   netpipe に渡す。Z からの IP は Ethernet に包んで slirp へ。最初の交換で Z の IP を知ったら -L の転送を張る
+
+## データの HDS (-H) と TSP (tis.x -p)
+
+- `-H 1:data.hds` で ID 1 をデータの HDS にする (XEiJ には `-Dpicosim.ids=1,6` など)。2026-10-23 に XEiJ で、
+  20MB の空の HDS (x68kcli/scripts/mkhds.py) が **B:** になった (A: = ID 0)。B: の Z のリモートドライブ (`-F -R`) も
+  一緒だと A: = ID 0、B: = ID 1、C: = リモートドライブ (`drive.x` の表示)。Z から書いたファイルを Mac の rb-cli で読めた。
+  Human68k が SCSI を調べる時点で NOT READY の ID はドライブにならないので、`-T` の HDS の時刻より前に起動が進むと
+  データディスクは見えない
+- TSP: lwIP (`LWIP=`、既定は pico-sdk の lib/lwip) があれば、build/picosim に net/tistack の tsp_svc + lwIP が既定で入る
+  (`TSP=` で外す)。lwIP は Z の IP (192.168.1.68) を名乗るが、LAN に出るのは最初の 0xA6 が来てから (xip.x + npd.x の Z は
+  今までどおり)。`make test` の `tests/tsptest.sh` が net/tistack/tests/xeij_pico.sh を回して判定する (XEiJ と GUI が要る。
+  NOXEIJ=1 で飛ばす): 名前・echo・put・get・sink・src・ssh.x (Mac の sshd、鍵交換まで)・Mac からの rcmd.x (echo・x68put 300KB)
 
 ## サービスを足す (tistack の Pico 側ソケット窓口など)
 

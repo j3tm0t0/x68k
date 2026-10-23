@@ -49,6 +49,10 @@ int pz_id0_ready(void);
 int pz_id0_read(uint32_t lba, uint8_t *buf);
 int pz_id0_write(uint32_t lba, const uint8_t *buf);
 int pz_id6_read(uint32_t lba, uint8_t *buf);
+void pz_hds_add(int id, const char *path);   /* ID 1〜5 のデータの HDS (-H) */
+int pz_hds_ready(int id);
+int pz_hds_read(int id, uint32_t lba, uint8_t *buf);
+int pz_hds_write(int id, uint32_t lba, const uint8_t *buf);
 int pz_id6_write(uint32_t lba, const uint8_t *buf);
 
 /* ---- netpipe (netpipe.c): SCSI ID 6 の LBA を受ける ---- */

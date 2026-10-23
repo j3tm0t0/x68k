@@ -23,7 +23,7 @@ $(OBJ): tsp_glue.c lwipopts.h ../tsp_svc.c ../tsp_svc.h ../tsp_lwipopts.h ../../
 	ld -r -o $@ build/o/*.o -exported_symbols_list build/exports
 
 $(HARNESS)/build/picosim: $(OBJ) $(HARNESS)/picosim.c $(HARNESS)/netpipe.c $(HARNESS)/lan_slirp.c
-	rm -f $@ && $(MAKE) -C $(HARNESS) build/picosim SVC=$(abspath $(OBJ)) $(if $(SAN),CFLAGS="-O1 -g -Wall $(SAN)")
+	rm -f $@ && $(MAKE) -C $(HARNESS) build/picosim TSP=$(abspath $(OBJ)) $(if $(SAN),CFLAGS="-O1 -g -Wall $(SAN)")
 
 clean:
 	rm -rf build

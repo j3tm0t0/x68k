@@ -3,7 +3,7 @@
  *            XEiJ (harness/xeij/agent/PicoBridge.java) が SCSI の命令を TCP で渡してくる
  *
  *   picosim [-l 127.0.0.1:6868] [-n 192.168.1.0/24] [-g 192.168.1.1] [-D DNS] [-L [u]PORT:ZPORT]...
- *           [-0 disk.hds] [-T Wi-Fi,SMB,HDS の秒] [-N 秒] [-B 控え] [-F ファームの driver/] [-C 制御] [-K 設定] [-R B: の中身]... [-c MB] [-r KB] [-d µs] [-a 倍率] [-s 秒] [-p lan.pcap] [-v]
+ *           [-0 disk.hds] [-H ID:データの HDS]... [-T Wi-Fi,SMB,HDS の秒] [-N 秒] [-B 控え] [-F ファームの driver/] [-C 制御] [-K 設定] [-R B: の中身]... [-c MB] [-r KB] [-d µs] [-a 倍率] [-s 秒] [-p lan.pcap] [-v]
  *
  * 受け持つ SCSI ID:
  *   ID 6 = netpipe (netpipe.c)。LBA 0x100000 の要求と 0x110000〜0x1ffff7 の応答。ほかの LBA は 0 を返し、書き込みは捨てる
@@ -75,13 +75,13 @@ static uint32_t cmd_delay_us;
 static int t_read(int id, uint32_t lba, uint8_t *buf)
 {
   tg[id].reads++;
-  return id == 6 ? pz_id6_read(lba, buf) : pz_id0_read(lba, buf);
+  return id == 6 ? pz_id6_read(lba, buf) : id == 0 ? pz_id0_read(lba, buf) : pz_hds_read(id, lba, buf);
 }
 
 static int t_write(int id, uint32_t lba, const uint8_t *buf)
 {
   tg[id].writes++;
-  return id == 6 ? pz_id6_write(lba, buf) : pz_id0_write(lba, buf);
+  return id == 6 ? pz_id6_write(lba, buf) : id == 0 ? pz_id0_write(lba, buf) : pz_hds_write(id, lba, buf);
 }
 
 /* ---- Z の Linux の読み込みキャッシュ ---- */
@@ -232,7 +232,7 @@ static void scsi(int id, const uint8_t *cdb, const uint8_t *out, uint32_t outlen
   pz_tick();
   if (id == 0 && pz.hds_fd >= 0)
     t->sects = pz.hds_sects;
-  int notready = id == 0 && !pz_id0_ready();
+  int notready = id == 0 ? !pz_id0_ready() : id != 6 && !pz_hds_ready(id);
   switch (op) {
   case 0x00:                            /* TEST UNIT READY */
     if (notready)
@@ -450,7 +450,7 @@ static void usage(void)
 {
   fprintf(stderr,
           "usage: picosim [-l 127.0.0.1:6868] [-n 192.168.1.0/24] [-g GW] [-D DNS] [-L [u]PORT:ZPORT|none]...\n"
-          "               [-0 disk.hds] [-T wifi,smb,hds] [-N sec] [-B snap] [-F fwdir] [-C ctlfile] [-K config] [-R dir]... [-c MB] [-r KB] [-d us] [-a scale] [-s sec] [-p lan.pcap] [-v]\n");
+          "               [-0 disk.hds] [-H ID:data.hds]... [-T wifi,smb,hds] [-N sec] [-B snap] [-F fwdir] [-C ctlfile] [-K config] [-R dir]... [-c MB] [-r KB] [-d us] [-a scale] [-s sec] [-p lan.pcap] [-v]\n");
   exit(2);
 }
 
@@ -463,7 +463,7 @@ int main(int argc, char **argv)
   lan_cfg.net = ip_arg("192.168.1.0");
   lan_cfg.gw = ip_arg("192.168.1.1");
   lan_cfg.dns = 0;
-  while ((o = getopt(argc, argv, "l:n:g:D:L:0:N:T:B:F:C:K:R:Pc:r:d:a:s:p:vh")) != -1) {
+  while ((o = getopt(argc, argv, "l:n:g:D:L:0:H:N:T:B:F:C:K:R:Pc:r:d:a:s:p:vh")) != -1) {
     switch (o) {
     case 'l': listen_spec = optarg; break;
     case 'n': {
@@ -495,6 +495,21 @@ int main(int argc, char **argv)
       }
       break;
     case '0': hds0 = optarg; break;
+    case 'H': {                         /* -H ID:file.hds (ID 1〜5): データの HDS (ファームの HDS1〜。SD のデータディスクの真似) */
+      int id = atoi(optarg);
+      const char *c = strchr(optarg, ':');
+      struct stat st;
+      if (id < 1 || id > 5 || !c || stat(c + 1, &st) < 0) {
+        fprintf(stderr, "picosim: -H ID:file.hds (ID 1-5, existing file): %s\n", optarg);
+        exit(2);
+      }
+      tg[id].present = 1;
+      tg[id].name = c + 1;
+      tg[id].sects = (uint32_t)(st.st_size / 512);
+      pz_hds_add(id, c + 1);
+      picosim_log("id%d: %s (%u sectors)\n", id, c + 1, tg[id].sects);
+      break;
+    }
     case 'N': nr_sec = atoi(optarg); break;
     case 'T':
       pz.bootwait = 1;

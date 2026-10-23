@@ -177,6 +177,47 @@ static void hds_open(void)
               served ? "CHANGED: the Z already has the old one" : "updated");
 }
 
+/* ---- ID 1〜5: データの HDS (ファームの HDS1〜3 と同じく、接続が済む (sysstatus 5) まで NOT READY) ---- */
+static struct { const char *path; int fd; } xhds[8];
+
+void pz_hds_add(int id, const char *path)
+{
+  xhds[id].path = path;
+  xhds[id].fd = -1;
+}
+
+static void xhds_open(void)
+{
+  for (int id = 1; id < 6; id++)
+    if (xhds[id].path && xhds[id].fd < 0) {
+      xhds[id].fd = open(xhds[id].path, O_RDWR);
+      picosim_log("pz: HDS%d %s %s\n", id, xhds[id].path, xhds[id].fd >= 0 ? "open" : "cannot open");
+      if (xhds[id].fd < 0)
+        xhds[id].path = NULL;
+    }
+}
+
+int pz_hds_ready(int id)
+{
+  return xhds[id].fd >= 0;
+}
+
+int pz_hds_read(int id, uint32_t lba, uint8_t *buf)
+{
+  if (xhds[id].fd < 0)
+    return pz_sysstatus() >= 5 ? PS_IOERR : PS_NOTREADY;
+  if (pread(xhds[id].fd, buf, 512, (off_t)lba * 512) != 512)
+    memset(buf, 0, 512);
+  return PS_OK;
+}
+
+int pz_hds_write(int id, uint32_t lba, const uint8_t *buf)
+{
+  if (xhds[id].fd < 0)
+    return pz_sysstatus() >= 5 ? PS_IOERR : PS_NOTREADY;
+  return pwrite(xhds[id].fd, buf, 512, (off_t)lba * 512) == 512 ? PS_OK : PS_IOERR;
+}
+
 static void hds_close(void)
 {
   if (pz.hds_fd >= 0)
@@ -225,6 +266,8 @@ void pz_tick(void)
   control();
   if (pz_sysstatus() >= 5 && pz.hds_fd < 0)
     hds_open();
+  if (pz_sysstatus() >= 5)
+    xhds_open();
 }
 
 void pz_init(void)
