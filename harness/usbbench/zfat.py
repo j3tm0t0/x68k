@@ -33,6 +33,8 @@ ap.add_argument("--stall", type=float, default=10)
 ap.add_argument("--hang", type=float, default=60)
 ap.add_argument("--boot", action="store_true", help="機器が現れたらすぐマウント (起動の窓)")
 ap.add_argument("--idle", type=float, default=2.0)
+ap.add_argument("--duration", type=float, default=0, help="この秒数で打ち切る (--ops より先に)")
+ap.add_argument("--rate", type=float, default=0, help="1 秒あたりの操作の上限 (0 = 全速)")
 args = ap.parse_args()
 seed = args.seed if args.seed is not None else int(time.time())
 rnd = random.Random(seed)
@@ -73,6 +75,8 @@ shadow = bytearray(open(args.src, "rb").read())
 span = min(args.span or len(shadow), len(shadow))
 log("INFO", "source %s %d bytes crc %08x; span %d" % (args.src, len(shadow), zlib.crc32(shadow), span))
 written = set()                          # 書いたセクタ
+# Pico は読むときだけ HDS の LBA 2 を hdsboot に、0x20 / 0x21 を元の 2 / 3 に差し替える (書き込みは差し替えない): 比べない
+MASK = {2, 0x20, 0x21}
 
 fd_b = os.open(path, os.O_RDWR)
 fd_d = os.open(path, os.O_RDWR | os.O_DIRECT)
@@ -149,7 +153,14 @@ def do_write(off, data, direct):
         abuf[:len(data)] = data; return os.pwritev(fd_d, [memoryview(abuf)[:len(data)]], off)
     k = os.pwrite(fd_b, data, off); os.fdatasync(fd_b); return k
 
+t_start = time.time()
 for i in range(args.ops):
+    if args.duration and time.time() - t_start > args.duration:
+        log("INFO", "duration reached after %d ops" % i); break
+    if args.rate:
+        d = t_start + i / args.rate - time.time()
+        if d > 0:
+            time.sleep(d)
     n = rnd.randint(1, args.maxsec) * 512
     off = rnd.randrange(0, (span - n) // 512 + 1) * 512
     direct = rnd.random() < args.direct
@@ -171,7 +182,11 @@ for i in range(args.ops):
                 log("ERR", "%s: short read %d" % (what, len(got))); bad.append(what)
             want = shadow[off:off + len(got)]
             if got != want:
-                secs = [s for s in range(len(got) // 512) if got[s * 512:(s + 1) * 512] != want[s * 512:(s + 1) * 512]]
+                secs = [s for s in range(len(got) // 512) if got[s * 512:(s + 1) * 512] != want[s * 512:(s + 1) * 512]
+                        and off // 512 + s not in MASK]
+            else:
+                secs = []
+            if secs:
                 stats["mismatch_sectors"] += len(secs)
                 s0 = secs[0]
                 log("BAD", "%s: %d/%d sectors differ, first 0x%x = %s%s" % (
@@ -254,6 +269,7 @@ except Exception as e:
 
 print("== zfat summary (seed %d, %.0f s)" % (seed, time.time() - T0))
 print("   %s" % stats)
+print("STATS mismatch=%d eio=%d smbdiff=%d" % (stats["mismatch_sectors"], stats["eio"], len(diff)))
 print("   file size 0x%x -> 0x%x; sizes seen %s" % (st0.st_size, st1.st_size, {hex(k): round(v, 1) for k, v in sizes.items()}))
 print("   SMB file after the run: %s (%d written sectors)" % ("same" if not diff else "%d DIFFER" % len(diff), len(written)))
 print("   umount: rc %s; FAT: %s" % (r.returncode, fc))
