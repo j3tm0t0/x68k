@@ -185,6 +185,10 @@ if "echo" in os.path.basename(PICOSIM):
     (n, more, _), data = xchg(zrec(bytes([0xa6, 0]) + b"x" * 3001))
     r = [x for x in recs(data) if x and x[0] == 0xa6]
     check("service 3003-byte reply", len(r) == 1 and len(r[0]) == 3003 and more == 0)
+    (n, more, _), data = xchg(zrec(bytes([0xa6, ord("D")])))
+    r = [x for x in recs(data) if x and x[0] == 0xa6]
+    check("DNS from an attached interface (lan_send) is answered", r and r[0][2] == 0 and r[0][3] >= 1,
+          "rcode=%d answers=%d" % (r[0][2], r[0][3]) if r else "no reply")
 
 # Mac -> Z の転送 (rcmd.x の 2323): SYN が Z に届く
 c = socket.socket()

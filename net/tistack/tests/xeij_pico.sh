@@ -67,9 +67,8 @@ printf 'FILES = 30\r\nBUFFERS = 20 1024\r\nLASTDRIVE = Z:\r\nPROCESS = 16 10 20\
 pids=()
 cleanup() { for p in "${pids[@]}"; do kill -9 "$p" 2>/dev/null || true; done; }
 trap cleanup EXIT
-# Pico (lwIP) の DNS。slirp の DNS の口 (192.168.1.3) は Mac の resolver (Tailscale の 100.100.100.100) に送っても
-# 答えが返らなかったので、既定は公開の resolver に直接 (slirp の NAT 越しの UDP 1 往復)。TSP_DNS=192.168.1.3 で slirp に
-export TSP_DNS=${TSP_DNS:-8.8.8.8}
+# Pico (lwIP) の DNS: picosim の DNS の口 (picosim が Mac の resolver で答える。bacb837 から lan_attach の口にも)
+export TSP_DNS=${TSP_DNS:-192.168.1.3}
 python3 -I tests/tisnet_peer.py "$PEERPORT" > "$OUT/peer.log" 2>&1 & pids+=($!)
 "$TOP/harness/picosim/build/picosim" -l 127.0.0.1:$BRIDGE -L $RPORT:2323 -s 10 > "$OUT/picosim.log" 2>&1 & pids+=($!)
 sleep 1
