@@ -7,9 +7,23 @@ PZLREPO ?= $(HOME)/Dropbox/src/github.com/j3tm0t0/x68k-zos-pzl
 PZLREV ?= pzl
 B = build
 S = $(B)/src/pico
-PZLFILES = src/scsi/virtual_disk.c src/storage/storage.c src/storage/stor_ram.c
-INC = -Ishim -I$(S)/src -I$(S)/src/scsi -I$(S)/src/storage -I$(S)/src/config -I$(S)/src/remote -I$(S)/include -I$(S)/driver \
-      -I$(S)/lib/x68kserremote/include -I$(S)/lib/x68kserremote/service
+PZLFILES = src/scsi/virtual_disk.c src/storage/storage.c src/storage/stor_ram.c \
+           src/remote/vd_command.c src/remote/iconv/iconv_mini.c lib/x68kserremote/service/remoteserv.c \
+           src/netpipe/netpipe.c src/accel/accel.c src/accel/accel_ops.c src/accel/monocypher/monocypher.c \
+           src/accel/monocypher/monocypher-ed25519.c src/bootwait/bootwait.c
+# lwIP (netpipe のブリッジと、Wi-Fi の代わりの netif)。pico-sdk の lib/lwip (net/tistack と同じもの)
+LWIP ?= $(HOME)/src/github.com/yunkya2/x68kzremotedrv/pico-sdk/lib/lwip
+L = $(LWIP)/src
+LWIPSRC = $(addprefix $(L)/,core/def.c core/dns.c core/inet_chksum.c core/init.c core/ip.c core/mem.c core/memp.c \
+	core/netif.c core/pbuf.c core/stats.c core/sys.c core/tcp.c core/tcp_in.c core/tcp_out.c core/timeouts.c core/udp.c \
+	core/raw.c core/ipv4/acd.c core/ipv4/dhcp.c core/ipv4/etharp.c core/ipv4/icmp.c core/ipv4/ip4.c core/ipv4/ip4_addr.c \
+	core/ipv4/ip4_frag.c netif/ethernet.c)
+# 順番が大事: shim (pico-sdk・cyw43・lwip/sockets.h の代わり) → PZL の include (config.h: 15KB の応答) → src/net (lwipopts.h)
+#   → x68kserremote の service (POSIX の fileop.h。Pico の src/remote/fileop.h は libsmb2 なので使わない) → PZL の各所 → lwIP
+INC = -Ishim -I$(S)/include -I$(S)/src/net -I$(S)/lib/x68kserremote/include -I$(S)/lib/x68kserremote/service \
+      -I$(S)/src -I$(S)/src/scsi -I$(S)/src/storage -I$(S)/src/config -I$(S)/src/remote -I$(S)/src/remote/iconv \
+      -I$(S)/src/netpipe -I$(S)/src/accel -I$(S)/src/accel/monocypher -I$(S)/src/bootwait -I$(S)/driver \
+      -I$(S)/lib/libsmb2/include -I$(S)/lib/libsmb2/include/smb2 -I$(L)/include -I$(LWIP)/contrib/ports/unix/port/include
 
 all: $(B)/pzl_all.o
 
@@ -20,20 +34,21 @@ $(B)/rev: FORCE
 $(B)/src/.done: $(B)/rev
 	rm -rf $(B)/src && mkdir -p $(B)/src
 	git -C $(PZLREPO) archive $$(cat $(B)/rev) pico | tar x -C $(B)/src
-	sm=$$(git -C $(PZLREPO) ls-tree $$(cat $(B)/rev) pico/lib/x68kserremote | awk '{print $$3}'); \
-	  mkdir -p $(S)/lib/x68kserremote && git -C $(PZLREPO)/pico/lib/x68kserremote archive $$sm | tar x -C $(S)/lib/x68kserremote
-	$(MAKE) -s -C $(S)/driver scsiremote.inc bootloader.inc hdsboot.inc settingui.inc
+	for m in x68kserremote libsmb2; do \
+	  sm=$$(git -C $(PZLREPO) ls-tree $$(cat $(B)/rev) pico/lib/$$m | awk '{print $$3}'); \
+	  mkdir -p $(S)/lib/$$m && git -C $(PZLREPO)/pico/lib/$$m archive $$sm | tar x -C $(S)/lib/$$m || exit 1; done
+	$(MAKE) -s -C $(S)/driver scsiremote.inc bootloader.inc hdsboot.inc settingui.inc bootwait.inc bootwait1.inc
 	@echo "pzl: $(PZLREV) = $$(cat $(B)/rev)"
 	touch $@
 
 $(B)/config_file_host.c: $(B)/src/.done host_config.py
 	python3 -I host_config.py $(S)/src/config/config_file.c $(S)/config.tmpl.txt $@
 
-$(B)/pzl_all.o: $(B)/src/.done $(B)/config_file_host.c pzl_host.c $(wildcard shim/hardware/*.h)
+$(B)/pzl_all.o: $(B)/src/.done $(B)/config_file_host.c pzl_host.c $(wildcard shim/*/*.h)
 	rm -rf $(B)/o && mkdir -p $(B)/o
-	for f in $(addprefix $(S)/,$(PZLFILES)) $(B)/config_file_host.c pzl_host.c; do \
-	  cc -O1 -g -w -fno-common -DPZL_HOST $(INC) -c $$f -o $(B)/o/$$(basename $${f%.c}).o || exit 1; done
-	printf '_pzl_init\n_pzl_poll\n_pzl_read\n_pzl_write\n_pzl_present\n_pzl_sects\n_pzl_sysstatus\n_pzl_ready\n_pzl_rebooted\n' > $(B)/exports
+	for f in $(addprefix $(S)/,$(PZLFILES)) $(B)/config_file_host.c pzl_host.c $(LWIPSRC); do \
+	  cc -O1 -g -w -fno-common -DPZL_HOST -DPZL_BOARD='"host"' -DGIT_REPO_VERSION='"picosim"' -DHID_KEYBOARD=0 $(INC) -c $$f -o $(B)/o/$$(basename $${f%.c}).o || exit 1; done
+	printf '_pzlh_init\n_pzlh_poll\n_pzlh_read\n_pzlh_write\n_pzlh_present\n_pzlh_sects\n_pzlh_sysstatus\n_pzlh_ready\n_pzlh_rebooted\n' > $(B)/exports
 	ld -r -o $@ $(B)/o/*.o -exported_symbols_list $(B)/exports
 
 clean:

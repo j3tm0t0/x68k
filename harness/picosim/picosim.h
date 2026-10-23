@@ -84,6 +84,7 @@ void lan_pollfds_done(struct pollfd *pfd, int n);
 void lan_stats(void);
 /* Z (netpipe のブリッジ) を LAN の 1 台にする。zip が変わったら呼ぶ (0 で外す) */
 void lan_set_zip(uint32_t zip_be);
+void lan_forward_to(uint32_t zip_be);
 /* Z からの IP パケット 1 個を LAN に出す */
 void lan_from_z(const uint8_t *ip, int len);
 /* Z 宛ての IP パケット (netpipe.c が受け取る)。LAN 側が呼ぶ */

@@ -437,6 +437,12 @@ static void del_fwds(void)
     slirp_remove_hostfwd(slirp, lan_cfg.fwd[i].udp, lo, lan_cfg.fwd[i].hport);
 }
 
+/* Z の IP への -L の転送だけを張る (代理 ARP はしない。--pzl では PZL の netpipe が Z の IP を名乗る) */
+void lan_forward_to(uint32_t z)
+{
+  add_fwds(z);
+}
+
 void lan_set_zip(uint32_t z)
 {
   if (z == zip)

@@ -77,27 +77,27 @@ static uint32_t cmd_delay_us;
  * pzl/build/pzl_all.o をリンクしたとき (build/picosim-pzl) だけ。ID 0〜6 の読み書きはすべて PZL の vd_read_block /
  * vd_write_block に (Z の Linux が pscsi.ini 越しにするのと同じ番地)。bootwait.c と netpipe.c は使わない */
 static int use_pzl;
-__attribute__((weak)) int pzl_init(const char *c, const char *r, double a, double b, double d)
+__attribute__((weak)) int pzlh_init(const char *c, const char *r, const char *f, double a, double b, double d, uint32_t ip, uint32_t gw)
 {
-  (void)c; (void)r; (void)a; (void)b; (void)d;
+  (void)c; (void)r; (void)f; (void)a; (void)b; (void)d; (void)ip; (void)gw;
   fprintf(stderr, "picosim: built without PZL (make build/picosim-pzl)\n");
   return -1;
 }
-__attribute__((weak)) void pzl_poll(double t) { (void)t; }
-__attribute__((weak)) int pzl_read(int id, uint32_t lba, uint8_t *buf) { (void)id; (void)lba; (void)buf; return PS_IOERR; }
-__attribute__((weak)) int pzl_write(int id, uint32_t lba, const uint8_t *buf) { (void)id; (void)lba; (void)buf; return PS_IOERR; }
-__attribute__((weak)) int pzl_present(int id) { (void)id; return 0; }
-__attribute__((weak)) uint32_t pzl_sects(int id) { (void)id; return 0; }
-__attribute__((weak)) int pzl_ready(int id) { (void)id; return PS_IOERR; }
-__attribute__((weak)) int pzl_sysstatus(void) { return 0; }
-__attribute__((weak)) int pzl_rebooted(void) { return 0; }
+__attribute__((weak)) void pzlh_poll(double t) { (void)t; }
+__attribute__((weak)) int pzlh_read(int id, uint32_t lba, uint8_t *buf) { (void)id; (void)lba; (void)buf; return PS_IOERR; }
+__attribute__((weak)) int pzlh_write(int id, uint32_t lba, const uint8_t *buf) { (void)id; (void)lba; (void)buf; return PS_IOERR; }
+__attribute__((weak)) int pzlh_present(int id) { (void)id; return 0; }
+__attribute__((weak)) uint32_t pzlh_sects(int id) { (void)id; return 0; }
+__attribute__((weak)) int pzlh_ready(int id) { (void)id; return PS_IOERR; }
+__attribute__((weak)) int pzlh_sysstatus(void) { return 0; }
+__attribute__((weak)) int pzlh_rebooted(void) { return 0; }
 
 /* 1 セクタ。戻り値 PS_OK / PS_NOTREADY / PS_IOERR (ID 0 と ID 6 の中身は bootwait.c が決める) */
 static int t_read(int id, uint32_t lba, uint8_t *buf)
 {
   tg[id].reads++;
   if (use_pzl)
-    return pzl_read(id, lba, buf);
+    return pzlh_read(id, lba, buf);
   if (id == pz_face_id && id != 6)
     return pz_face_read(lba, buf);
   return id == 6 ? pz_id6_read(lba, buf) : id == 0 ? pz_id0_read(lba, buf) : pz_hds_read(id, lba, buf);
@@ -107,7 +107,7 @@ static int t_write(int id, uint32_t lba, const uint8_t *buf)
 {
   tg[id].writes++;
   if (use_pzl)
-    return pzl_write(id, lba, buf);
+    return pzlh_write(id, lba, buf);
   return id == 6 ? pz_id6_write(lba, buf) : id == 0 ? pz_id0_write(lba, buf) : pz_hds_write(id, lba, buf);
 }
 
@@ -247,7 +247,7 @@ static void scsi(int id, const uint8_t *cdb, const uint8_t *out, uint32_t outlen
   uint32_t lba = 0, n = 0, alloc;
   memset(r, 0, sizeof *r);
   if (use_pzl)
-    t->present = pzl_present(id & 7);
+    t->present = pzlh_present(id & 7);
   if (!t->present) {
     /* 対象の無い ID: 選択のタイムアウトは XEiJ 側で作れないので、LUN が無いことにする */
     static struct target none;
@@ -260,10 +260,10 @@ static void scsi(int id, const uint8_t *cdb, const uint8_t *out, uint32_t outlen
   }
   int notready;
   if (use_pzl) {
-    pzl_poll((double)picosim_now_us() / 1e6);
-    t->present = pzl_present(id);
-    t->sects = pzl_sects(id);
-    notready = t->present && pzl_ready(id) == PS_NOTREADY;
+    pzlh_poll((double)picosim_now_us() / 1e6);
+    t->present = pzlh_present(id);
+    t->sects = pzlh_sects(id);
+    notready = t->present && pzlh_ready(id) == PS_NOTREADY;
   } else {
     pz_tick();
     if (id == 0 && pz.hds_fd >= 0)
@@ -486,21 +486,34 @@ static uint32_t ip_arg(const char *s)
 static void usage(void)
 {
   fprintf(stderr,
-          "usage: picosim [--pzl=config.txt [--pzl-root=DIR]] [-l 127.0.0.1:6868] [-n 192.168.1.0/24] [-g GW] [-D DNS] [-L [u]PORT:ZPORT|none]...\n"
+          "usage: picosim [--pzl[=config.txt] [--pzl-root=DIR] [--pzl-flash=F] [--pzl-ip=A] [--pzl-zip=A]] [-l 127.0.0.1:6868] [-n 192.168.1.0/24] [-g GW] [-D DNS] [-L [u]PORT:ZPORT|none]...\n"
           "               [-0 disk.hds] [-H ID:data.hds]... [-T wifi,smb,hds] [-N sec] [-B snap] [-F fwdir] [-C ctlfile] [-K config] [-R dir]... [-c MB] [-r KB] [-d us] [-a scale] [-s sec] [-p lan.pcap] [-v]\n");
   exit(2);
 }
 
 int main(int argc, char **argv)
 {
-  const char *pzl_cfg = NULL, *pzl_root = ".";
-  /* --pzl=config.txt [--pzl-root=DIR] (getopt の前に取り除く) */
+  const char *pzl_cfg = NULL, *pzl_root = ".", *pzl_flash = NULL, *pzl_ip = "192.168.1.118", *pzl_zip = "192.168.1.68";
+  int pzl_on = 0;
+  /* --pzl[=config.txt] [--pzl-root=DIR] [--pzl-flash=FILE] [--pzl-ip=A] [--pzl-zip=A] (getopt の前に取り除く)。
+     config.txt が無ければフラッシュ (--pzl-flash) の設定 */
   for (int i = 1; i < argc; i++)
-    if (!strncmp(argv[i], "--pzl=", 6) || !strncmp(argv[i], "--pzl-root=", 11)) {
-      if (argv[i][5] == '=')
-        pzl_cfg = argv[i] + 6;
+    if (!strncmp(argv[i], "--pzl", 5)) {
+      const char *a = argv[i];
+      if (!strcmp(a, "--pzl"))
+        pzl_on = 1;
+      else if (!strncmp(a, "--pzl=", 6))
+        pzl_on = 1, pzl_cfg = a + 6;
+      else if (!strncmp(a, "--pzl-root=", 11))
+        pzl_root = a + 11;
+      else if (!strncmp(a, "--pzl-flash=", 12))
+        pzl_flash = a + 12;
+      else if (!strncmp(a, "--pzl-ip=", 9))
+        pzl_ip = a + 9;
+      else if (!strncmp(a, "--pzl-zip=", 10))
+        pzl_zip = a + 10;
       else
-        pzl_root = argv[i] + 11;
+        usage();
       memmove(argv + i, argv + i + 1, (argc - i) * sizeof *argv);
       argc--;
       i--;
@@ -647,13 +660,14 @@ int main(int argc, char **argv)
     return 1;
   }
   np_init();
-  if (pzl_cfg) {
-    if (pzl_init(pzl_cfg, pzl_root, pz.t_wifi, pz.t_smb, pz.t_hds) < 0)
+  if (pzl_on) {
+    if (pzlh_init(pzl_cfg, pzl_root, pzl_flash, pz.t_wifi, pz.t_smb, pz.t_hds, ip_arg(pzl_ip), lan_cfg.gw) < 0)
       return 1;
     use_pzl = 1;
+    lan_forward_to(ip_arg(pzl_zip));    /* -L の転送 (PZL の netpipe が Z の IP を名乗る。picosim は代理 ARP しない) */
     for (int id = 0; id < 7; id++)
-      if (pzl_present(id))
-        picosim_log("pzl: SCSI ID %d (%u sectors so far)\n", id, pzl_sects(id));
+      if (pzlh_present(id))
+        picosim_log("pzl: SCSI ID %d (%u sectors so far)\n", id, pzlh_sects(id));
   } else
     pz_init();
   lfd = listen_on(listen_spec);
@@ -700,7 +714,7 @@ int main(int argc, char **argv)
           }
     np_poll();
     if (use_pzl)
-      pzl_poll((double)picosim_now_us() / 1e6);
+      pzlh_poll((double)picosim_now_us() / 1e6);
     else
       pz_tick();
     if (want_stats || (next_stat && picosim_now_us() >= next_stat)) {

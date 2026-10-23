@@ -11,4 +11,10 @@ if not asm.search(s):
     sys.exit("host_config: the config_template __asm__ block was not found (pzl changed?)")
 t = open(tmpl, "rb").read() + b"\0"
 arr = "char config_template[] = {" + ",".join(str(b) for b in t) + "};\n"
-open(out, "w", encoding="utf-8").write(asm.sub(lambda m: "/* picosim: .incbin の代わり */\n" + arr, s, count=1))
+s = asm.sub(lambda m: "/* picosim: .incbin の代わり */\n" + arr, s, count=1)
+# フラッシュの番地 (XIP 0x10000000) は、ホストではフラッシュの代わりの配列 pzlh_flash (pzl_host.c) に
+fl = "((uint8_t *)(0x10000000 + CONFIG_FLASH_OFFSET))"
+if fl not in s:
+    sys.exit("host_config: CONFIG_FLASH_ADDR changed (pzl changed?)")
+s = s.replace(fl, "(pzlh_flash + CONFIG_FLASH_OFFSET)").replace("#include \"config_file.h\"", "#include \"config_file.h\"\nextern uint8_t pzlh_flash[];", 1)
+open(out, "w", encoding="utf-8").write(s)

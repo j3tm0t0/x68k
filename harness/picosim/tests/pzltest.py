@@ -6,6 +6,9 @@ PZL の virtual_disk.c / storage.c / config_file.c はそのまま、Wi-Fi・SMB
   3. 書き込みがファイルに届く (WRITE(10) 2 セクタ)
   4. ID 6 はリモートの顔 (X68SCSI1 / X68000ZRemoteDrv)
   5. HDS1 に無いファイルを書くと、開けずに MEDIUM ERROR (03/11)
+  6. 設定画面のコマンド GETINFO (unit = REMOTE_UNIT) と、B: (remoteserv): rpage のドライバの手順で OPEN / READ
+  7. netpipe (X6NR): Z (192.168.1.68) からゲートウェイへ ping (PZL の netpipe.c が lwIP の Wi-Fi の代わりの netif で
+     代理 ARP とブリッジ)、暗号アクセラレータ 0xA5 の PING
 usage: pzltest.py [build/picosim-pzl]"""
 import os, socket, struct, subprocess, sys, time, tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -20,12 +23,15 @@ def check(name, cond, extra=""):
     if not cond: fails += 1
 root = tempfile.mkdtemp()
 os.makedirs(os.path.join(root, "share", "x68000z"))
+os.makedirs(os.path.join(root, "share", "bdrive"))
+bdata = os.urandom(40000)
+open(os.path.join(root, "share", "bdrive", "TEST.BIN"), "wb").write(bdata)
 img = bytearray(os.urandom(512 * 128)); img[0:8] = b"X68SCSI1"
 hds = os.path.join(root, "share", "x68000z", "test.hds")
 open(hds, "wb").write(img)
 cfg = os.path.join(root, "config.txt")
 open(cfg, "w").write("WIFI_SSID: picosim\nSMB2_SERVER: 192.168.1.1\nHDS0: share/x68000z/test.hds\nHDS1: share/x68000z/none.hds\n"
-                     "REMOTE_UNIT: 0\nTZ: JST-9\n")
+                     "REMOTE_UNIT: 1\nREMOTE0: share/bdrive\nTZ: JST-9\n")
 p = subprocess.Popen([PICOSIM, "--pzl=" + cfg, "--pzl-root=" + root, "-l", "127.0.0.1:%d" % PORT, "-L", "none", "-T", "0.2,0.4,1", "-v"],
                      stderr=open(os.path.join(HERE, "pzltest.log"), "w"))
 for _ in range(50):
@@ -61,6 +67,92 @@ st, _, d = read(6, 0)
 check("ID6 LBA 0 = remote drive face", d[:8] == b"X68SCSI1" and d[16:32] == b"X68000ZRemoteDrv")
 st, sense, _ = read(1, 0)
 check("HDS1 missing file: MEDIUM ERROR", st == 2 and sense[0] == 3, "sense %s" % (sense,))
+
+# ---- 6. vdbuf (scsiremote.c の com_cmdres、rpage) ----
+st6 = {"sect": 0x400000, "seq": 0}
+def cmdres(w, rsize, session=0x1234abcd):
+    wcnt = (len(w) - 1) // 496
+    rsect = ((st6["sect"] - 8) % 0x200000) + 0x200000
+    res = bytes([0x80 | ((rsect >> 11) & 0x1f), (rsect >> 3) & 0xff])
+    for i in range(wcnt + 1):
+        hdr = b"X68Z" + struct.pack(">II", session, st6["seq"]) + bytes([i, wcnt]) + res
+        cmd(6, struct.pack(">BBIBHB", 0x2a, 0, 0x20, 0, 1, 0), (hdr + w[i * 496:(i + 1) * 496]).ljust(512, b"\0"))
+    st6["sect"] = rsect
+    out = b""; i = 0; rcnt = (rsize - 1) // 496
+    while i <= rcnt:
+        for _ in range(64):
+            _, _, b = read(6, st6["sect"] + (i & 7))
+            if b[:12] == hdr[:12] and b[12] == i: break
+            st6["sect"] = ((st6["sect"] - 0x10000) % 0x200000) + 0x200000
+        out += b[16:]; rcnt = b[13]
+        if (i & 7) == 7: st6["sect"] = ((st6["sect"] - 8) % 0x200000) + 0x200000
+        i += 1
+    st6["seq"] += 1
+    return out[:rsize]
+r = cmdres(struct.pack(">H", 0xff00), 26)
+check("GETINFO: unit = REMOTE_UNIT (1), version", r[7] == 1 and r[8] == 1, "unit=%d ver=%d" % (r[7], r[8]))
+r = cmdres(bytes([0x00]), 1)
+check("B: INIT", r[0] == 0)
+nb = bytes([0, 0]) + b"\t".ljust(65, b"\0") + b"TEST    " + b"BIN" + bytes(10)
+r = cmdres(bytes([0x0a, 0, 0, 0]) + struct.pack(">I", 0x1000) + nb, 8)
+check("B: OPEN TEST.BIN", r[0] == 0 and struct.unpack(">I", r[4:8])[0] == len(bdata), "res=%d" % (r[0] - 256 if r[0] > 127 else r[0]))
+got = b""
+for pos, n in ((0, 15360), (15360, 11612), (26972, 13028)):
+    r = cmdres(bytes([0x4c, 0, 0, 0]) + struct.pack(">IIH", 0x1000, pos, n), 2 + n)
+    got += r[2:2 + struct.unpack(">h", r[:2])[0]]
+check("B: READ 15360 + 11612 (24-page reply) + 13028 = the file", got == bdata)
+
+# ---- 7. netpipe ----
+ZIP = socket.inet_aton("192.168.1.68"); GW = socket.inet_aton("192.168.1.1")
+zst = {"seq": 5000, "sect": 0x1ffff0}
+def xchg(records=b""):
+    zst["seq"] += 1
+    req = struct.pack(">IIHHI", 0x58364e52, zst["seq"], len(records), 4080, struct.unpack(">I", ZIP)[0]) + records
+    req = req.ljust((len(req) + 511) // 512 * 512, b"\0")
+    cmd(6, struct.pack(">BBIBHB", 0x2a, 0, 0x100000, 0, len(req) // 512, 0), req)
+    for _ in range(64):
+        zst["sect"] -= 8
+        _, _, r = read(6, zst["sect"], 8)
+        magic, rseq, n, more, stat = struct.unpack(">IIHHI", r[:16])
+        if magic == 0x58364e52 and rseq == zst["seq"]:
+            return r[16:16 + n]
+    return b""
+def recs(data):
+    out = []
+    while len(data) >= 16:
+        n = struct.unpack(">H", data[:2])[0]; out.append(data[16:16 + n]); data = data[16 + ((n + 1) & ~1):]
+    return out
+def zrec(pkt): return struct.pack(">H", len(pkt)) + pkt + (b"\0" if len(pkt) & 1 else b"")
+def csum(b):
+    if len(b) & 1: b += b"\0"
+    t = sum(struct.unpack(">%dH" % (len(b) // 2), b))
+    while t >> 16: t = (t & 0xffff) + (t >> 16)
+    return ~t & 0xffff
+def ipv4(proto, src, dst, payload):
+    h = struct.pack(">BBHHHBBH4s4s", 0x45, 0, 20 + len(payload), 1, 0, 64, proto, 0, src, dst)
+    return h[:10] + struct.pack(">H", csum(h)) + h[12:] + payload
+icmp = struct.pack(">BBHHH", 8, 0, 0, 0x4242, 1) + b"pzl-netpipe" * 4
+icmp = icmp[:2] + struct.pack(">H", csum(icmp)) + icmp[4:]
+xchg()                                   # 最初の交換で netpipe が開き、Z の IP を名乗る
+got = None
+pending = [xchg(zrec(ipv4(1, ZIP, GW, icmp)))]
+for _ in range(100):
+    data = pending.pop() if pending else xchg()
+    for pkt in recs(data):
+        if len(pkt) >= 28 and pkt[9] == 1 and pkt[20] == 0 and pkt[24:26] == b"\x42\x42": got = pkt
+    if got: break
+    time.sleep(0.02)
+check("netpipe: ping 192.168.1.1 through PZL's bridge", got is not None and got[28:] == icmp[8:])
+res = None
+pending = [xchg(zrec(bytes([0xa5, 0, 0x00, 0x09])))]
+for _ in range(50):
+    data = pending.pop() if pending else xchg()
+    for pkt in recs(data):
+        if pkt and pkt[0] == 0xa5: res = pkt
+    if res: break
+    time.sleep(0.02)
+check("accel 0xA5 PING (PZL accel.c, core 1 = a thread)", res is not None and res[2:4] == b"\x00\x09" and res[4] == 0,
+      "caps=0x%02x" % res[5] if res else "")
 s.close(); p.terminate(); p.wait()
 print("%d failure(s)" % fails)
 sys.exit(1 if fails else 0)
