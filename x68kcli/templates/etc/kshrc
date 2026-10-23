@@ -1,0 +1,28 @@
+# /etc/kshrc -- ksh 4.9 (Human68k) 対話シェル設定。Z-OS のペインの既定のシェル (zos.bat が ENV=A:/etc/kshrc にする)
+#   zsh より起動がずっと速い (Z の実機で zsh は 20 秒ほど、ksh は 2 秒ほど)。zsh が要るときは zsh と打つ
+PATH='.:A:/usr/bin:A:/bin:A:/sys:A:/etc:A:/xc/bin:A:/xc/cc:A:/usr/gcc295'
+export PATH
+PS1='$PWD$ '
+HISTFILE=A:/home/.kshhist
+HISTSIZE=100
+ENVMARGIN=512
+set -o emacs
+set -o meta
+export TERM=x68000 TERMCAP=A:/etc/termcap EDITOR=vim.x temp=A:/tmp SHELL=A:/usr/bin/ksh.x
+export MAKE_SHELL=A:/usr/bin/zsh.x
+# C コンパイラ (zshenv と同じ): gcc = 真里子版 1.42 + LIBC 1.1.32A + HAS.X + HLK.X
+export include=A:/usr/include lib=A:/usr/lib GCC_AS=has.x GCC_LINK=hlk.x GCC_LIB=.a GCC_NO_XCLIB=yes
+export HLK='-L A:/usr/lib'
+alias ls='ls -F'
+alias ll='ls -alF'
+alias la='ls -aF'
+alias dir='ls -alF'
+alias vi='vim.x -T builtin_x68k'
+alias vim='vim.x -T builtin_x68k'
+alias less='vim.x -T builtin_x68k -R'
+alias awk='gawk.x'
+alias h='history'
+# gcc = 真里子版 1.42、gcc295 = GCC 2.95.2 (68020 以上専用、Z では SIGBUS)、cc = XC 2.1
+gcc() { gcc.x "$@" -lgcc2; }
+gcc295() { A:/usr/gcc295/gcc.x -IA:/usr/gcc295/include "$@"; }
+cc() { include=A:/xc/include lib=A:/xc/lib A:/xc/cc/cc.x "$@"; }
