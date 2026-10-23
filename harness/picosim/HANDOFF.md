@@ -90,3 +90,9 @@ README の「ドライブ名」。Human68k 3.02 は SCSI を ID の小さい順�
 - 読むだけで使っているもの: フォーク `~/src/github.com/yunkya2/x68kzremotedrv-hid` (FW / RS の既定)、
   `~/src/github.com/yunkya2/x68kzremotedrv/pico-sdk/lib/lwip` (LWIP の既定)、x68k-zos の kernel/ (ZOS の既定)
 - 実機 (Z / Pico / raspi) には触っていない。使うなら scratchpad/zlock の決まり (無いか自分の名前のときだけ取る、消して返す)
+
+## usbbench (Z の真似をする USB ホスト、2026-10-23 夜から)
+
+`harness/usbbench/README.md`。Z が Pico に送る USB の要求を、Pico の側で採取 (TinyUSB のログ + ms + LBA) し、raspi3 の libusb (zhost.py) で
+机の上の p2w に送り直す。PZL のビルドを Z に入れる前に、Z の使い方で固まらないかを確かめるため。p2w は scratchpad/p2wlock (zlock と同じ決まり)、
+控えは raspi3:~/p2w_before_delta.bin (4MB、Charlie の試験用ビルド、600)。
