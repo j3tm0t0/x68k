@@ -1,0 +1,3 @@
+# /etc/zoshrc (boot/serial の起動フロッピー) -- zosh.x の共通設定。そのあと ~/zosh.rc (A:/home/zosh.rc) を読む
+alias h='history'
+alias netup='command.x /c A:\NETUP.BAT'

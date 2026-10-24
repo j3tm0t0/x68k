@@ -21,6 +21,7 @@
   sx.py stage4 [--prune]   SLIP (xip.x + slip.sys + slipd.x) と rcmd.x を入れ、起動時に SLIP になるようにする
   sx.py mode console|slip  起動時の動き (CTTY AUX か SLIP) を切り替える
   sx.py stats              rx.x の受信の統計
+  sx.py writefd IMG.XDF B: フォーマット済みのフロッピーに XDF をセクタ単位で書き、読み返して確かめる
   sx.py term               端末として打ち込む (Ctrl+] で終わる)
 """
 import argparse, os, select, socket, sys, time
@@ -735,6 +736,30 @@ def main():
         r.quit()
     elif c == "hello":
         print(r.hello())
+    elif c == "writefd":
+        # sx.py writefd IMAGE.XDF B:  -- X68000 のフロッピー (フォーマット済み) に XDF をセクタ単位で書き、読み返して CRC で確かめる
+        data = open(a.args[0], "rb").read()
+        drv = ord(a.args[1][0].upper()) - ord("A") + 1
+        if len(data) % 1024:
+            ap.error("image size is not a multiple of 1024")
+        nsec = len(data) // 1024
+        t0 = time.time()
+        for sec in range(0, nsec, 3):
+            n = min(3, nsec - sec)
+            r.call("D", bytes([drv, sec >> 8, sec & 255]) + data[sec * 1024:(sec + n) * 1024], timeout=20)
+            if sys.stderr.isatty():
+                el = time.time() - t0
+                sys.stderr.write("\rsx: write %d/%d sectors %.0fs (rest %.0fs) " % (sec + n, nsec, el, el / (sec + n) * (nsec - sec - n)))
+        say("written %d sectors in %.0fs; verifying" % (nsec, time.time() - t0))
+        bad = 0
+        for sec in range(0, nsec, 3):
+            n = min(3, nsec - sec)
+            got = int.from_bytes(r.call("V", bytes([drv, sec >> 8, sec & 255, n]), timeout=20), "big")
+            if got != crc16(data[sec * 1024:(sec + n) * 1024]):
+                bad += 1
+                say("sector %d-%d differs" % (sec, sec + n - 1))
+        say("verify: %s (%.0fs in all)" % ("ok" if not bad else "%d groups differ" % bad, time.time() - t0))
+        sys.exit(1 if bad else 0)
     elif c == "stats":
         st = r.call("S")
         print("max bytes waiting in the receive buffer %d, bad frames %d" %
