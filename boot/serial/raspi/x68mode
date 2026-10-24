@@ -1,0 +1,14 @@
+#!/bin/sh
+# x68mode console|slip|status : Pi が X68000 のシリアルをどう使うかを切り替える (起動時にもその状態で始まる)
+#   console : x68-serlog.service (コンソールのログ)。sx.py / x68type で操作する (X68000 は CTTY AUX)
+#   slip    : ppp-x68k.service (SLIP + NAT)。x68 / x68put で rcmd.x を使う (X68000 は NETUP.BAT)
+#   X68000 側の切り替えは、console から: sx mode slip、slip から: x68 'copy A:\AUTOEXEC.CON A:\AUTOEXEC.BAT' のあとリセット
+set -eu
+case "${1:-status}" in
+  console) systemctl disable --now ppp-x68k.service 2>/dev/null || true
+           systemctl enable --now x68-serlog.service ;;
+  slip)    systemctl disable --now x68-serlog.service 2>/dev/null || true
+           systemctl enable --now ppp-x68k.service ;;
+  status)  for u in x68-serlog ppp-x68k; do printf '%-12s %s\n' "$u" "$(systemctl is-active $u.service 2>/dev/null || true)"; done ;;
+  *) echo "usage: x68mode console|slip|status" >&2; exit 2 ;;
+esac
