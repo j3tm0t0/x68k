@@ -37,7 +37,7 @@ static unsigned short crctab[256];
 static unsigned char rbuf[MAXLEN + 8];          /* 受けた要求 */
 static unsigned char sbuf[MAXLEN + 8];          /* 最後に送った応答 (再送用) */
 static int slen;
-static int last_seq = -1;
+static int last_seq = -1, last_type = -1;
 static int wfd = -1, rfd = -1;
 static int verbose;
 static char outname[] = "A:\\RX.OUT";
@@ -237,11 +237,12 @@ static int serve(void)
       nak(seq);
       continue;
     }
-    if (seq == last_seq) {   /* 応答が届かなかったので同じ要求がもう一度来た */
+    if (seq == last_seq && type == last_type) {   /* 応答が届かなかったので同じ要求がもう一度来た */
       resend();
       continue;
     }
     last_seq = seq;
+    last_type = type;
     {
       unsigned char *d = rbuf + 4;
       if (verbose && type != 'W' && type != 'R') {
@@ -367,7 +368,7 @@ int rx_main(const unsigned char *cmd)
     _iocs_set232c(0x4c00 | code);   /* 1 stop, parity なし, 8bit, フロー制御なし */
   else if (server) {
     /* 2 進のデータを通すため、速さはそのままで XON/XOFF をやめる (SRAM の既定 4E07 は XON/XOFF あり) */
-    int m = _iocs_set232c(-1) & 0xffff;
+    int m = _iocs_set232c(0x4c07) & 0xffff;   /* 戻り値は前のモード。その速さに戻す */
     _iocs_set232c(0x4c00 | (m & 0x0f));
   }
   if (keywait >= 0) {

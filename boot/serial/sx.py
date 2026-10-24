@@ -305,7 +305,7 @@ def crc16(b):
 class RX:
     def __init__(self, L, verbose=False):
         self.L = L
-        self.seq = int(time.time()) & 0x7f
+        self.seq = int(time.time() * 7) & 0xff
         self.verbose = verbose
         self.resends = 0
 

@@ -25,8 +25,11 @@ def screen():
                           text=True).stdout
 
 
+link = ["--tcp", tcp]
+
+
 def sx(*a, baud="9600", check=True):
-    cmd = [sys.executable, os.path.join(top, "sx.py"), "--tcp", tcp, "--baud", baud, "--log",
+    cmd = [sys.executable, os.path.join(top, "sx.py")] + link + ["--baud", baud, "--log",
            os.path.join(run, "sx.log")] + list(a)
     print("+ sx.py", " ".join(a), flush=True)
     t = time.time()
@@ -41,6 +44,7 @@ def sx(*a, baud="9600", check=True):
 if os.path.exists(os.path.join(run, "fd0.xdf")):
     os.remove(os.path.join(run, "fd0.xdf"))
 os.makedirs(run, exist_ok=True)
+bridge = None
 xe = subprocess.Popen([os.path.join(here, "xeij-fd.sh"), run], env=env, stdin=subprocess.DEVNULL)
 try:
     t_boot = time.time()
@@ -54,6 +58,16 @@ try:
         sys.exit("e2e: no A> on the screen")
     t_fdboot = time.time() - t_boot
     print("e2e: floppy boot to A> in %.1fs" % t_fdboot)
+    if os.environ.get("E2E_PTY") == "1":
+        # sx.py をシリアルポート (termios) の経路で動かす: pty <-> XEiJ の TCP
+        lf = os.path.join(run, "pty.name")
+        bridge = subprocess.Popen([sys.executable, os.path.join(here, "ptybridge.py"), tcp, lf])
+        for _ in range(50):
+            if os.path.exists(lf) and open(lf).read():
+                break
+            time.sleep(0.2)
+        link[:] = ["--port", open(lf).read()]
+        print("e2e: using pty", link[1])
     keys = open(os.path.join(top, "stage1.keys"), encoding="ascii").read()
     t0 = time.time()
     sh(sys.executable, os.path.join(here, "xtype.py"), run, "-f", os.path.join(top, "stage1.keys"))
@@ -98,6 +112,8 @@ try:
           (time.time() - t0, t_fdboot))
     print("E2E PASS")
 finally:
+    if bridge:
+        bridge.terminate()
     if os.environ.get("KEEP") != "1":
         xe.terminate()
         subprocess.run(["pkill", "-f", run + "/agent.cmd"])
