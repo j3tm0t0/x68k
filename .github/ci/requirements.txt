@@ -1,0 +1,7 @@
+# CI の python venv (term/vt100 の pyte・Pillow、net/accel・crypto68k・chacha68k の cryptography・PyNaCl・Unicorn)
+pyte==0.8.2
+wcwidth==0.9.3
+pillow==13.0.0
+cryptography==50.0.2
+pynacl==1.6.2
+unicorn==2.1.4
