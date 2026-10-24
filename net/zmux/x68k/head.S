@@ -13,11 +13,12 @@ devheader:
     .long   interrupt_asm       /* +0x0a */
     .ascii  "AUX     "          /* +0x0e デバイス名: RSDRV.SYS の AUX より先に見つかる */
     .ascii  "ZMUX"              /* +0x16 zmux.x が探す印 */
-zmux_entry:                     /* +0x1a 入口: d0 = 命令 (0 = 線を回す、1 = 統計の場所) → d0 */
+zmux_entry:                     /* +0x1a 入口: d0 = 命令, a0 = 引数 → d0 (命令は zmux.c の zmux_call) */
     movem.l %d1-%d7/%a0-%a6,%sp@-
+    move.l  %a0,%sp@-
     move.l  %d0,%sp@-
     jsr     zmux_call
-    addq.l  #4,%sp
+    addq.l  #8,%sp
     movem.l %sp@+,%d1-%d7/%a0-%a6
     rts
 

@@ -39,13 +39,17 @@
 
 #define F_NAK    0x01
 #define F_BUSY   0x02
-#define F_UNSEQ  0x04           /* 番号を使わないフレーム (HELLO / HELLO_ACK) */
+#define F_UNSEQ  0x04           /* 番号を使わないフレーム (HELLO / HELLO_ACK / KICK) */
+#define F_END    0x08           /* チャネル 1: 交換のブロックの最後のフレーム */
 
 #define CH_CON   0
+#define CH_NP    1              /* netpipe の交換 (npd.x -m) */
 #define CH_CTL   15
 #define OP_HELLO     1
 #define OP_HELLO_ACK 2
 #define OP_BYE       3
+#define OP_KICK      4          /* Pi に X68000 へ渡すものがある (npd.x に交換を促す) */
+#define BLK      4112           /* 交換のブロックの最大 (見出し 16 + 8 セクタ - 16) */
 
 #define T_RESEND 100            /* 1/100 秒 */
 #define T_ACK    5
@@ -77,7 +81,13 @@ static long t_sent, t_ack_due, t_last_rx, t_hello;
 static int started;             /* zl_poll が一度でも呼ばれた */
 
 /* 確認の来ていないフレームの写し (送り直し用) */
-static struct { uint16_t len; uint8_t chan; uint8_t d[MAXLEN]; } win[WIN];
+static struct { uint16_t len; uint8_t chan, flags; uint8_t d[MAXLEN]; } win[WIN];
+
+/* チャネル 1: npd.x の交換。要求のブロックを分けて送り、応答のブロックを組み立てる (同時に 1 つ) */
+static uint8_t btx[BLK], brx[BLK];
+static int btx_len, btx_pos;            /* btx_pos < btx_len の間は送りかけ */
+static int brx_len, brx_done;
+static int kick;
 
 /* 受けているフレーム */
 static uint8_t fr[8 + MAXLEN];
@@ -170,6 +180,8 @@ static void reset_link(void)
 {
   tx_seq = tx_base = rx_expect = 0;
   need_ack = nak_pending = 0;
+  btx_len = btx_pos = 0;                /* 送りかけの交換は捨てる (npd.x は時間切れで送り直す) */
+  brx_len = brx_done = 0;
 }
 
 static void go_up(void)
@@ -205,6 +217,8 @@ static void got_frame(void)
         else t_last_rx = now();
       } else if (d[0] == OP_BYE) {
         go_raw();
+      } else if (d[0] == OP_KICK) {
+        kick = 1;
       }
     }
     return;
@@ -237,6 +251,16 @@ static void got_frame(void)
     }
     for (i = 0; i < len; i++)
       ring_put(&rxr, d[i]);
+  } else if (chan == CH_NP) {
+    if (brx_done)                       /* 前の応答を npd.x がまだ取っていない: 受け取らない */
+      { need_ack = 1; return; }
+    if (brx_len + len <= BLK) {
+      for (i = 0; i < len; i++)
+        brx[brx_len + i] = d[i];
+      brx_len += len;
+    }
+    if (flags & F_END)
+      brx_done = 1;
   }
   rx_expect++;
   need_ack = 1;
@@ -297,27 +321,39 @@ static void zl_poll(void)
     if (since(t_last_rx) > T_DEAD) {
       go_raw();
     } else {
-      /* 送り直し */
+      /* 送り直し。待ち行列 (outq) に線へ出していないバイトがある間は時計を止める (19200bps で 4KB は 2 秒かかり、
+         出してもいないフレームを送り直すと線が重複で埋まる) */
+      if (oh != ot)
+        t_sent = now();
       if (tx_base != tx_seq && since(t_sent) > T_RESEND) {
         uint8_t s;
         for (s = tx_base; s != tx_seq; s++) {
           int k = s % WIN;
-          if (!emit(win[k].chan, s, 0, win[k].d, win[k].len))
+          if (!emit(win[k].chan, s, win[k].flags, win[k].d, win[k].len))
             break;
           st.resend++;
         }
         t_sent = now();
       }
-      /* チャネル 0 の新しいデータ */
-      while ((uint8_t)(tx_seq - tx_base) < WIN && ring_count(&txr) > 0 && out_free() > 2 * (MAXLEN + 8) + 4) {
+      /* 新しいデータ: チャネル 0 (コンソール) を先に、次にチャネル 1 (交換のブロック) */
+      while ((uint8_t)(tx_seq - tx_base) < WIN && out_free() > 2 * (MAXLEN + 8) + 4 &&
+             (ring_count(&txr) > 0 || btx_pos < btx_len)) {
         int k = tx_seq % WIN, len = 0;
-        while (len < MAXLEN && ring_count(&txr) > 0)
-          win[k].d[len++] = ring_get(&txr);
+        if (ring_count(&txr) > 0) {
+          while (len < MAXLEN && ring_count(&txr) > 0)
+            win[k].d[len++] = ring_get(&txr);
+          win[k].chan = CH_CON;
+          win[k].flags = 0;
+        } else {
+          while (len < MAXLEN && btx_pos < btx_len)
+            win[k].d[len++] = btx[btx_pos++];
+          win[k].chan = CH_NP;
+          win[k].flags = btx_pos == btx_len ? F_END : 0;
+        }
         win[k].len = len;
-        win[k].chan = CH_CON;
         if (tx_base == tx_seq)
           t_sent = now();
-        emit(CH_CON, tx_seq, 0, win[k].d, len);
+        emit(win[k].chan, tx_seq, win[k].flags, win[k].d, len);
         tx_seq++;
       }
       /* 確認だけのフレーム */
@@ -331,18 +367,57 @@ static void zl_poll(void)
     send_ctl(OP_HELLO, F_UNSEQ);
     t_hello = now();
   }
-  for (n = 0; n < 512 && oh != ot && _iocs_osns232c(); n++) {
+  /* 線に出す。_OSNS232C が空きを示す分だけ出すと、1 回に 1 バイトほどしか出ず (RSDRV.SYS の送信は 1 バイトずつ)、
+     スレッドが回ってくる間隔で速さが決まって 19200bps の半分になった。_OUT232C (空くまで待つ) で 128 バイトまで出す
+     (19200bps で約 67ms。その間はほかのスレッドが止まるが、受信は割り込みで RSDRV.SYS のバッファに溜まる) */
+  for (n = 0; n < 128 && oh != ot; n++) {
     _iocs_out232c(outq[ot]);
     ot = (ot + 1) & (OUTSZ - 1);
   }
 }
 
-long zmux_call(long cmd)
+long zmux_call(long cmd, long *a)
 {
+  int i;
   /* スレッドから: 素の文字の間は何もしない (rx.x などが IOCS で直接読み書きしているかもしれないので、横取りしない)。
      素の文字の間の HELLO と受信は、COMMAND.X が AUX を読み書きするとき (dev_interrupt) に回す */
   if (cmd == 0) { if (up) zl_poll(); return up; }
   if (cmd == 1) return (long)&st;
+  if (cmd == 2) {                       /* 交換の要求を送る: a[0] = ブロック, a[1] = 長さ。0 = 受け付けた、-1 = 線が UP でない / 送りかけ */
+    const uint8_t *b = (const uint8_t *)a[0];
+    int n = a[1];
+    if (!up || btx_pos < btx_len || n > BLK || n <= 0)
+      return -1;
+    for (i = 0; i < n; i++)
+      btx[i] = b[i];
+    btx_len = n;
+    btx_pos = 0;
+    brx_len = 0;
+    brx_done = 0;
+    kick = 0;
+    return 0;
+  }
+  if (cmd == 3) {                       /* 応答を取る: a[0] = 書く先, a[1] = 最大。戻り値 = 長さ、0 = まだ、-1 = 線が UP でない */
+    uint8_t *b = (uint8_t *)a[0];
+    int n;
+    if (!up)
+      return -1;
+    if (!brx_done)
+      return 0;
+    n = brx_len < a[1] ? brx_len : a[1];
+    for (i = 0; i < n; i++)
+      b[i] = brx[i];
+    brx_done = 0;
+    brx_len = 0;
+    return n;
+  }
+  if (cmd == 4) {                       /* KICK が来ていたか (読むと消える) */
+    i = kick;
+    kick = 0;
+    return i;
+  }
+  if (cmd == 5)
+    return up;
   return -1;
 }
 

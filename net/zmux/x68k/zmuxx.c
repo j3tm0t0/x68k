@@ -11,7 +11,7 @@
 #include <x68k/dos.h>
 #include <stdint.h>
 
-extern long call_entry(void *entry, long cmd);
+extern long call_entry(void *entry, long cmd, void *arg);
 extern char *mem_ptr;
 extern unsigned char *cmd_line;
 
@@ -50,7 +50,7 @@ static void *find_zmux(void)
 static void thread(void)
 {
   for (;;) {
-    call_entry(entry, 0);
+    call_entry(entry, 0, 0);
     _dos_change_pr();
   }
 }
@@ -79,7 +79,7 @@ int zmux_main(void)
     uint32_t *s;
     int i;
     ssp = _dos_super(0);
-    s = (uint32_t *)(call_entry(entry, 1) + 8);
+    s = (uint32_t *)(call_entry(entry, 1, 0) + 8);
     for (i = 0; i < 8; i++) {
       uint32_t v = s[i];
       if (ssp > 0) _dos_super(ssp);

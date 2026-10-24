@@ -8,12 +8,13 @@ _start:
     move.w  %d0,%sp@-
     .short  0xff4c              /* DOS _EXIT2 */
 
-/* long call_entry(void *entry, long cmd): zmux.sys の入口を d0 = 命令で呼ぶ */
+/* long call_entry(void *entry, long cmd, void *arg): zmux.sys の入口を d0 = 命令, a0 = 引数で呼ぶ */
     .global call_entry
 call_entry:
     movem.l %d2-%d7/%a2-%a6,%sp@-
     movea.l %sp@(48),%a1
     move.l  %sp@(52),%d0
+    movea.l %sp@(56),%a0
     jsr     %a1@
     movem.l %sp@+,%d2-%d7/%a2-%a6
     rts

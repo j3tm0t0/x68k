@@ -10,6 +10,8 @@
 //! それも無ければ /tmp/zmux-<uid>.sock) でつながる。
 
 mod link;
+mod netpipe;
+mod tsp;
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
@@ -179,8 +181,14 @@ fn daemon(args: &[String]) {
     eprintln!("zmuxd: socket {}", sp);
     let mut wp = port;
     let mut link = link::Link::new(Instant::now());
+    link.byte_time = Duration::from_micros(10_000_000 / baud as u64);
     let mut scroll: VecDeque<u8> = VecDeque::new();
     let mut clients: HashMap<u64, (UnixStream, u8)> = HashMap::new();
+    let mut np = netpipe::Netpipe::new();
+    np.tsp.log = log;
+    let mut npblk: Vec<u8> = Vec::new();      // チャネル 1 で組み立て中の要求のブロック
+    let mut last_xchg = Instant::now();
+    let mut last_kick = Instant::now();
     loop {
         let m = rx.recv_timeout(Duration::from_millis(10));
         let now = Instant::now();
@@ -202,9 +210,10 @@ fn daemon(args: &[String]) {
                     }
                     Some("status") => {
                         let st = &link.stats;
-                        let _ = writeln!(s, "line {} rx {} tx {} resent {} bad {} ups {} downs {} pending {} clients {}",
+                        let _ = writeln!(s, "line {} rx {} tx {} resent {} bad {} ups {} downs {} pending {} clients {} xchg {} tsp {}",
                                          if link.up { "up" } else { "raw" }, st.rx_frames, st.tx_frames, st.resent,
-                                         link.parser.bad, st.ups, st.downs, link.pending(), clients.len());
+                                         link.parser.bad, st.ups, st.downs, link.pending(), clients.len(),
+                                         np.stats.xchg, np.stats.tsp);
                     }
                     _ => { let _ = writeln!(s, "unknown command"); }
                 }
@@ -222,13 +231,31 @@ fn daemon(args: &[String]) {
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(_) => return,
         }
+        let news = np.tsp.poll();
+        // Pi に X68000 へ渡すものがあって、しばらく交換が無ければ KICK で npd.x に交換を促す
+        if link.up && news && now.duration_since(last_xchg) > Duration::from_millis(20)
+            && now.duration_since(last_kick) > Duration::from_millis(100) {
+            link.ctl_now(link::OP_KICK, &mut out, now);
+            last_kick = now;
+        }
         link.tick(&mut out, &mut ev, now);
         for e in ev {
             let (ch, data) = match e {
                 link::Event::Raw(d) => (0u8, d),
-                link::Event::Data(ch, d) => (ch, d),
+                link::Event::Data(link::CH_NP, d, fl) => {
+                    npblk.extend_from_slice(&d);
+                    if fl & link::F_END != 0 {
+                        if let Some(res) = np.exchange(&npblk) {
+                            link.send_block(link::CH_NP, &res);
+                        }
+                        npblk.clear();
+                        last_xchg = now;
+                    }
+                    continue;
+                }
+                link::Event::Data(ch, d, _) => (ch, d),
                 link::Event::Up => { if log { eprintln!("zmuxd: line up"); } continue; }
-                link::Event::Down => { if log { eprintln!("zmuxd: line down (raw)"); } continue; }
+                link::Event::Down => { if log { eprintln!("zmuxd: line down (raw)"); } npblk.clear(); continue; }
             };
             if ch == 0 {
                 scroll.extend(data.iter().copied());

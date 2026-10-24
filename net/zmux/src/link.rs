@@ -13,12 +13,15 @@ pub const WIN: u8 = 4;
 pub const F_NAK: u8 = 0x01;
 pub const F_BUSY: u8 = 0x02;
 pub const F_UNSEQ: u8 = 0x04;
+pub const F_END: u8 = 0x08; // チャネル 1: 交換のブロックの最後のフレーム
 
 pub const CH_CON: u8 = 0;
+pub const CH_NP: u8 = 1;
 pub const CH_CTL: u8 = 15;
 pub const OP_HELLO: u8 = 1;
 pub const OP_HELLO_ACK: u8 = 2;
 pub const OP_BYE: u8 = 3;
+pub const OP_KICK: u8 = 4;
 
 const T_RESEND: Duration = Duration::from_millis(1000);
 const T_ACK: Duration = Duration::from_millis(20);
@@ -161,8 +164,8 @@ pub struct Link {
     tx_seq: u8,
     tx_base: u8,
     rx_expect: u8,
-    win: VecDeque<(u8, Vec<u8>)>, // 確認の来ていないフレーム (chan, data)。先頭が tx_base
-    queue: [VecDeque<u8>; 16],    // チャネルごとの送り待ち
+    win: VecDeque<(u8, u8, Vec<u8>)>, // 確認の来ていないフレーム (chan, flags, data)。先頭が tx_base
+    queue: [VecDeque<(Vec<u8>, bool)>; 16], // チャネルごとの送り待ち。bool = ブロックの終わり (F_END を付ける)
     need_ack: bool,
     nak: bool,
     peer_busy: bool,
@@ -170,6 +173,8 @@ pub struct Link {
     t_last_tx: Instant,
     t_last_rx: Instant,
     t_ack_due: Instant,
+    busy_until: Instant, // 線に書いたバイトを送り終える見込みの時刻 (送り直しの時計はここから数える)
+    pub byte_time: Duration, // 1 バイトの時間 (10 ビット / 速さ)
     pub stats: Stats,
 }
 
@@ -185,7 +190,7 @@ pub struct Stats {
 /// 線から来たものを、上の層に渡す形
 pub enum Event {
     Raw(Vec<u8>),          // 素の文字 (RAW のとき)
-    Data(u8, Vec<u8>),     // チャネルのデータ (UP のとき)
+    Data(u8, Vec<u8>, u8), // チャネルのデータ (UP のとき)、フレームの flags
     Up,
     Down,
 }
@@ -207,6 +212,8 @@ impl Link {
             t_last_tx: now,
             t_last_rx: now,
             t_ack_due: now,
+            busy_until: now,
+            byte_time: Duration::from_micros(10_000_000 / 19200),
             stats: Stats::default(),
         }
     }
@@ -215,12 +222,14 @@ impl Link {
         self.tx_seq = 0;
         self.tx_base = 0;
         self.rx_expect = 0;
-        // 送りかけのものはチャネルの待ち行列の先頭に戻す (作り直した線で送る)
-        while let Some((ch, d)) = self.win.pop_back() {
-            for &b in d.iter().rev() {
-                self.queue[ch as usize].push_front(b);
+        // 送りかけのコンソールの文字はチャネルの待ち行列の先頭に戻す (作り直した線で送る)。
+        // チャネル 1 の交換は捨てる (X68000 の npd.x は時間切れで送り直す)
+        while let Some((ch, fl, d)) = self.win.pop_back() {
+            if ch == CH_CON {
+                self.queue[ch as usize].push_front((d, fl & F_END != 0));
             }
         }
+        self.queue[CH_NP as usize].clear();
         self.need_ack = false;
         self.nak = false;
         self.peer_busy = false;
@@ -229,7 +238,10 @@ impl Link {
     }
 
     fn frame(&mut self, chan: u8, seq: u8, flags: u8, data: &[u8], out: &mut Vec<u8>, now: Instant) {
+        let before = out.len();
         encode(chan, seq, self.rx_expect.wrapping_sub(1), flags, data, out);
+        let start = if self.busy_until > now { self.busy_until } else { now };
+        self.busy_until = start + self.byte_time * (out.len() - before) as u32;
         self.stats.tx_frames += 1;
         self.need_ack = false;
         self.t_last_tx = now;
@@ -242,11 +254,23 @@ impl Link {
 
     /// チャネルに送るデータを積む (RAW のチャネル 0 は呼ぶ側が直接線に書く)
     pub fn send(&mut self, chan: u8, data: &[u8]) {
-        self.queue[chan as usize].extend(data.iter().copied());
+        if !data.is_empty() {
+            self.queue[chan as usize].push_back((data.to_vec(), false));
+        }
+    }
+
+    /// ひとまとまりのブロック (チャネル 1 の交換の応答) を積む。最後のフレームに F_END が付く
+    pub fn send_block(&mut self, chan: u8, data: &[u8]) {
+        self.queue[chan as usize].push_back((data.to_vec(), true));
+    }
+
+    /// 番号を使わない制御のフレーム (KICK など) をすぐ線に出す
+    pub fn ctl_now(&mut self, op: u8, out: &mut Vec<u8>, now: Instant) {
+        self.ctl(op, out, now);
     }
 
     pub fn pending(&self) -> usize {
-        self.queue.iter().map(|q| q.len()).sum::<usize>() + self.win.len()
+        self.queue.iter().map(|q| q.iter().map(|c| c.0.len()).sum::<usize>()).sum::<usize>() + self.win.len()
     }
 
     /// 線から来たバイト列を処理する。返事は out に、上の層への知らせは ev に
@@ -332,7 +356,7 @@ impl Link {
             self.t_ack_due = now;
         }
         self.need_ack = true;
-        ev.push(Event::Data(f.chan, f.data));
+        ev.push(Event::Data(f.chan, f.data, f.flags));
     }
 
     fn go_down(&mut self, ev: &mut Vec<Event>) {
@@ -352,11 +376,12 @@ impl Link {
             self.go_down(ev);
             return;
         }
-        if !self.win.is_empty() && now.duration_since(self.t_sent) >= T_RESEND {
-            let frames: Vec<(u8, Vec<u8>)> = self.win.iter().cloned().collect();
+        let since_sent = if self.busy_until > self.t_sent { self.busy_until } else { self.t_sent };
+        if !self.win.is_empty() && now > since_sent && now.duration_since(since_sent) >= T_RESEND {
+            let frames: Vec<(u8, u8, Vec<u8>)> = self.win.iter().cloned().collect();
             let mut s = self.tx_base;
-            for (ch, d) in frames {
-                self.frame(ch, s, 0, &d, out, now);
+            for (ch, fl, d) in frames {
+                self.frame(ch, s, fl, &d, out, now);
                 self.stats.resent += 1;
                 s = s.wrapping_add(1);
             }
@@ -364,15 +389,33 @@ impl Link {
         }
         if !self.peer_busy {
             for ch in 0..16u8 {
-                while (self.win.len() as u8) < WIN && !self.queue[ch as usize].is_empty() {
-                    let n = self.queue[ch as usize].len().min(MAXLEN);
-                    let d: Vec<u8> = self.queue[ch as usize].drain(..n).collect();
+                while (self.win.len() as u8) < WIN {
+                    let q = &mut self.queue[ch as usize];
+                    // 送るものを 1 フレーム分集める。ブロックの終わりはまたがない
+                    let mut d = Vec::new();
+                    let mut fl = 0u8;
+                    while d.len() < MAXLEN {
+                        let Some((c, end)) = q.front_mut() else { break };
+                        let take = (MAXLEN - d.len()).min(c.len());
+                        d.extend(c.drain(..take));
+                        if c.is_empty() {
+                            let e = *end;
+                            q.pop_front();
+                            if e {
+                                fl = F_END;
+                                break;
+                            }
+                        }
+                    }
+                    if d.is_empty() && fl == 0 {
+                        break;
+                    }
                     if self.win.is_empty() {
                         self.t_sent = now;
                     }
                     let seq = self.tx_seq;
-                    self.frame(ch, seq, 0, &d, out, now);
-                    self.win.push_back((ch, d));
+                    self.frame(ch, seq, fl, &d, out, now);
+                    self.win.push_back((ch, fl, d));
                     self.tx_seq = self.tx_seq.wrapping_add(1);
                 }
             }
@@ -464,7 +507,7 @@ mod tests {
             b.input(&ab, &mut wire_ba, &mut eb, now);
             a.input(&ba, &mut wire_ab, &mut ea, now);
             for e in eb {
-                if let Event::Data(0, d) = e {
+                if let Event::Data(0, d, _) = e {
                     got.extend(d);
                 }
             }
