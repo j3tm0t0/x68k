@@ -36,9 +36,41 @@ def _or(r, c, s, planes):
         v |= pl[k][(r*16+s)*128+c]
     return v
 TRY = [(0, 1), (0, 1, 2, 3), (0,), (1,), (2,), (3,), (2, 3)]
+# 全角 (16x16) の字: CGROM 0xF00000 から 2 バイト/行 x 16 行。1〜8 区 (記号) の後に 9〜15 区を飛ばして 16 区 (第 1 水準) が続く
+# ((区-1)*94 + (点-1))*32、16 区以降は区から 7 を引く。1〜8 区と 16〜47 区を照らす
+kj = os.path.join(run, "cgkanji.bin")
+kfont = open(kj, "rb").read() if os.path.exists(kj) else b""
+if len(kfont) != 94 * 47 * 32 or not any(kfont[:4096]):
+    kfont = dump("cgkanji.bin", 0xF00000, 94 * 47 * 32)
+kglyph = {}
+for ku in list(range(1, 9)) + list(range(16, 48)):
+    for ten in range(1, 95):
+        o = (((ku if ku < 16 else ku - 7) - 1) * 94 + (ten - 1)) * 32
+        g = kfont[o:o + 32]
+        if any(g):
+            try:
+                ch = bytes([ku + 0xa0, ten + 0xa0]).decode("euc_jp")
+            except UnicodeDecodeError:
+                continue
+            kglyph.setdefault((g[0::2], g[1::2]), ch)
 for r in range(rows):
     line = []
+    skip = False
     for c in range(96):
+        if skip:
+            skip = False
+            continue
+        if c < 95:
+            k = None
+            for planes in TRY[:2]:
+                l, rr = cell(r, c, planes), cell(r, c + 1, planes)
+                k = kglyph.get((l, rr))
+                if k:
+                    break
+            if k:
+                line.append(k)
+                skip = True
+                continue
         ch = " "
         for planes in TRY:
             g = cell(r, c, planes)
