@@ -290,6 +290,21 @@ uint64_t picosim_now_us(void);                                                  
 - Z 側は、xip.x の代わりに tis.x を常駐させ、npd.x の交換に 0xA6 のレコードを載せれば、XEiJ の中の rcmd.x / ssh.x が
   そのまま picosim の lwIP 経由になる
 
+## 0xA7 (端末のセッション) のまね (zss_mock.c)
+
+x68k-zos の Z で sshd (issue #21) の Pico 側 (zsshd) の代わり。既定で入る (`SVC ?= zss_mock.c`。`SVC=` を指定すると外れる)。
+記録の形は `net/npd/zss.h` (x68k-zos の kernel/zss.h の写し)。SSH は話さず、平文の TCP の口を ssh のクライアントの代わりにする。
+
+| 環境変数 | 既定 | 意味 |
+|---|---|---|
+| `ZSS_PORT` | 2322 | 待ち受ける口 (127.0.0.1) |
+| `ZSS_CREDIT` | 4096 | CREDIT (Z が送ってよい出力の量、絶対値。本物の Pico の上限と同じ) |
+
+- 接続 = `T_E_OPEN` (80x24、user "test"、TERM "xterm"、UTF-8)。受けたバイト = `T_E_INPUT` (Z の ACCEPT / WINDOW の範囲で)。
+  `T_C_OUTPUT` は接続に書く。切れたら `T_E_CLOSED "disconnected"`。`T_C_EXIT` で "[exit N]" を書いて閉じ、`T_E_CLOSED "exit"`。
+- 試験の台本からの命令は、流れの中の 0xFF で始まる行: `\xffW 100 30\n` (WINCH)、`\xffS INT\n` (SIGNAL)、`\xffE\n` (EOF)。
+- 試験: `tests/zsstest.py` (XEiJ なし、`make test-host` に入っている)。XEiJ では x68k-zos の `kernel/tests/sshd_test.sh`。
+
 ## 確かめたこと (2026-10-23、XEiJ 0.26.10.08 -model=SUPER、MacBook Pro)
 
 DNS: XEiJ の Z で `ping.x -c 2 localhost` → `PING localhost (127.0.0.1)` 2/2、`ping.x 192.168.1.1` の逆引きも

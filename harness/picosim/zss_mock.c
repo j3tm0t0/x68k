@@ -4,9 +4,10 @@
  * 本物の Pico では zsshd (SSH サーバー) が認証まで済ませてから端末のバイト列を 0xA7 で Z に渡す (x68k-zos docs/pico-sshd-study.md §6.4)。
  * ここでは SSH を話さず、平文の TCP の口 (ZSS_PORT、既定 2322、127.0.0.1) を ssh の代わりにする:
  *   接続 = OPEN (80x24、user "test"、TERM "xterm"、UTF-8)、受けたバイト = INPUT、OUTPUT は接続に書く、切れたら CLOSED、
- *   EXIT で接続を閉じる (閉じる前に "\r\n[exit N]\r\n" を書く)。REJECT は理由を書いて閉じる。
+ *   EXIT で接続を閉じ (閉じる前に "\r\n[exit N]\r\n" を書く)、続けて CLOSED "exit" を送る (本物の Pico と同じ)。REJECT は理由を書いて閉じる。
  * 試験の台本からの命令は、流れの中の 0xFF で始まる行: "\xffW 100 30\n" (WINCH)、"\xffS INT\n" (SIGNAL)、"\xffE\n" (EOF)。
- * CREDIT (Z が送ってよい量) は ZSS_CREDIT (既定 2048)。確認応答は TSP と同じ (同じ zseq には同じ応答)。
+ * CREDIT (Z が送ってよい量、絶対値) は ZSS_CREDIT (既定 4096、本物の Pico の上限と同じ)。開いたときと、Z の OUTPUT を接続に
+ * 書いたあとにだけ送る (変わったときだけ)。確認応答は TSP と同じ (同じ zseq には同じ応答)。ログは picosim_log の "zss:"。
  * x68k-zos の kernel/tests/sshd_test.sh が使う。
  */
 #include <arpa/inet.h>
@@ -31,6 +32,8 @@ struct ses {
   uint8_t in[INBUF]; int inn;      /* 接続から読んだ、まだ Z に送っていないもの */
   char cmd[64]; int cmdn, incmd;   /* 0xFF の命令の途中 */
   int winch, cols, rows, eof; char sig[16];
+  int credit_dirty;                /* CREDIT を送る (開いたとき、OUTPUT を書いたあと) */
+  char why[16];                    /* CLOSED の理由 */
 };
 static struct ses S[ZSS_NSESS];
 static int lfd = -1;
@@ -38,7 +41,7 @@ static uint32_t pepoch, zepoch_seen;
 static unsigned last_zseq = 0xffffffff;
 static uint8_t last_res[ZSS_RES_MAX];
 static int last_len, last_more;
-static unsigned credit = 2048;
+static unsigned credit = 4096;
 static unsigned long st_in, st_out, st_open, st_resend;
 
 static void ses_close(struct ses *s)
@@ -61,11 +64,11 @@ static void zss_init(void)
   a.sin_port = htons(p ? atoi(p) : 2322);
   a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   if (bind(lfd, (struct sockaddr *)&a, sizeof a) < 0 || listen(lfd, 4) < 0) {
-    fprintf(stderr, "zss: listen %d: %s\n", ntohs(a.sin_port), strerror(errno));
+    picosim_log("zss: listen %d: %s\n", ntohs(a.sin_port), strerror(errno));
     close(lfd); lfd = -1; return;
   }
   fcntl(lfd, F_SETFL, O_NONBLOCK);
-  fprintf(stderr, "zss: 0xA7 mock on 127.0.0.1:%d (credit %u)\n", ntohs(a.sin_port), credit);
+  picosim_log("zss: 0xA7 mock on 127.0.0.1:%d (credit %u)\n", ntohs(a.sin_port), credit);
 }
 
 /* 接続から読む (0xFF の命令は取り除いて覚える) */
@@ -75,7 +78,11 @@ static void ses_read(struct ses *s)
   ssize_t n;
   if (s->fd < 0 || s->inn > INBUF - (int)sizeof b) return;
   n = recv(s->fd, b, sizeof b, MSG_DONTWAIT);
-  if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) { ses_close(s); if (s->opened) s->want_closed = 1; return; }
+  if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+    ses_close(s);
+    if (s->opened) { s->want_closed = 1; strcpy(s->why, "disconnected"); }
+    return;
+  }
   for (ssize_t i = 0; i < n; i++) {
     if (s->incmd) {
       if (b[i] == '\n' || s->cmdn >= (int)sizeof s->cmd - 1) {
@@ -99,9 +106,9 @@ static void zss_poll(void)
     if (i == ZSS_NSESS) { const char m[] = "zss mock: too many sessions\r\n"; (void)!write(fd, m, sizeof m - 1); close(fd); continue; }
     fcntl(fd, F_SETFL, O_NONBLOCK);
     { int g = S[i].gen + 1; memset(&S[i], 0, sizeof S[i]); S[i].gen = g & 0xff; }
-    S[i].fd = fd; S[i].want_open = 1; S[i].cols = 80; S[i].rows = 24;
+    S[i].fd = fd; S[i].want_open = 1; S[i].cols = 80; S[i].rows = 24; S[i].credit_dirty = 1;
     st_open++;
-    fprintf(stderr, "zss: connection -> sess %d gen %d\n", i, S[i].gen);
+    picosim_log("zss: connection -> sess %d gen %d\n", i, S[i].gen);
   }
   for (int i = 0; i < ZSS_NSESS; i++) ses_read(&S[i]);
 }
@@ -124,15 +131,15 @@ static void on_msg(int type, int i, int gen, const uint8_t *b, unsigned len)
   switch (type) {
   case ZSS_C_ACCEPT: s->accepted = 1; if (len >= 4) s->win = zss_get32(b); break;
   case ZSS_C_WINDOW: if (len >= 4) s->win = zss_get32(b); break;
-  case ZSS_C_OUTPUT: if (s->fd >= 0) (void)!write(s->fd, b, len); st_out += len; break;
+  case ZSS_C_OUTPUT: if (s->fd >= 0) (void)!write(s->fd, b, len); st_out += len; s->credit_dirty = 1; break;
   case ZSS_C_REJECT:
     if (s->fd >= 0) { (void)!write(s->fd, "zss mock: rejected: ", 20); (void)!write(s->fd, b + 1, len > 1 ? b[0] : 0); (void)!write(s->fd, "\r\n", 2); }
     ses_close(s); s->opened = 0;
     break;
   case ZSS_C_EXIT:
     if (s->fd >= 0 && len >= 4) { char m[32]; int n = snprintf(m, sizeof m, "\r\n[exit %u]\r\n", (unsigned)zss_get32(b)); (void)!write(s->fd, m, n); }
-    fprintf(stderr, "zss: sess %d exit\n", i);
-    ses_close(s); s->opened = 0;
+    picosim_log("zss: sess %d exit\n", i);
+    ses_close(s); s->want_closed = 1; strcpy(s->why, "exit");   /* 本物の Pico と同じく、EXIT の後にも CLOSED */
     break;
   }
 }
@@ -181,12 +188,15 @@ static int zss_exchange(const uint8_t *req, int reqlen, uint8_t *res, int resmax
     }
     if (!s->opened) continue;
     if (s->want_closed && !s->closed_sent) {
-      b[0] = 6; memcpy(b + 1, "closed", 6);
-      if ((nw = put_msg(w, end, ZSS_E_CLOSED, i, s->gen, b, 7))) { w = nw; s->closed_sent = 1; s->opened = 0; }
+      int k = strlen(s->why);
+      b[0] = k; memcpy(b + 1, s->why, k);
+      if ((nw = put_msg(w, end, ZSS_E_CLOSED, i, s->gen, b, 1 + k))) { w = nw; s->closed_sent = 1; s->opened = 0; }
       continue;
     }
-    zss_put32(b, credit);
-    if ((nw = put_msg(w, end, ZSS_E_CREDIT, i, s->gen, b, 4))) w = nw;
+    if (s->credit_dirty) {
+      zss_put32(b, credit);
+      if ((nw = put_msg(w, end, ZSS_E_CREDIT, i, s->gen, b, 4))) { w = nw; s->credit_dirty = 0; }
+    }
     if (s->accepted && s->inn && s->win) {
       unsigned n = s->inn, room = end - w - ZSS_MHDR - 1;
       if (n > s->win) n = s->win;

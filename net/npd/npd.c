@@ -37,6 +37,21 @@ static void *etd;                       /* npd.sys の ETD 入口 */
 static void *tis;                       /* tis.x -p の入口 (交換のたびに npd.sys から取り直す)、0 = 居ない */
 static int tsp_more;                    /* Pico の TSP 応答に続きがある */
 static void *zss;                       /* zos.x の 0xA7 の入口 (交換のたびに取り直す)、0 = 居ない */
+
+/* zos.x (常駐しない、ふつうのプログラム) の入口を呼んでよいか: 入口の前に "ZSSE" があり、それを含むメモリのブロックが
+   まだ確保されている (Human68k のメモリ管理の鎖 [$1C20] から +$0C でたどり、+0 の次 〜 +8 の終わりの中)。zos.x が
+   入口を外さずに終わった (落ちた) ときに、解放されたところを呼ばないため */
+static void *zss_check(void *e)
+{
+  uint8_t *a = e, *m;
+  int k;
+  if (!e || e == (void *)-1 || ((uint32_t)a & 1) || *(uint32_t *)(a - 4) != 0x5a535345)   /* "ZSSE" */
+    return 0;
+  for (m = *(uint8_t **)0x1c20, k = 0; m && k < 4096; m = *(uint8_t **)(m + 12), k++)
+    if (a >= m + 16 && a < *(uint8_t **)(m + 8))
+      return e;
+  return 0;
+}
 /* 動作確認用のカウンタ (メモリダンプで "SLPDSTAT" の後ろを読む) */
 static struct { char tag[8]; uint32_t loops, rx, tx, bad; } stat = { "SLPDSTAT" };
 static struct dos_prcctrl prc;           /* スレッドのメッセージ受け箱 (xip.x と同じく 4 バイト) */
@@ -263,9 +278,7 @@ static void rec_in(uint8_t *s, int n)
       arg[0] = len;
       arg[1] = (long)ip;
       tap('Z', ip, len);
-      zss = (void *)call_etd(etd, NPD_ETD_ZSS_GET, 0);
-      if (zss == (void *)-1)
-        zss = 0;
+      zss = zss_check((void *)call_etd(etd, NPD_ETD_ZSS_GET, 0));
       if (zss && (call_etd(zss, ZSS_NP_IN, arg) & 1))
         tsp_more = 1;
     } else if (len >= ACCEL_RES_HDR && ip[0] == ACCEL_MARK) {
@@ -315,7 +328,7 @@ static void zthread(void)
 {
   int last = 0, hot = 0, act = 0, zfails = 0;
   for (;;) {
-    int n, nip, now, r, more = 0, turg = 0;
+    int n, nip, now, r, more = 0, turg = 0, zurg = 0;
     stat.loops++;
     {
       long arg[2];
@@ -337,31 +350,34 @@ static void zthread(void)
       call_etd(tis, TIS_NP_OUT, a);
       turg = a[2];
     }
-    zss = (void *)call_etd(etd, NPD_ETD_ZSS_GET, 0);
-    if (zss == (void *)-1)               /* npd.sys 1.2 まで (ETD 28 が無い) */
-      zss = 0;
+    zss = zss_check((void *)call_etd(etd, NPD_ETD_ZSS_GET, 0));   /* npd.sys 1.2 までは -1 (ETD 28 が無い) */
+    zurg = 0;
     if (zss) {
       long a[3];
       a[0] = 0;
       a[1] = 0;
       a[2] = 0;
       call_etd(zss, ZSS_NP_OUT, a);
-      turg |= a[2];
+      zurg = a[2];
     }
     now = ticks();
-    if (n == 0 && hot == 0 && !turg && (unsigned)(now - last) < ((unsigned)(now - act) < 200 ? zidle : ZIDLE2)) {
+    if (n == 0 && hot == 0 && !turg && !zurg && (unsigned)(now - last) < ((unsigned)(now - act) < 200 ? zidle : ZIDLE2)) {
       _dos_change_pr();
       continue;
     }
     last = now;
     if (tis && n + 2 + TSP_HDR <= ZDATA) {
+      /* 0xA7 も載せるときは場所を分ける: 0xA7 が急ぐなら TSP は残りの半分まで、急がないなら 0xA7 の見出しの分を残す
+         (Pico は 0xA7 の要求が来た交換でだけ 0xA7 に答えるので、毎回見出しだけでも載せる) */
+      long tmax = ZDATA - n - 2;
+      if (zss) tmax = zurg ? (ZDATA - n) / 2 - 2 : tmax - (2 + ZSS_HDR + 2);
       /* TSP レコード [長さ 2][要求][詰め物] を IP / アクセラレータのレコードの後ろに。tis.x は交換のたびに 1 個
          (送るものが無くても見出しだけ) 返す。前の交換の応答が来ていなければ同じ要求をもう一度 */
       long a[3], m;
       a[0] = (long)(zreq + 16 + n + 2);
-      a[1] = ZDATA - n - 2;
+      a[1] = tmax & ~1L;
       a[2] = 0;
-      m = call_etd(tis, TIS_NP_OUT, a);
+      m = tmax >= TSP_HDR ? call_etd(tis, TIS_NP_OUT, a) : 0;
       if (m > 0) {
         zreq[16 + n] = m >> 8;
         zreq[16 + n + 1] = m;
