@@ -2,7 +2,7 @@
 """stallclass.py -- release-check の 1 ケースの「10 秒を超えた操作」を分ける
 
 usage: stallclass.py <zfat.log> <case.uart> <case.dmesg> [<case.pcap>|-] [<窓の始め秒> <窓の終わり秒>]
-出力 (1 行目): <不合格の数> <SMB を止めた区間の待ち> <既知の試験台の現象>、2 行目から説明。
+出力 (1 行目): <不合格の数> <SMB を止めた区間の待ち> <既知の試験台の現象> <usb: stall の数> <usb: clear-halt の数>、2 行目から説明。
 
 分け方:
   - SMB を止めた区間 (zfat の起動からの秒、戻してから 15 秒まで) に重なる → 正しい待ち (NOT READY の繰り返し)
@@ -33,7 +33,8 @@ for l in open(zlog, errors="replace"):
         stall_only.append(m.group(2)); ended.add(m.group(2))
 
 def day_epoch(hms, ref):
-    """UART の HH:MM:SS を、ref (epoch) と同じ日の epoch に"""
+    """UART の HH:MM:SS を、ref (epoch) と同じ日の epoch に。日付は T0 から取るので、真夜中をまたぐ試験では 0 時以降の行が
+    1 日早くなる (今は真夜中をまたいで走らせないので放っておく)"""
     d = datetime.fromtimestamp(ref)
     h, m_, s = (float(x) for x in hms.split(":"))
     return datetime(d.year, d.month, d.day).timestamp() + h * 3600 + m_ * 60 + s
@@ -95,18 +96,33 @@ def why_not_artefact(a, b, what):
         return "445 was not silent"
     return None
 
+def host_clear_halt(a, b):
+    """止まりの間に "usb: clear-halt" (ホストが出した CLEAR_FEATURE(HALT)) があったか。あっても試験台の現象のまま、印を付けて数える"""
+    if t0 is None:
+        return False
+    return any(t0 + a - 2 <= x[0] <= t0 + b + 2 and "usb: clear-halt" in x[1] for x in uart_lines)
+
 if len(cand) == 1:
     a, b, what = cand[0]
     w = why_not_artefact(a, b, what)
     if w is None:
         artefact = 1
-        notes.append("known bench artefact (#38): %s, %.1f s, ended by a Linux USB reset" % (what, b - a))
+        notes.append("known bench artefact (#38): %s, %.1f s, ended by a Linux USB reset%s" % (
+            what, b - a, ", with host clear-halt" if host_clear_halt(a, b) else ""))
     else:
         fail += 1; notes.append("stall %s (%.1f s): %s" % (what, b - a, w))
 else:
     for a, b, what in cand:
         fail += 1
         notes.append("stall %s (%.1f s)%s" % (what, b - a, "; %d stalls in one case" % len(cand) if len(cand) > 1 else ""))
-print(fail, expected, artefact)
+# ケース全体の STALL / clear-halt の数: "msc: no callback … stalls S, clear-halts C" の最後の行、無ければ usb: の行を数える
+tot = None
+for t, l in uart_lines:
+    m = re.search(r"stalls (\d+), clear-halts (\d+)", l)
+    if m:
+        tot = (int(m.group(1)), int(m.group(2)))
+if tot is None:
+    tot = (sum("usb: stall" in l for t, l in uart_lines), sum("usb: clear-halt" in l for t, l in uart_lines))
+print(fail, expected, artefact, tot[0], tot[1])
 for n in notes:
     print(n)

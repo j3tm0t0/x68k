@@ -91,7 +91,10 @@ finish() {   # $1 = そのケースの道具の結果 (OK / 説明)
   # Linux の SCSI の時間切れ (30 秒) で機器をリセットした回数 (失敗ではないが、30 秒を超えて返事が止まったことを示す)
   local rst; rst=$(grep -c "reset full-speed USB device" "$out/$case_name.dmesg")
   [ "$rst" -gt 0 ] && say "  $case_name: Linux reset the device $rst time(s) ($(grep -m1 'reset full-speed' "$out/$case_name.dmesg" | cut -c8-22))"
-  if [ ${#why[@]} -eq 0 ]; then say "PASS $case_name"; else say "FAIL $case_name: $(IFS='; '; echo "${why[*]}")"; fails=$((fails + 1)); fi
+  # Pico の UART の STALL / clear-halt の数 (fork の診断の行。"stalls S, clear-halts C" の最後の値、無ければ usb: の行を数える)
+  local tot; tot=$(grep -ao 'stalls [0-9]*, clear-halts [0-9]*' "$out/$case_name.uart" | tail -1)
+  [ -z "$tot" ] && tot="stalls $(grep -ac 'usb: stall' "$out/$case_name.uart"), clear-halts $(grep -ac 'usb: clear-halt' "$out/$case_name.uart")"
+  if [ ${#why[@]} -eq 0 ]; then say "PASS $case_name [$tot]"; else say "FAIL $case_name [$tot]: $(IFS='; '; echo "${why[*]}")"; fails=$((fails + 1)); fi
 }
 zfat_res() {   # zfat.py のログ → OK / 説明。$2 = EIO を許す、$3 $4 = SMB を止めた区間 (zfat の起動からの秒)
   # 既知の試験台の現象 (#38、raspi3 の dwc_otg とハブで起きる約 30 秒の止まり。実機の Z では出ない) は 1 回までなら合格にする
@@ -106,7 +109,7 @@ zfat_res() {   # zfat.py のログ → OK / 説明。$2 = EIO を許す、$3 $4 
   slices
   local pc=-; [ -f "$out/$case_name.pcap" ] && pc="$out/$case_name.pcap"
   local cls; cls=$(python3 $here/stallclass.py "$log" "$out/$case_name.uart" "$out/$case_name.dmesg" "$pc" $ws $we)
-  local sn sx sa; read sn sx sa <<< "$(echo "$cls" | head -1)"
+  local sn sx sa ss sc; read sn sx sa ss sc <<< "$(echo "$cls" | head -1)"
   echo "$cls" | tail -n +2 | while read -r l; do say "  $case_name: $l" >&2; done
   [ "$sn" != 0 ] && r+=("$sn stalls over 10 s ($(echo "$cls" | sed -n 2p | cut -c1-90))")
   [ "$sx" != 0 ] && say "  $case_name: $sx long waits during the SMB block (expected)" >&2
