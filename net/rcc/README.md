@@ -37,7 +37,8 @@ rcc.x -c a.c b.c                           (a.o と b.o が今のディレクト
 - 送るもの: 入力 (`.c` `.cc` `.cpp` `.s` `.o` `.a`)、`-include` のファイル、今のディレクトリ・ソースのディレクトリ・`-I` のディレクトリの `*.h`
 - メッセージのファイル名と行番号は Z で書いたとおり (`A:\SUB\E.C:1: ...`)。失敗したら出力のファイルを作らない。終了コードはコンパイラのもの
 - 大文字の `.C` は C として扱う (Human68k の名前は大文字になる。gcc は `.C` を C++ と見る)
-- つながらない (RCC_HOST が無い・相手が居ない・途中で切れた) とき: `rcc: no compile server, compiling here` と出して、
+- つながらない (RCC_HOST が無い・相手が居ない) ときは `rcc: no compile server, compiling here`、途中で切れたときは
+  `rcc: lost the compile server while sending (receiving), compiling here` と出して、
   環境変数 `RCC_LOCAL` (既定 `gcc.x %s -lgcc2`。`%s` に引数が入る) を `system()` で動かす。`RCC_LOCAL` を空にすると 255 で終わる
 - `-c` でできる `.o` は ELF (elf2x68k の形式) で、Z の HLK.X ではリンクできない。リンクも rcc.x で行う。
   つながらずに Z の gcc でリンクするとき、引数に ELF の `.o` があれば `rcc: x.o was made by the compile server (ELF); HLK can't link it, rebuild it here` と出す
@@ -74,3 +75,16 @@ Z → 受ける側:  RCC2
 python3 -I net/rcc/tests/rccd_test.py      # ホストだけで (m68k-xelf-gcc が要る)
 net/rcc/tests/xeij_rcc.sh                   # XEiJ の Z から tis.x -p 越しに
 ```
+
+## 速さ (X68000 Z の実機、xip.x、受ける側は raspi5)
+
+rcmd で 3 回ずつ動かした時間 (rcmd の往復の約 1.3 秒を含む)。Z の gcc は `gcc.x 〜 -lgcc2`、rcc は `rcc.x -O 〜`。
+
+| | hello.c (6 行) | big.c (1,284 行) | zosh.c (1,034 行) |
+|---|---|---|---|
+| Z の gcc、道具とヘッダが A: (SMB の HDS) | 17.3 / 17.4 / 17.2 秒 | 247.4 / 247.5 / 245.9 秒 | コンパイルできない (`x68k/dos.h` が無い) |
+| Z の gcc、道具とヘッダが C: (SD カード) | 26.0 / 26.1 / 26.0 秒 | 247.1 / 246.8 / 247.1 秒 | — |
+| rcc.x → raspi5 | 6.5 / 6.6 / 6.5 秒 | 11.2 / 10.4 / 11.5 秒 | 8.7 / 8.6 / 8.6 秒 |
+
+raspi5 での gcc は 0.1〜0.6 秒。残りは Z からの送り (big.c は 29KB で 1.6 秒、zosh.c は 47KB で 2.1 秒) と、rcc.x と結果の受け取り。
+
