@@ -224,6 +224,20 @@ static int recvfile(const char *path, long n)
   return 0;
 }
 
+/* 受け手が作った .o (ELF) か。Z の HLK.X はリンクできない */
+static int is_elf(const char *path)
+{
+  unsigned char m[4];
+  int fd, n;
+  if (!has_ext(path, ".o"))
+    return 0;
+  if ((fd = open(path, O_RDONLY | O_BINARY)) < 0)
+    return 0;
+  n = read(fd, m, 4);
+  close(fd);
+  return n == 4 && m[0] == 0x7f && m[1] == 'E' && m[2] == 'L' && m[3] == 'F';
+}
+
 /* つながらないとき: Z の gcc で同じ引数のまま */
 static int local(int argc, char **argv)
 {
@@ -238,12 +252,16 @@ static int local(int argc, char **argv)
     n += snprintf(a + n, sizeof a - n, "%s%s", i > 1 ? " " : "", argv[i]);
   snprintf(cmd, sizeof cmd, fmt, a);
   fprintf(stderr, "rcc: no compile server, compiling here\n");
+  for (int i = 1; i < argc; i++)
+    if (is_elf(argv[i]))
+      fprintf(stderr, "rcc: %s was made by the compile server (ELF); HLK can't link it, rebuild it here\n", argv[i]);
   return system(cmd);
 }
 
 int main(int argc, char **argv)
 {
   char line[300], cwd[256];
+  const char *e;
   int rc, nout;
   long outlen, errlen;
 
@@ -274,6 +292,11 @@ int main(int argc, char **argv)
     cwd[0] = 0;
   if (sendall("RCC2\n", 5) < 0 || sendstr("CWD", cwd) < 0)
     goto lost;
+  if ((e = getenv("RCC_SYS")) && *e) {
+    snprintf(line, sizeof line, "SYS %s\n", e);
+    if (sendall(line, strlen(line)) < 0)
+      goto lost;
+  }
   for (int i = 1; i < argc; i++)
     if (sendstr("ARG", argv[i]) < 0)
       goto lost;

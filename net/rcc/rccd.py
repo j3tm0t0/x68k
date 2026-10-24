@@ -25,6 +25,7 @@ ap.add_argument("--allow", default="192.168.0.0/16,127.0.0.0/8", help="受け付
 ap.add_argument("--gcc", default="m68k-xelf-gcc")
 ap.add_argument("--cflags", default="-m68000", help="いつも先に付ける引数")
 ap.add_argument("--timeout", type=int, default=120)
+ap.add_argument("--sys", default="elf2x68k-newlib", help="この受け手のヘッダとライブラリの組の名前 (SYS の行と比べる)")
 args = ap.parse_args()
 ALLOW = [ipaddress.ip_network(n.strip()) for n in args.allow.split(",") if n.strip()]
 
@@ -176,6 +177,9 @@ class Handler(socketserver.StreamRequestHandler):
                     zargs.append(self.readn(int(rest)).decode("cp932", "replace"))
                 elif kw == "CWD":
                     self.readn(int(rest))
+                elif kw == "SYS":
+                    if rest != args.sys:
+                        raise ValueError("no header set %s here (this server has %s)" % (rest, args.sys))
                 elif kw == "FILE":
                     n, _, name = rest.partition(" ")
                     n = int(n)

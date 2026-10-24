@@ -15,9 +15,11 @@ def check(name, cond):
     fails += 0 if cond else 1
 
 
-def req(zargs, files, cwd="A:\\WORK"):
+def req(zargs, files, cwd="A:\\WORK", sys_=None):
     s = socket.create_connection(("127.0.0.1", PORT))
     b = b"RCC2\nCWD %d\n" % len(cwd) + cwd.encode()
+    if sys_:
+        b += b"SYS %s\n" % sys_.encode()
     for a in zargs:
         b += b"ARG %d\n" % len(a.encode()) + a.encode()
     for n, d in files:
@@ -54,6 +56,10 @@ rc, out, err, outs = req(["hello.c", "-o", "h2.x", "-lgcc2", "-ldos", "-liocs"],
 check("the Z gcc's -lgcc2 -ldos -liocs are dropped", rc == 0 and "h2.x" in outs)
 rc, out, err, outs = req(["../../../../../etc/passwd"], [("../../../../../../x.c", b"")])
 check("a path that leaves the work area is refused", rc == 126)
+rc, out, err, outs = req(["hello.c"], [("hello.c", hello), ("msg.h", msg)], sys_="elf2x68k-newlib")
+check("SYS naming this server's header set is accepted", rc == 0 and list(outs) == ["a.x"])
+rc, out, err, outs = req(["hello.c"], [("hello.c", hello), ("msg.h", msg)], sys_="vbcc-newlib")
+check("SYS naming another header set is refused", rc == 126 and "vbcc-newlib" in err and not outs)
 srv.terminate()
 print("%d failure(s)" % fails)
 sys.exit(1 if fails else 0)
