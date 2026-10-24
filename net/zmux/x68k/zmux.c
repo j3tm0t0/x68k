@@ -1,0 +1,416 @@
+/*
+ * zmux.sys -- RS-232C 1 本でチャネルを多重化する線の X68000 側 (net/zmux/DESIGN.md)
+ *
+ *   CONFIG.SYS:   DEVICE = \SYS\ZMUX.SYS       (RSDRV.SYS の後ろ)
+ *   AUTOEXEC.BAT: ZMUX                         (zmux.x: 線を回すスレッドを作る)
+ *                 CTTY AUX                     (コンソールをチャネル 0 に)
+ *
+ * 文字デバイスの名前は "AUX"。後から組み込んだデバイスが先に見つかるので、RSDRV.SYS の AUX の代わりになる
+ * (COMMAND.X 3.00 の CTTY は con と aux しか受け付けないので、別の名前にはできない)。AUX0〜AUX5 は RSDRV.SYS のまま。
+ *
+ * 線の読み書きは IOCS (_ISNS232C / _INP232C / _OSNS232C / _OUT232C、つまり ROM と RSDRV.SYS) でポーリングする。
+ * 自前の SCC 割り込みは使わない (slip.sys で xip.x が壊れた前例)。RSDRV.SYS の受信バッファは 32KB に付け替える。
+ * 線を回す処理 (zl_poll) は、zmux.x のスレッドと AUX の読み書きの両方から呼ぶ。スレッドは UP の間だけ回す
+ * (素の文字の間は rx.x などが IOCS で直接読み書きしているかもしれないので、横取りしない)。どちらもスーパーバイザで動き、
+ * Human68k はスーパーバイザの間はスレッドを切り替えないので、同時には走らない。
+ *
+ * 状態は 2 つ:
+ *   RAW: 素の文字。AUX の出力はそのまま線へ、線の文字はそのまま AUX の入力へ (RSDRV.SYS の AUX と同じ)。
+ *        ただし DLE STX ... DLE ETX のフレームは拾って調べる (Pi の HELLO_ACK を待つ)。AUX を読み書きしている間、
+ *        5 秒ごとに HELLO を送る。
+ *   UP:  フレームだけ。AUX はチャネル 0。Pi から 10 秒フレームが来なければ RAW に戻る。
+ *
+ * フレーム: DLE STX | chan seq ack flags len(2) | data | crc16(2) | DLE ETX (中の DLE は DLE DLE)
+ * 送り直しは Go-Back-N (窓 4)。
+ */
+#define __IOCS_INLINE__
+#include <x68k/iocs.h>
+#include <stdint.h>
+
+#define DLE 0x10
+#define STX 0x02
+#define ETX 0x03
+
+#define MAXLEN   1024
+#define WIN      4
+#define RINGSZ   2048           /* チャネル 0 のリング (2 の累乗) */
+#define OUTSZ    8192           /* 線に出すバイトの待ち行列 (2 の累乗) */
+#define RXBUF    32768          /* RSDRV.SYS の受信バッファの付け替え先 */
+
+#define F_NAK    0x01
+#define F_BUSY   0x02
+#define F_UNSEQ  0x04           /* 番号を使わないフレーム (HELLO / HELLO_ACK) */
+
+#define CH_CON   0
+#define CH_CTL   15
+#define OP_HELLO     1
+#define OP_HELLO_ACK 2
+#define OP_BYE       3
+
+#define T_RESEND 100            /* 1/100 秒 */
+#define T_ACK    5
+#define T_HELLO  500
+#define T_DEAD   1000
+
+#define VERSION  1
+
+struct req_header {
+  uint8_t magic, unit, command, errl, errh, reserved[8], attr;
+  uint8_t *addr;
+  uint32_t status;
+  void *fcb;
+} __attribute__((packed, aligned(2)));
+
+extern void dos_print(const char *);
+
+struct ring { uint16_t head, tail; uint8_t b[RINGSZ]; };
+static struct ring rxr, txr;    /* rxr: Pi → AUX の入力、txr: AUX の出力 → Pi */
+static uint8_t outq[OUTSZ];
+static uint16_t oh, ot;
+
+static int up;                  /* 0 = RAW, 1 = UP */
+static uint8_t tx_seq;          /* 次に送るデータのフレームの番号 */
+static uint8_t tx_base;         /* 確認の来ていない最初の番号 */
+static uint8_t rx_expect;       /* 次に受けるはずの番号 */
+static int need_ack, nak_pending;
+static long t_sent, t_ack_due, t_last_rx, t_hello;
+static int started;             /* zl_poll が一度でも呼ばれた */
+
+/* 確認の来ていないフレームの写し (送り直し用) */
+static struct { uint16_t len; uint8_t chan; uint8_t d[MAXLEN]; } win[WIN];
+
+/* 受けているフレーム */
+static uint8_t fr[8 + MAXLEN];
+static int fpos, pstate;        /* pstate: 0 = 外, 1 = 外で DLE, 2 = 中, 3 = 中で DLE */
+
+static uint16_t crctab[256];
+static uint8_t rxbuf[RXBUF];
+
+/* 動作確認用 (メモリダンプで "ZMUXSTAT" の後ろ) */
+static struct { char tag[8]; uint32_t rxf, txf, bad, resend, rawin, rawout, ups, downs; } st = { "ZMUXSTAT" };
+
+static long now(void) { return _iocs_ontime().sec; }
+static long since(long t) { long d = now() - t; if (d < 0) d += 8640000; return d; }
+
+static void crcinit(void)
+{
+  int i, j;
+  for (i = 0; i < 256; i++) {
+    uint16_t c = i << 8;
+    for (j = 0; j < 8; j++)
+      c = (c & 0x8000) ? (c << 1) ^ 0x1021 : c << 1;
+    crctab[i] = c;
+  }
+}
+
+static uint16_t crc(uint16_t c, const uint8_t *p, int n)
+{
+  while (n--)
+    c = (c << 8) ^ crctab[(c >> 8) ^ *p++];
+  return c;
+}
+
+static int ring_count(struct ring *r) { return (r->head - r->tail) & (RINGSZ - 1); }
+static int ring_free(struct ring *r) { return RINGSZ - 1 - ring_count(r); }
+static void ring_put(struct ring *r, int c) { r->b[r->head] = c; r->head = (r->head + 1) & (RINGSZ - 1); }
+static int ring_get(struct ring *r) { int c = r->b[r->tail]; r->tail = (r->tail + 1) & (RINGSZ - 1); return c; }
+
+static int out_free(void) { return OUTSZ - 1 - ((oh - ot) & (OUTSZ - 1)); }
+static void out_put(int c) { outq[oh] = c; oh = (oh + 1) & (OUTSZ - 1); }
+
+/* RSDRV.SYS のチャネル 0 の受信バッファを rxbuf に付け替える (slipd.x と同じ) */
+static void grow_rsdrv(void)
+{
+  uint16_t *h = *(uint16_t **)0x170, sr;
+  uint8_t *cb;
+  if (h[0] != 0x48e7 || h[1] != 0xc0a0 || h[2] != 0x45f9)
+    return;
+  cb = *(uint8_t **)(h + 3);
+  if (*(uint16_t *)(cb + 26) >= RXBUF)
+    return;
+  __asm__ volatile ("move.w %%sr,%0; ori.w #0x0700,%%sr" : "=d"(sr) :: "memory");
+  *(uint8_t **)(cb + 8) = rxbuf;
+  *(uint8_t **)(cb + 12) = rxbuf + RXBUF;
+  *(uint8_t **)(cb + 16) = rxbuf;
+  *(uint8_t **)(cb + 20) = rxbuf;
+  *(uint16_t *)(cb + 24) = 0;
+  *(uint16_t *)(cb + 26) = RXBUF;
+  __asm__ volatile ("move.w %0,%%sr" :: "d"(sr) : "memory");
+}
+
+/* フレームを 1 つ線の待ち行列に積む (入らなければ 0) */
+static int emit(int chan, int seq, int flags, const uint8_t *d, int len)
+{
+  uint8_t h[6];
+  uint16_t c;
+  int i;
+  if (out_free() < 2 * (len + 8) + 4)
+    return 0;
+  h[0] = chan; h[1] = seq; h[2] = rx_expect - 1; h[3] = flags; h[4] = len >> 8; h[5] = len;
+  c = crc(0xffff, h, 6);
+  c = crc(c, d, len);
+  out_put(DLE); out_put(STX);
+  for (i = 0; i < 6; i++) { if (h[i] == DLE) out_put(DLE); out_put(h[i]); }
+  for (i = 0; i < len; i++) { if (d[i] == DLE) out_put(DLE); out_put(d[i]); }
+  h[0] = c >> 8; h[1] = c;
+  for (i = 0; i < 2; i++) { if (h[i] == DLE) out_put(DLE); out_put(h[i]); }
+  out_put(DLE); out_put(ETX);
+  st.txf++;
+  need_ack = 0;
+  return 1;
+}
+
+static void send_ctl(int op, int flags)
+{
+  uint8_t d[4] = { op, VERSION, MAXLEN >> 8, MAXLEN & 255 };
+  emit(CH_CTL, 0, flags, d, 4);
+}
+
+static void reset_link(void)
+{
+  tx_seq = tx_base = rx_expect = 0;
+  need_ack = nak_pending = 0;
+}
+
+static void go_up(void)
+{
+  reset_link();
+  up = 1;
+  st.ups++;
+  t_last_rx = t_sent = now();
+}
+
+static void go_raw(void)
+{
+  if (up)
+    st.downs++;
+  up = 0;
+  t_hello = now() - T_HELLO;    /* すぐ HELLO を送る */
+}
+
+/* 正しいフレームを受けた */
+static void got_frame(void)
+{
+  int chan = fr[0] & 15, seq = fr[1], ack = fr[2], flags = fr[3], len = (fr[4] << 8) | fr[5];
+  uint8_t *d = fr + 6;
+  int i;
+  st.rxf++;
+  if (flags & F_UNSEQ) {
+    if (chan == CH_CTL && len >= 1) {
+      if (d[0] == OP_HELLO) {           /* Pi が始めた (または Pi が作り直した) */
+        go_up();
+        send_ctl(OP_HELLO_ACK, F_UNSEQ);
+      } else if (d[0] == OP_HELLO_ACK) {
+        if (!up) go_up();
+        else t_last_rx = now();
+      } else if (d[0] == OP_BYE) {
+        go_raw();
+      }
+    }
+    return;
+  }
+  if (!up)
+    return;
+  t_last_rx = now();
+  /* 確認: ack までを窓から外す */
+  {
+    uint8_t n = ack - tx_base + 1;      /* 外せる数 */
+    if (n <= (uint8_t)(tx_seq - tx_base)) {
+      tx_base += n;
+      t_sent = now();
+    }
+  }
+  if ((flags & F_NAK) && tx_base != tx_seq) {
+    t_sent = now() - T_RESEND;          /* すぐ送り直す */
+  }
+  if (len == 0)
+    return;
+  if (seq != rx_expect) {
+    nak_pending = 1;                    /* 順番が飛んだ / 重複: 確認を返して送り直してもらう */
+    need_ack = 1;
+    return;
+  }
+  if (chan == CH_CON) {
+    if (ring_free(&rxr) < len) {        /* 受け皿が一杯: 受け取らない (Pi は送り直す) */
+      need_ack = 1;
+      return;
+    }
+    for (i = 0; i < len; i++)
+      ring_put(&rxr, d[i]);
+  }
+  rx_expect++;
+  need_ack = 1;
+  t_ack_due = now();
+}
+
+/* 線から来た 1 バイト */
+static void rx_byte(int c)
+{
+  switch (pstate) {
+  case 0:
+    if (c == DLE) { pstate = 1; return; }
+    if (!up && ring_free(&rxr) > 0) { ring_put(&rxr, c); st.rawin++; }
+    return;
+  case 1:
+    if (c == STX) { fpos = 0; pstate = 2; return; }
+    pstate = 0;
+    if (!up && ring_free(&rxr) > 1) { ring_put(&rxr, DLE); ring_put(&rxr, c); st.rawin += 2; }
+    return;
+  case 2:
+    if (c == DLE) { pstate = 3; return; }
+    break;
+  case 3:
+    if (c == DLE) { pstate = 2; break; }
+    if (c == STX) { fpos = 0; pstate = 2; return; }
+    if (c == ETX) {
+      pstate = 0;
+      if (fpos >= 8) {
+        int len = (fr[4] << 8) | fr[5];
+        uint16_t got = (fr[fpos - 2] << 8) | fr[fpos - 1];
+        if (len == fpos - 8 && len <= MAXLEN && crc(0xffff, fr, fpos - 2) == got) {
+          got_frame();
+          return;
+        }
+      }
+      st.bad++;
+      if (up) { nak_pending = 1; need_ack = 1; }
+      return;
+    }
+    pstate = 0;                         /* DLE の後に知らないもの: 捨てる */
+    st.bad++;
+    return;
+  }
+  if (fpos < (int)sizeof fr)
+    fr[fpos++] = c;
+  else
+    pstate = 0;
+}
+
+/* 線を回す: 受けたものを処理し、送るものを作り、待ち行列を線に出す */
+static void zl_poll(void)
+{
+  int n;
+  started = 1;
+  for (n = 0; n < 512 && _iocs_isns232c(); n++)
+    rx_byte(_iocs_inp232c() & 0xff);
+  if (up) {
+    if (since(t_last_rx) > T_DEAD) {
+      go_raw();
+    } else {
+      /* 送り直し */
+      if (tx_base != tx_seq && since(t_sent) > T_RESEND) {
+        uint8_t s;
+        for (s = tx_base; s != tx_seq; s++) {
+          int k = s % WIN;
+          if (!emit(win[k].chan, s, 0, win[k].d, win[k].len))
+            break;
+          st.resend++;
+        }
+        t_sent = now();
+      }
+      /* チャネル 0 の新しいデータ */
+      while ((uint8_t)(tx_seq - tx_base) < WIN && ring_count(&txr) > 0 && out_free() > 2 * (MAXLEN + 8) + 4) {
+        int k = tx_seq % WIN, len = 0;
+        while (len < MAXLEN && ring_count(&txr) > 0)
+          win[k].d[len++] = ring_get(&txr);
+        win[k].len = len;
+        win[k].chan = CH_CON;
+        if (tx_base == tx_seq)
+          t_sent = now();
+        emit(CH_CON, tx_seq, 0, win[k].d, len);
+        tx_seq++;
+      }
+      /* 確認だけのフレーム */
+      if ((need_ack && since(t_ack_due) >= 1) || nak_pending) {
+        emit(CH_CON, 0, (nak_pending ? F_NAK : 0) | (ring_free(&rxr) < MAXLEN ? F_BUSY : 0), 0, 0);
+        nak_pending = 0;
+      }
+    }
+  }
+  if (!up && since(t_hello) > T_HELLO) {
+    send_ctl(OP_HELLO, F_UNSEQ);
+    t_hello = now();
+  }
+  for (n = 0; n < 512 && oh != ot && _iocs_osns232c(); n++) {
+    _iocs_out232c(outq[ot]);
+    ot = (ot + 1) & (OUTSZ - 1);
+  }
+}
+
+long zmux_call(long cmd)
+{
+  /* スレッドから: 素の文字の間は何もしない (rx.x などが IOCS で直接読み書きしているかもしれないので、横取りしない)。
+     素の文字の間の HELLO と受信は、COMMAND.X が AUX を読み書きするとき (dev_interrupt) に回す */
+  if (cmd == 0) { if (up) zl_poll(); return up; }
+  if (cmd == 1) return (long)&st;
+  return -1;
+}
+
+/* AUX の 1 バイト出力 */
+static void con_out(int c)
+{
+  if (up) {
+    while (ring_free(&txr) == 0)
+      zl_poll();
+    ring_put(&txr, c);
+  } else {
+    while (out_free() == 0)
+      zl_poll();
+    out_put(c);
+    st.rawout++;
+  }
+}
+
+long dev_interrupt(struct req_header *req)
+{
+  extern char _end, __bss_start;
+  uint32_t i;
+  switch (req->command) {
+  case 0: {
+    char *b;
+    for (b = &__bss_start; b < &_end; b++)   /* CONFIG.SYS から組み込むドライバの BSS は 0 にならない */
+      *b = 0;
+    st.tag[0] = 'Z'; st.tag[1] = 'M'; st.tag[2] = 'U'; st.tag[3] = 'X';
+    st.tag[4] = 'S'; st.tag[5] = 'T'; st.tag[6] = 'A'; st.tag[7] = 'T';
+    crcinit();
+    grow_rsdrv();
+    t_hello = now() - T_HELLO;
+    dos_print("zmux.sys 0.1: AUX (CTTY AUX) is multiplexed on RS-232C by zmux\r\n");
+    req->addr = (uint8_t *)&_end;
+    return 0;
+  }
+  case 4:                               /* 入力: 揃うまで戻らない */
+    for (i = 0; i < req->status; i++) {
+      while (ring_count(&rxr) == 0)
+        zl_poll();
+      req->addr[i] = ring_get(&rxr);
+    }
+    return 0;
+  case 5:                               /* 1 文字先読み */
+    zl_poll();
+    req->attr = ring_count(&rxr) ? rxr.b[rxr.tail] : 0;
+    return 0;
+  case 6:                               /* 入力ステータス: 0 = 読める、1 = 無い */
+    zl_poll();
+    return ring_count(&rxr) ? 0 : 1;
+  case 7:                               /* 入力を捨てる */
+    zl_poll();
+    rxr.tail = rxr.head;
+    return 0;
+  case 8:
+  case 9:                               /* 出力 */
+    for (i = 0; i < req->status; i++)
+      con_out(req->addr[i]);
+    zl_poll();
+    return 0;
+  case 10:                              /* 出力ステータス: 0 = 書ける */
+    zl_poll();
+    return 0;
+  case 11:
+    return 0;
+  case 3:                               /* IOCTRL 入力 / 出力: 何もしない */
+  case 12:
+    return 0;
+  }
+  return 0x5003;                        /* 未対応のコマンド */
+}

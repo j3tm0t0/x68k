@@ -1,0 +1,19 @@
+[package]
+name = "zmux"
+version = "0.1.0"
+edition = "2021"
+description = "Multiplex an X68000's RS-232C line (console, TSP sockets, sessions) on a Raspberry Pi"
+license = "MIT"
+
+[[bin]]
+name = "zmux"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

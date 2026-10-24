@@ -4,7 +4,7 @@ RS-232C 1 本で、X68000 (Compact XVI) と Raspberry Pi の間に次を同時�
 
 | チャネル | 中身 | X68000 側 | Pi 側 (zmuxd) |
 |---|---|---|---|
-| 0 | コンソール (COMMAND.X の CTTY の入出力) | zmux.sys の文字デバイス `ZCON` | `zmux attach 0` (herdr のタブ 0) |
+| 0 | コンソール (COMMAND.X の CTTY AUX の入出力) | zmux.sys の文字デバイス `AUX` (RSDRV.SYS の AUX の代わり) | `zmux attach 0` (herdr のタブ 0) |
 | 1 | netpipe の交換 (X6NR レコード: TSP 0xA6、暗号 0xA5、端末のセッション 0xA7) | zmux.x (npd.x と同じ交換を、SCSI ID6 の代わりにこの線で) | TSP は普通のソケット、0xA5 は Rust の暗号ライブラリ、0xA7 は `zmux attach 1..4` |
 | 2 | リモートドライブ (後で) | zmux.sys のブロックデバイス | ホストのディレクトリ |
 | 3 | キー入力の注入 | zmux.sys が IOCS _B_KEYINP / _B_KEYSNS を横取り | `zmux key`、`zmux attach` の対応表 |
@@ -89,9 +89,14 @@ TSP の CONNECT / LISTEN / DATA / RESOLVE は `std::net` と `TcpStream` / `UdpS
 
 タブ 0 は今の CTTY AUX と同じ、Human68k の COMMAND.X をシリアルで使うもの。zmux が始まっても COMMAND.X はそのまま動く。
 
-- zmux.sys は文字デバイス `ZCON` を作る。AUTOEXEC.BAT は `CTTY AUX` の代わりに、zmux が上がったら `CTTY ZCON` にする
-  (zmux.x が上がらなければ `CTTY AUX` のまま)。
-- ZCON の書き込みはチャネル 0 の送信リングへ、読み込みは受信リングから。zmux.x のスレッドがリングと線の間を運ぶ。
+- zmux.sys は文字デバイス `AUX` を作る。後から組み込んだデバイスが先に見つかるので、`CTTY AUX` は RSDRV.SYS の AUX ではなく
+  zmux.sys につながる (COMMAND.X 3.00 の CTTY は con と aux しか受け付けないので、`CTTY ZCON` のような別の名前は使えなかった)。
+  bootstrap の AUTOEXEC.BAT の `CTTY AUX` はそのまま使える。AUX0〜AUX5 は RSDRV.SYS のまま。
+- zmux が上がっていない間 (RAW)、この AUX は RSDRV.SYS の AUX と同じく素の文字を通す。COMMAND.X が AUX を読み書きしている間に
+  5 秒ごとに HELLO を送り、Pi の zmuxd が答えれば UP になる。zmux.x のスレッドは UP の間だけ線を回す
+  (RAW の間は rx.x などが IOCS で直接読み書きしているかもしれないので、横取りしない)。
+- AUX の書き込みはチャネル 0 の送信リングへ、読み込みは受信リングから。zmux.x のスレッドと AUX の読み書きの両方が線を回す
+  (どちらもスーパーバイザで動き、Human68k はその間スレッドを切り替えないので、同時には走らない)。
 - zmux の前 (素の文字) と後 (チャネル 0) で、Pi の `zmux attach 0` に見えるものは同じ (上の「素の文字とフレームの共存」)。
 - rx.x / sx.py は zmux の前の段階 (bootstrap) で使う。zmux が動いている間にファイルを送るのは、チャネル 1 の TSP (rcmd.x、x68put) か、
   後のリモートドライブ。
@@ -141,8 +146,8 @@ Z-OS (x68k-zos) の sshd 用の見えないペイン (0xA7、net/npd/zss.h、x68
 
 ## 7. 作る順番
 
-1. **線 (チャネル 0 と 15)**: zmux.x (IOCS ポーリング、フレーム、Go-Back-N) + zmux.sys (ZCON) と、zmuxd の線の部分 + `zmux attach 0`。
-   XEiJ (RS-232C を TCP に) で、素の文字 → zmux → 素の文字の切り替え、5% の破損で再送、COMMAND.X が `CTTY ZCON` で動くこと。
+1. **線 (チャネル 0 と 15)**: zmux.x (IOCS ポーリング、フレーム、Go-Back-N) + zmux.sys (AUX) と、zmuxd の線の部分 + `zmux attach 0`。
+   XEiJ (RS-232C を TCP に) で、素の文字 → zmux → 素の文字の切り替え、バイトの破損で再送、COMMAND.X が `CTTY AUX` で動くこと。**済み** (`test/e2e.py`)。
 2. **チャネル 1 (TSP と 0xA5)**: npd.x の交換を差し替えた zmux.x、zmuxd の TSP / 暗号。rcmd.x / ssh.x が tis.x -p でつながること。
 3. **セッション (0xA7)**: `zmux attach` で zosh。herdr の中で複数。
 4. **キーの注入 (チャネル 3)** と keys.toml。
