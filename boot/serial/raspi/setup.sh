@@ -58,7 +58,7 @@ fi
 
 # --- パッケージ (足りないものだけ) ---
 pkgs=
-for p in python3 net-tools iptables curl lhasa; do
+for p in python3 net-tools iptables iproute2 procps curl lhasa; do
   dpkg -s "$p" >/dev/null 2>&1 || pkgs="$pkgs $p"
 done
 if [ -n "$pkgs" ]; then
