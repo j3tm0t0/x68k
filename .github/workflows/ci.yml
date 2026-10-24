@@ -24,10 +24,7 @@ jobs:
         run: python3 -m venv term/vt100/tests/venv && term/vt100/tests/venv/bin/pip install -q -r .github/ci/requirements.txt
       - name: tests/run.sh
         # CGROM (XEiJ の配布物) は置かないので glyph の 2 項目は run.sh が SKIP する。
-        # Linux の ASan は LeakSanitizer が既定で動き、dyntest の終わりに解放していないメモリで落ちる (macOS の ASan には無い)。
-        # run.sh が見ているのは配列の外・未定義動作なので、リークの検出だけ切る
         env:
-          ASAN_OPTIONS: detect_leaks=0
           VT_OUT: ${{ runner.temp }}/vttest
         run: term/vt100/tests/run.sh
 
