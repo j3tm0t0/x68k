@@ -8,12 +8,35 @@ show_excerpts: true   # トップページの一覧に各記事の最初の段�
 header_pages:   # ヘッダーにはシリーズのページだけを出す
   - x68000z.md
   - psp.md
-defaults:   # 記事はファイル名でシリーズに振り分ける (_data/series.yml の id)
+header_pages_en:   # 英語版 (en/) のページのヘッダー
+  - en/x68000z.md
+  - en/psp.md
+defaults:   # 記事はファイル名でシリーズに振り分ける (_data/series.yml の id)。英語版は en/_posts に同じファイル名で置く
+  - scope:
+      path: "_posts"
+    values:
+      lang: ja
+  - scope:
+      path: "en"
+    values:
+      lang: en
+  - scope:
+      path: "en/_posts"
+    values:
+      permalink: /en/:year/:month/:day/:title/
   - scope:
       path: "_posts/*-x68000z-diary-*"
     values:
       series: x68000z
   - scope:
       path: "_posts/*-psp-diary-*"
+    values:
+      series: psp
+  - scope:
+      path: "en/_posts/*-x68000z-diary-*"
+    values:
+      series: x68000z
+  - scope:
+      path: "en/_posts/*-psp-diary-*"
     values:
       series: psp
