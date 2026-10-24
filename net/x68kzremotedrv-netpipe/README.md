@@ -56,6 +56,9 @@ USB キーボード (0012) を入れるときは `cmake -DHID_KEYBOARD=ON ..` (�
 | `src/connect.c` / `src/main.c` | 0048: SMB の keepalive を USB タスクで行う。HDS の読み書き (USB タスク) と keepalive (別のタスク) が同じ libsmb2 の接続を同時に使い、中が壊れて "Out of memory" で落ちた (最初の keepalive は接続の直後、Z が起動のために HDS0 を読んでいる最中に来る。Delta の p2w の試験で見つかった)。keepalive のタスクはフラグを立てるだけ |
 | `src/virtual_disk.c` | 0049: 仮想 FAT のイメージファイルの鎖を、大きさを覆うちょうどの数 (32KB 単位に切り上げ) にする。大きさが 32KB で割り切れるとき 1 つ長かった (読むのには害が無いが fsck が指摘する) |
 | `CMakeLists.txt` / `src/hw_config.c` | 0050: SD カードのピンをビルドの選択に: `-DSD_PINS=header` (既定、GP18 SCK / GP19 MOSI / GP20 MISO / GP21 CS) か `usb` (GP2 / GP3 / GP4 / GP5、Pico の USB の側)。どちらも SPI0、25MHz |
+| `src/smb2connect.c` / `src/hdscache.c` / `src/connect.c` / `src/virtual_disk.c` | 0051: SMB の要求を 5 秒で打ち切る (`smb2_set_timeout`)。HDS の読み書きか keepalive が失敗したら、その接続はもう使わず (`smb_lost`)、接続のタスクが 5 秒ごとにつなぎ直す。その間 HDS は SMB に触らずに NOT READY (02/04/01) を返し、ホストが出し直す。SMB が止まっても USB の 1 命令が 30 秒を超えない (Linux が USB をリセットしない) |
+| `src/tsp_mdns.c` / `src/tsp_svc.c` / `src/connect.c` / `src/tsp_lwip/lwipopts.h` | 0052: mDNS。TSP の名前解決 (`tis.x -p`) で `.local` の名前を mDNS で引き (224.0.0.251:5353 に単発の問い合わせ、1 秒ごとに 3 回)、Pico 自身は `<ホスト名>.local` に答える (lwIP の mDNS)。TSP の入ったビルド (Pico 2 W) だけ |
+| `src/msc_disk.c` / `CMakeLists.txt` | 0053: USB の様子を UART に出す。READ10 / WRITE10 のコールバックが 1 秒を超えたとき、10 秒以上コールバックが来ないとき、端点の STALL とホストの clear-halt (リンカの `--wrap`)、NOT READY / MEDIUM ERROR を返したとき。ふだんは何も出ない |
 | `driver/bootwait.S` / `driver/mkbootwait.py` | 0028: ◆ の行を本物の進み具合 (Wi-Fi → SMB → HDS → 起動) に |
 | `driver/mkbootwait.py` | 0027: ロゴの行は見た目の中央から 20 ドット左 (最終の配置) |
 | `driver/mkbootwait.py` | 0026: ロゴの行を「副題の左端にそろえる」と「見た目の中央」の中間に (既定 BW_LOGO=between) |

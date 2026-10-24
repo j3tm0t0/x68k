@@ -1,0 +1,299 @@
+From c47acdaf3bb6e5fe669864e063cfa5e39108848e Mon Sep 17 00:00:00 2001
+From: moto <j3tm0t0@gmail.com>
+Date: Sun, 25 Oct 2026 08:37:14 +0900
+Subject: [PATCH 51/53] SMB requests time out after 5 s; a lost SMB connection
+ gives NOT READY and reconnects in the background
+
+libsmb2's default timeout is 0, so a sync call waits until the server answers. The HDS reads and
+writes run in the USB task, so a slow or blocked SMB server held one USB command past the host's
+30 s SCSI timeout; the host reset the device, and when the call returned TinyUSB panicked
+(ep 01 was already available).
+
+Every SMB context now gets smb2_set_timeout(5). When an HDS read/write or the keepalive fails,
+smb_lost() marks the connection down (a timed-out request's late reply would break the libsmb2
+context anyway) and asks the connect task to reconnect; it retries every 5 s until the HDS opens.
+Until then the HDS answers NOT READY (02/04/01) without touching SMB, and the host retries. The
+HDS I/O also takes remote_sem without waiting, so it never uses a context the connect task is
+tearing down. vd_unmount_smb lowers sysstatus before the (slow) disconnect, so the HDS never
+answers MEDIUM ERROR in between.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PrGdt1XK1exBgERrMmLA1u
+---
+ src/connect.c      | 47 +++++++++++++++++++++++++++++++++++++++-------
+ src/hdscache.c     | 16 ++++++++++++----
+ src/main.h         |  6 ++++++
+ src/smb2connect.c  |  8 ++++++++
+ src/virtual_disk.c | 36 +++++++++++++++++++++++++++++++----
+ 5 files changed, 98 insertions(+), 15 deletions(-)
+
+diff --git a/src/connect.c b/src/connect.c
+index fe73662..69eb57b 100644
+--- a/src/connect.c
++++ b/src/connect.c
+@@ -302,6 +302,10 @@ static int vd_mount(void)
+    (Charlie が PZL で見つけた)。SD カードの HDS とユニットはそのまま。つなぎ直したら vd_mount で開き直す */
+ static void vd_unmount_smb(void)
+ {
++    /* 先に状態を下げる (下の disconnect_smb2_all は SMB が止まっていると数秒かかる。その間に sfh だけが NULL で
++       sysstatus が STAT_CONFIGURED のままだと、USB タスクが MEDIUM ERROR を返していた) */
++    if (sysstatus > STAT_WIFI_CONNECTED)
++        sysstatus = STAT_WIFI_CONNECTED;
+     for (int i = 0; i < 8; i++)
+         if (rootpath[i] != NULL && !sdhds_is(rootpath[i]))
+             rootpath[i] = NULL;
+@@ -390,18 +394,31 @@ void connect_task(void *params)
+     NEXT_SET(UINT32_MAX);
+ 
+     while (1) {
+-        uint32_t nvalue;
+-
+-        xTaskNotifyWait(1, 0, &nvalue, portMAX_DELAY);
+-        if (!(nvalue & CONNECT_WAIT))
+-            continue;
++        uint32_t nvalue = 0;
++        int mode;
++
++        if (smb_down) {
++            /* smb_lost のあと: 通るまで 5 秒ごとにつなぎ直す (Wi-Fi が切れていれば Wi-Fi から) */
++            if (xTaskNotifyWait(1, 0, &nvalue, pdMS_TO_TICKS(5000)) != pdTRUE || !(nvalue & CONNECT_WAIT))
++                nvalue = CONNECT_WAIT | (cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA) == CYW43_LINK_UP ?
++                                         CONNECT_SMB2 : CONNECT_WIFI);
++        } else {
++            xTaskNotifyWait(1, 0, &nvalue, portMAX_DELAY);
++            if (!(nvalue & CONNECT_WAIT))
++                continue;
++        }
+         xSemaphoreTake(remote_sem, portMAX_DELAY);
+-        int mode = nvalue & CONNECT_MASK;
++        mode = nvalue & CONNECT_MASK;
+         if (mode == CONNECT_WIFI || mode == CONNECT_SMB2)
+             vd_unmount_smb();
+         connection(mode);
+         if ((mode == CONNECT_WIFI || mode == CONNECT_SMB2) && sysstatus >= STAT_SMB2_CONNECTED)
+             vd_mount();
++        if (smb_down && sysstatus >= STAT_CONFIGURED) {
++            smb_down = false;
++            printf("SMB reconnected\n");
++            msclog_mark("smb reconnected");
++        }
+         xSemaphoreGive(remote_sem);
+     }
+ }
+@@ -416,9 +433,25 @@ void connect_task(void *params)
+    keepalive は印を立てるだけにして、USB タスクが自分の番に keepalive_poll で行う */
+ static volatile bool keepalive_due;
+ 
++/* SMB の接続が切れた (または SMB_IO_TIMEOUT 秒答えが無かった) ときに、USB タスクから呼ぶ。libsmb2 は打ち切った要求の
++   遅れた答えを受けると接続ごと使えなくなるので、その接続はもう使わない: smb_down を立てて、USB タスクの HDS の読み書きは
++   SMB に触らずに NOT READY を返す (virtual_disk.c)。つなぎ直しは接続タスクが vd_unmount_smb → 接続 → vd_mount で行い、
++   開けたら smb_down を下ろす */
++volatile bool smb_down;
++
++void smb_lost(const char *why)
++{
++    if (smb_down)
++        return;
++    smb_down = true;
++    printf("SMB lost (%s), reconnecting\n", why);
++    msclog_mark("smb lost (%s)", why);
++    xTaskNotify(connect_th, CONNECT_SMB2 | CONNECT_WAIT, eSetBits);
++}
++
+ void keepalive_poll(void)
+ {
+-    if (!keepalive_due || sysstatus < STAT_SMB2_CONNECTED)
++    if (!keepalive_due || sysstatus < STAT_SMB2_CONNECTED || smb_down)
+         return;
+     if (xSemaphoreTake(remote_sem, 0) != pdTRUE)
+         return;                         /* 接続タスクが繋ぎにいっている: 次の周で */
+diff --git a/src/hdscache.c b/src/hdscache.c
+index 7ff6df8..3d1eb87 100644
+--- a/src/hdscache.c
++++ b/src/hdscache.c
+@@ -86,11 +86,15 @@ int hds_cache_read(struct smb2_context *smb2, struct smb2fh *sfh, uint32_t lba,
+             return -1;
+     } else {
+         uint64_t cur;
+-        if (smb2_lseek(smb2, sfh, lba * SECTOR_SIZE, SEEK_SET, &cur) < 0)
++        if (smb2_lseek(smb2, sfh, lba * SECTOR_SIZE, SEEK_SET, &cur) < 0) {
++            smb_lost("hds lseek");
+             return -1;
++        }
+         sz = smb2_read(smb2, sfh, c->data, DISK_CACHE_SIZE);
+-        if (sz < 0)
++        if (sz < 0) {
++            smb_lost("hds read");
+             return -1;
++        }
+     }
+     c->sfh = sfh;
+     c->smb2 = smb2;
+@@ -115,10 +119,14 @@ int hds_cache_write(struct smb2_context *smb2, struct smb2fh *sfh, uint32_t lba,
+     if (smb2 == NULL)
+         return sdhds_write(sfh, lba, buf, 1) < 0 ? -1 : 0;
+     uint64_t cur;
+-    if (smb2_lseek(smb2, sfh, lba * SECTOR_SIZE, SEEK_SET, &cur) < 0)
++    if (smb2_lseek(smb2, sfh, lba * SECTOR_SIZE, SEEK_SET, &cur) < 0) {
++        smb_lost("hds lseek");
+         return -1;
++    }
+     int sz = smb2_write(smb2, sfh, buf, SECTOR_SIZE);
+-    if (sz < 0)
++    if (sz < 0) {
++        smb_lost("hds write");
+         return -1;
++    }
+     return 0;
+ }
+diff --git a/src/main.h b/src/main.h
+index 896ad33..7534842 100644
+--- a/src/main.h
++++ b/src/main.h
+@@ -26,6 +26,7 @@
+ #ifndef _MAIN_H_
+ #define _MAIN_H_
+ 
++#include <stdbool.h>
+ #include "smb2.h"
+ #include "libsmb2.h"
+ #include "FreeRTOS.h"
+@@ -47,6 +48,11 @@ void keepalive_task(void *params);
+ 
+ void net_setup(void);
+ void keepalive_poll(void);
++/* SMB の 1 回の要求を待つ上限 (秒)。Z の Linux は USB の 1 命令を 30 秒で諦めてリセットするので、USB タスクの中の SMB は
++   これで打ち切り、読み書きは NOT READY にして出し直させる (smb_lost で裏でつなぎ直す) */
++#define SMB_IO_TIMEOUT  5
++extern volatile bool smb_down;
++void smb_lost(const char *why);
+ const char *net_hostname(void);
+ struct smb2_context *connect_smb2(const char *share);
+ void disconnect_smb2(struct smb2_context *smb2);
+diff --git a/src/smb2connect.c b/src/smb2connect.c
+index 2291ce6..5c01272 100644
+--- a/src/smb2connect.c
++++ b/src/smb2connect.c
+@@ -24,6 +24,7 @@
+  */
+ 
+ #include <stdint.h>
++#include <stdbool.h>
+ #include <stdlib.h>
+ #include <stdio.h>
+ #include <string.h>
+@@ -32,6 +33,7 @@
+ #include "libsmb2.h"
+ 
+ #include "config_file.h"
++#include "main.h"
+ 
+ //****************************************************************************
+ // Smb2 connection functions
+@@ -60,6 +62,7 @@ struct smb2_context *connect_smb2(const char *share)
+         return NULL;
+     }
+     printf("SMB2 connection established.\n");
++    smb2_set_timeout(smb2, SMB_IO_TIMEOUT);     /* 既定 (0) では答えが来るまで待ち続ける */
+ 
+     return smb2;
+ }
+@@ -199,11 +202,16 @@ void keepalive_smb2_all(void)
+ {
+     struct smb2share **s = &smb2share;
+     struct smb2_stat_64 st;
++    bool bad = false;
+     printf("Keepalive:");
+     while (*s != NULL) {
+         int r = smb2_stat((*s)->smb2, "", &st);
+         printf(" %s->%d", (*s)->share, r);
++        if (r < 0)
++            bad = true;
+         s = &(*s)->next;
+     }
+     printf("\n");
++    if (bad)
++        smb_lost("keepalive");
+ }
+diff --git a/src/virtual_disk.c b/src/virtual_disk.c
+index a8c1d03..243c37e 100644
+--- a/src/virtual_disk.c
++++ b/src/virtual_disk.c
+@@ -369,6 +369,26 @@ static int bw_hds0_read(void *ctx, uint32_t lba, uint8_t *buf)
+ }
+ #endif
+ 
++#if BOOTWAIT
++/* HDS の 1 セクタの読み書き。SMB の上の HDS は、接続が切れている間 (smb_down) と接続タスクがつなぎ直している間
++   (remote_sem) は SMB に触らずに NOT READY を返す (msc_disk.c が呼び直し、Z の Linux が出し直す)。SMB の要求が失敗
++   したとき (SMB_IO_TIMEOUT 秒の打ち切りを含む) も、hdscache.c が smb_lost を呼ぶので NOT READY。SD カードの HDS の
++   失敗は今までどおり MEDIUM ERROR */
++static int hds_io(int id, uint32_t lba, uint8_t *buf, bool write)
++{
++    struct smb2_context *smb2 = diskinfo[id].smb2;
++    int r;
++    if (smb2 != NULL && (smb_down || xSemaphoreTake(remote_sem, 0) != pdTRUE))
++        return VD_NOTREADY;
++    r = write ? hds_cache_write(smb2, diskinfo[id].sfh, lba, buf) : hds_cache_read(smb2, diskinfo[id].sfh, lba, buf);
++    if (smb2 != NULL)
++        xSemaphoreGive(remote_sem);
++    if (r < 0)
++        return smb2 != NULL && smb_down ? VD_NOTREADY : VD_IOERR;
++    return 0;
++}
++#endif
++
+ int vd_read_block(uint32_t lba, uint8_t *buf)
+ {
+     memset(buf, 0, 512);
+@@ -501,7 +521,7 @@ int vd_read_block(uint32_t lba, uint8_t *buf)
+                 return bw_disk_read(lba, buf);
+             }
+ #endif
+-            return sysstatus >= STAT_CONFIGURED ? VD_IOERR : VD_NOTREADY;
++            return sysstatus >= STAT_CONFIGURED && !smb_down ? VD_IOERR : VD_NOTREADY;   /* smb_down: つなぎ直しの途中 */
+         }
+         if (diskinfo[id].type == DTYPE_REMOTEBOOT)
+             vd_sync();
+@@ -518,9 +538,13 @@ int vd_read_block(uint32_t lba, uint8_t *buf)
+             if (lba == 0x20 || lba == 0x21) {
+                 lba -= 0x20 - 2;
+             }
++#if BOOTWAIT
++            return hds_io(id, lba, buf, false);
++#else
+             if (hds_cache_read(diskinfo[id].smb2, diskinfo[id].sfh, lba, buf) < 0)
+-                return BOOTWAIT ? VD_IOERR : -1;
++                return -1;
+             return 0;
++#endif
+         }
+ 
+         if (diskinfo[id].type == DTYPE_REMOTEBOOT ||
+@@ -693,7 +717,7 @@ int vd_write_block(uint32_t lba, uint8_t *buf)
+ 
+ #if BOOTWAIT
+         if (diskinfo[id].type == DTYPE_HDS && diskinfo[id].sfh == NULL)
+-            return sysstatus >= STAT_CONFIGURED ? VD_IOERR : VD_NOTREADY;
++            return sysstatus >= STAT_CONFIGURED && !smb_down ? VD_IOERR : VD_NOTREADY;   /* smb_down: つなぎ直しの途中 */
+         if (diskinfo[id].type == DTYPE_REMOTECOMM && lba >= NETPIPE_WLBA && lba < NETPIPE_WLBA + 8)
+             return netpipe_write(lba, buf);     /* netpipe は SMB の接続を待たない */
+         if (diskinfo[id].type != DTYPE_REMOTECOMM)
+@@ -703,9 +727,13 @@ int vd_write_block(uint32_t lba, uint8_t *buf)
+ #endif
+ 
+         if (diskinfo[id].type == DTYPE_HDS && diskinfo[id].sfh != NULL) {
++#if BOOTWAIT
++            return hds_io(id, lba, buf, true);
++#else
+             if (hds_cache_write(diskinfo[id].smb2, diskinfo[id].sfh, lba, buf) < 0)
+-                return BOOTWAIT ? VD_IOERR : -1;
++                return -1;
+             return 0;
++#endif
+         }
+         if (diskinfo[id].type == DTYPE_REMOTECOMM) {
+             if (lba >= NETPIPE_WLBA && lba < NETPIPE_WLBA + 8) {
+-- 
+2.54.0 (Apple Git-157)
+
