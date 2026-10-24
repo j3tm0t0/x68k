@@ -21,7 +21,7 @@ FAST=1 FAST_C=1 ./build.sh   # asm 無しの C 版だけ (22s)。mul68k.s 不要
 FAST=1 CHACHA68K=0 ./build.sh  # 通信路の暗号を libtomcrypt のままにする (CHACHA68K の既定は FAST と同じ)
 FAST=1 CHACHA68K_C=1 ./build.sh  # chacha68k の C 版だけ (asm 無し)
 ./build.sh /path/ssh.x  # 出力先を指定
-DEBUG=1 FAST=1 ./build.sh /path/dbg.x   # 位相ごとの印 (経過秒付き) をテキスト画面に出す版
+DEBUG=1 FAST=1 ./build.sh /path/dbg.x   # 位相ごとの区間 (経過秒付き) をテキスト画面に出す版
 ZTERM=1 FAST=1 ./build.sh    # -Z (zterm: リモートのヘルパが画面を持ち、変わったセルだけ受け取る) が使える版
 ZTERM=1 FAST=1 ACCEL=1 ACCELDIR=../../../../x68k-accel/net/accel ./build.sh   # + 暗号を Pico W に (-oAccel=...)
 ```
@@ -67,7 +67,7 @@ sshd (例 ~/sshtest の :2222) が要る。
   そのチャネルのコンソールの `vt_write` / 送信待ち (キー・DSR の応答) / zterm、VT 無効なら素の write / read。
   空のときは -1/EINTR (0 や EAGAIN は EOF 扱いされる)。
 - `ioctl(TIOCGWINSZ)`: `vt_get_size` (96x32) を返す (pty 要求のウィンドウサイズ)。
-- `x68dbg()`: 位相ごとの印。`DEBUG=1` ビルドでのみ「[ 12.34] 印」(IOCS _ONTIME の経過秒) を
+- `x68dbg()`: 位相ごとの区間。`DEBUG=1` ビルドでのみ「[ 12.34] 区間」(IOCS _ONTIME の経過秒) を
   IOCS _B_PRINT でテキスト画面に出す (rcmd の redirect を迂回し、contee.sys 経由で Pi の
   /tmp/x68con.log に残る)。dropbear の `-v` は Z でバスエラーになるので使わない。
 - `getaddrinfo`/`freeaddrinfo` を**数値 IP 専用**に上書き (libsocket 版は
@@ -108,7 +108,7 @@ sshd (例 ~/sshtest の :2222) が要る。
   (素の dbclient はサーバが切るまで聞き直す)。2 回目までは "Permission denied, please try again."。
 - `cli-authinteract.c` : エコー付きのプロンプト (`get_response`) も /dev/tty ではなく `x68k_readpass` (エコー付き) で読む。
 - `common-kex.c` / `cli-kex.c` / `cli-auth.c` / `cli-authpubkey.c` / `cli-chansession.c` /
-  `cli-session.c` : 位相の印 `x68dbg("...")` (既定ビルドでは no-op)。
+  `cli-session.c` : 位相ごとの区間 `x68dbg("...")` (既定ビルドでは no-op)。
 
 ## パスワード認証
 

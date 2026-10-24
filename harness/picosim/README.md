@@ -95,7 +95,7 @@ make -C driver bootwait1.bin bootwait.bin hdsboot.bin settingui.bin scsiremote.b
 | `-P` | | 古いドライバ (bit 7 無し) にも vdbuf のページを LBA から決める (試し。下記)。新しいドライバには付けなくても LBA から |
 | `-K file` | | 設定画面の設定 (config_data) を保存するファイル (FLASHCONFIG で書き、起動時に読む) |
 | `-c MB` `-r KB` | 64, 16 | Z の Linux の読み込みキャッシュの大きさ (0 で無し) / 先読み (4KB ページ単位) |
-| `-d µs` | 0 | 命令ごとの遅れ (USB の往復の真似。メールボックスの道では Z の CPU は待ちの間も動く。SPC の道では XEiJ ごと止まる) |
+| `-d µs` | 0 | 命令ごとの遅れ (USB の往復の真似。メールボックスの経路では Z の CPU は待ちの間も動く。SPC の経路では XEiJ ごと止まる) |
 | `-a 倍率` | 1 | アクセラレータの所要時間 (RP2040 の見積り: X25519 100ms / verify 170ms / sign 50ms) の倍率。0 ですぐ |
 | `-p lan.pcap` | | LAN を流れた Ethernet フレームを pcap に (`tcpdump -nn -r`) |
 | `-s 秒` `-v` | | 統計を定期的に (`kill -USR1` でも) / `-vv` で命令ごと、`-vvv` でフレームごとの記録 |
@@ -136,11 +136,11 @@ IMG=build/picosim.hds XEIJ_JAVA_OPTS="-Dpicosim=127.0.0.1:6868 -Dpicosim.ids=0,6
 
 `-R DIR` で Mac のディレクトリを Z の B: (と続くドライブ) にする。ファームと同じく、ID 6 の分割表 (LBA 4) に
 "Human68k" を数だけ並べ、SCSI のドライバ (LBA 6〜、`-F` の scsiremote.bin) を渡す。Human68k が起動時に組み込み、
-vdbuf ("X68Z" を LBA 0x20 に書き、応答を 0x200000〜0x3fffff の帯から 8 ページずつ下へ読む) で要求してくる。
+vdbuf ("X68Z" を LBA 0x20 に書き、応答を 0x200000〜0x3fffff の範囲から 8 ページずつ下へ読む) で要求してくる。
 要求はフォークの x68kserremote (サブモジュール) の `service/remoteserv.c` に渡す。これは写さず、ビルド時にそこから
 コンパイルする (`make RS=.../x68kserremote`、ファイル操作は同じ所の POSIX の fileop.h)。設定はファームの
 include/config.h と同じ値 (`remote/config.h`: 1 回の READ / WRITE は 15KB、FILES は 10 件)。
-`-vv` で要求ごとに記録する (`B: READ fcb=... pos=... len=... -> 返した長さ`)。`-vvv` で、Z が帯のどの LBA の
+`-vv` で要求ごとに記録する (`B: READ fcb=... pos=... len=... -> 返した長さ`)。`-vvv` で、Z が範囲のどの LBA の
 どのページを Pico から / キャッシュから受け取ったかも記録する。
 
 **見つけた不具合 (2026-10-23)**: Z の実機で、ある ssh.x を B: から起動すると _EXEC の中で落ちた (同じファイルが A: からは
@@ -181,7 +181,7 @@ bit 7 の無い古いドライバには今までどおり数える。picosim も
 
 XEiJ のソースは変えず、Java エージェントの中で XEiJ の public なものを 2 か所差し替えるだけ。
 
-1. **SPC の道**: `SPC.SCUnit` の子 `PicoUnit` (package `xeij`、エージェントの jar に入れる。XEiJ.jar は封印されていない) を
+1. **SPC の経路**: `SPC.SCUnit` の子 `PicoUnit` (package `xeij`、エージェントの jar に入れる。XEiJ.jar は封印されていない) を
    `SPC.spcUnitArray[id]` に入れる。`scuCommand` を丸ごと上書きし、CDB を picosim に渡して、答えのデータを
    `spiDataInPhase` / 状態を `spiStatusPhase` で返す。書き込みは `spiDataOutPhase(buf, 0, n×512, 1)` で全部受け取ってから
    1 回で渡す。`spcReset` は配列の中身の `scuReset` を呼ぶだけなので、リセット後も残る。差し替えは XEiJ のフレームが
@@ -193,8 +193,8 @@ XEiJ のソースは変えず、Java エージェントの中で XEiJ の public
    書いてから bit7 を落とす (`VarHandle.releaseFence`)。Z と同じく、待っている間も MPU は動く (npd.x は `_CHANGE_PR` で譲る)。
    `spcReset` がリセットのたびにこのページを `MMD_NUL` に戻すので、見張りのスレッドが付け直す。
 
-SPC の模倣はデータアウトの後に必ず GOOD にするので、SPC の道では **書き込みの失敗を Z に伝えられない** (picosim は
-帯の外の書き込みもファームと同じく成功扱いにするので、今は困らない)。
+SPC の模倣はデータアウトの後に必ず GOOD にするので、SPC の経路では **書き込みの失敗を Z に伝えられない** (picosim は
+範囲外の書き込みもファームと同じく成功扱いにするので、今は困らない)。
 
 ## 形式 (XEiJ ⇄ picosim、TCP、ビッグエンディアン)
 
@@ -223,7 +223,7 @@ INQUIRY / READ CAPACITY / TEST UNIT READY / REQUEST SENSE / MODE SENSE も含め
 - **暗号アクセラレータ** (0xA5): `net/accel/accel_ops.c` + Monocypher をそのままリンク。ファームの accel.c と同じく、
   計算中の別の要求は BUSY、同じ要求の出し直しは前の結果。結果は見積りの時間が経ってから次の交換で返す
 - **Z の Linux の読み込みキャッシュ**: 読んだ (ID, LBA) を覚え、二度目は Pico に聞かずに前の中身を返す。外れたら
-  4KB ページから 16KB 先読みする (Z で見えた振る舞い)。npd.x が応答帯を毎回違う所 (8 セクタずつ下へ、古い応答なら
+  4KB ページから 16KB 先読みする (Z で見えた振る舞い)。npd.x が応答の範囲を毎回違う所 (8 セクタずつ下へ、古い応答なら
   疑似乱数で飛ぶ) で読む理由がそのまま再現される。書き込みは素通しでキャッシュにも入る。電源断 = picosim の再起動
 - **LAN** (`lan_slirp.c`): ファームの代理 ARP と同じく、Z の IP 宛ての ARP に Z の (架空の) MAC で答え、Z 宛ての IPv4 を
   netpipe に渡す。Z からの IP は Ethernet に包んで slirp へ。最初の交換で Z の IP を知ったら -L の転送を張る
@@ -254,7 +254,7 @@ XEiJ + picosim で試した (2026-10-23、`drive.x` で確かめた):
 
 | やり方 | 結果 |
 |---|---|
-| **ファーム: リモートドライブの顔をデータの HDS より小さい ID に** (`-Q 1 -H 2:data.hds`、運ぶ道は ID 6 のまま) | **A: = ID 0、B: = リモートドライブ、C: = データの HDS**。Z 側は何も変えない。netpipe (npd.x) も動く |
+| **ファーム: リモートドライブの署名・分割表・scsiremote.sys をデータの HDS より小さい ID に** (`-Q 1 -H 2:data.hds`、運ぶ経路は ID 6 のまま) | **A: = ID 0、B: = リモートドライブ、C: = データの HDS**。Z 側は何も変えない。netpipe (npd.x) も動く |
 | Z: AUTOEXEC.BAT で SUBST を 4 行 (`SUBST X: B:\` / `SUBST B: C:\` / `SUBST C: X:\` / `SUBST /D X:`) | B: でリモートドライブ、C: でデータの HDS (書き込みも)。`subst /l` は `B: > C:\`、`C: > B:\`。`drive.x` などの物理のドライブを見る道具は元の順のまま |
 | データの HDS を起動の走査の間だけ NOT READY (`:after-remote`) にし、あとで組み込む | 走査では B: = リモートドライブになり、データの HDS はドライブにならない。CONFIG.SYS の最後に SCSI のディスクドライバ (FORMAT.X の SCHDISK を DEVICE= で) を置いても **組み込まれない** (ドライブが増えず、ID 1 を読みにも来ない。SCHDISK は IPL から呼ばれる前提)。Human68k 3.02 にはあとから SCSI ディスクを組み込む道具が無い (SUSIE.X など外の道具は試していない) |
 
@@ -318,7 +318,7 @@ netpipe など (最初の日):
   メールボックスで交換を始めた (`netpipe: bridge 192.168.1.68 (records)`)
 - rcmd: Mac → 127.0.0.1:23268 → slirp → picosim → メールボックス → npd.x → xip.x → rcmd.x → zsh。
   `x68 'echo hello from Z'` が rc=0 (zsh のコールド起動込みで 15 秒)
-- ping: `ping.x -c 4 192.168.1.1` → 4/4、70〜130ms (npd.x の問い合わせ間隔 60ms が効く)
+- ping: `ping.x -c 4 192.168.1.1` → 4/4、70〜130ms (npd.x の問い合わせ間隔 60ms が有効)
 - アクセラレータ: Z の上の `acceltest.x` (RFC 7748 / 8032) が 17/17 OK (0xA5 が picosim の accel_ops で往復)
 - ssh: リリースの `ssh.x -y -oAccel=all+log -l nobody 192.168.1.1` が Mac の OpenSSH と鍵交換・ホスト鍵の検証まで
   (X25519 と ed25519 verify は picosim で)、`No auth methods could be used` で終わる (鍵を置いていないので期待どおり)
@@ -342,7 +342,7 @@ netpipe など (最初の日):
 - SPC の道の書き込みの失敗は Z に伝わらない。メールボックスは READ(10)/WRITE(10) だけ
 - ファームの起動ローダ (LBA 2 の bootloader、remoteboot) は無い。
   NOT READY の前のファームの 5 秒の保留 (TinyUSB に呼び直させる) は真似ていない (XEiJ の ROM はすぐ NOT READY を見る)。
-  Wi-Fi / SMB は時間で進むだけで、設定画面で変えた SSID などは効かない (HDS0 のパスだけ効く)
+  Wi-Fi / SMB は時間で進むだけで、設定画面で変えた SSID などは有効にならない (HDS0 のパスだけ有効)
 - XEiJ の ROM の起動は Z の Linux の起動と違う (Z は Linux が USB の HDS を読んでから X68000 の ROM が動く)。
   picosim の Z キャッシュの先読みでそれらしくしているだけ
 - LAN は slirp の NAT。外 (インターネットや家の LAN) にも出られるので、試験はゲートウェイ (Mac) 宛てに留める。
