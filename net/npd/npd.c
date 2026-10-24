@@ -37,6 +37,7 @@ static void *etd;                       /* npd.sys の ETD 入口 */
 static void *tis;                       /* tis.x -p の入口 (交換のたびに npd.sys から取り直す)、0 = 居ない */
 static int tsp_more;                    /* Pico の TSP 応答に続きがある */
 static void *zss;                       /* zos.x の 0xA7 の入口 (交換のたびに取り直す)、0 = 居ない */
+static int share_tsp;                   /* TSP と 0xA7 がどちらも急ぐとき、この交換は TSP に場所を (1) / 半分ずつ (0)。交互に替える */
 
 /* zos.x (常駐しない、ふつうのプログラム) の入口を呼んでよいか: 入口の前に "ZSSE" があり、それを含むメモリのブロックが
    まだ確保されている (Human68k のメモリ管理の鎖 [$1C20] から +$0C でたどり、+0 の次 〜 +8 の終わりの中)。zos.x が
@@ -45,11 +46,11 @@ static void *zss_check(void *e)
 {
   uint8_t *a = e, *m;
   int k;
-  if (!e || e == (void *)-1 || ((uint32_t)a & 1) || *(uint32_t *)(a - 4) != 0x5a535345)   /* "ZSSE" */
+  if (!e || e == (void *)-1 || ((uint32_t)a & 1))
     return 0;
-  for (m = *(uint8_t **)0x1c20, k = 0; m && k < 4096; m = *(uint8_t **)(m + 12), k++)
-    if (a >= m + 16 && a < *(uint8_t **)(m + 8))
-      return e;
+  for (m = *(uint8_t **)0x1c20, k = 0; m && k < 4096; m = *(uint8_t **)(m + 12), k++)   /* 先に鎖を見てから "ZSSE" を読む */
+    if (a >= m + 16 + 4 && a < *(uint8_t **)(m + 8))
+      return *(uint32_t *)(a - 4) == 0x5a535345 ? e : 0;
   return 0;
 }
 /* 動作確認用のカウンタ (メモリダンプで "SLPDSTAT" の後ろを読む) */
@@ -367,10 +368,18 @@ static void zthread(void)
     }
     last = now;
     if (tis && n + 2 + TSP_HDR <= ZDATA) {
-      /* 0xA7 も載せるときは場所を分ける: 0xA7 が急ぐなら TSP は残りの半分まで、急がないなら 0xA7 の見出しの分を残す
-         (Pico は 0xA7 の要求が来た交換でだけ 0xA7 に答えるので、毎回見出しだけでも載せる) */
+      /* 0xA7 も載せるときは場所を分ける。Pico は 0xA7 の要求が来た交換でだけ 0xA7 に答えるので、0xA7 には少なくとも見出しの
+         分を残す。どちらも急ぐときは交互に: TSP に (見出しの分を除いて) 全部 / 半分ずつ。tis.x も zos.x も、答えの来ない要求は
+         同じ長さで送り直すので、半分にし続けると大きい要求が二度と載らない (tis.x は 3 秒で TSP をあきらめる)。
+         0xA7 の新しい要求は半分までにするので (下)、0xA7 の送り直しは半分ずつの交換で必ず載る */
       long tmax = ZDATA - n - 2;
-      if (zss) tmax = zurg ? (ZDATA - n) / 2 - 2 : tmax - (2 + ZSS_HDR + 2);
+      if (zss) {
+        tmax -= 2 + ZSS_HDR + 2;
+        if (zurg && turg) {
+          if (!share_tsp) tmax = (ZDATA - n) / 2 - 2;
+          share_tsp = !share_tsp;
+        } else if (zurg) tmax = (ZDATA - n) / 2 - 2;
+      }
       /* TSP レコード [長さ 2][要求][詰め物] を IP / アクセラレータのレコードの後ろに。tis.x は交換のたびに 1 個
          (送るものが無くても見出しだけ) 返す。前の交換の応答が来ていなければ同じ要求をもう一度 */
       long a[3], m;
@@ -387,10 +396,12 @@ static void zthread(void)
       }
     }
     if (zss && n + 2 + ZSS_HDR <= ZDATA) {
-      /* 0xA7 のレコードも同じ形で後ろに (zos.x は交換のたびに 1 個、送るものが無くても見出しだけ返す) */
+      /* 0xA7 のレコードも同じ形で後ろに (zos.x は交換のたびに 1 個、送るものが無くても見出しだけ返す)。新しい要求は ZDATA の
+         半分まで (送り直しが半分ずつの交換で必ず載るように) */
       long a[3], m;
       a[0] = (long)(zreq + 16 + n + 2);
       a[1] = ZDATA - n - 2;
+      if (a[1] > ZDATA / 2) a[1] = ZDATA / 2;
       a[2] = 0;
       m = call_etd(zss, ZSS_NP_OUT, a);
       if (m > 0) {
