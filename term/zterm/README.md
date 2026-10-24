@@ -164,7 +164,7 @@ python3 ../../vt100/tests/vram2png.py out.bin out.png
 | jp_less | 1.35 s | 0.63 s | 2.1x |
 | app_top / top / vim / app_vimjp | | | 1.1-1.2x |
 
-  vt100.c の解析は既に速く、残りは VRAM への描画そのもの。zterm の効き目はこの表 (同じ区切り) より、実際の接続での
+  vt100.c の解析は既に速く、残りは VRAM への描画そのもの。zterm がもたらす効果は、この表 (同じ区切り) より実際の接続での
   間引き (Z が遅いほど間の画面を飛ばす) と受信バイト数の減少 (= 68000 での復号の時間) の方が大きい。
 
 ## ヘルパの大きさ (opt-level=z, LTO, strip, panic=abort。musl は静的)
@@ -206,7 +206,7 @@ musl-gcc は要らない)。`rustup target add aarch64-unknown-linux-musl x86_64
 - **時間**: 転送 257 KB に約 3 分 (ACCEL ありで接続から終了まで 3 分 20 秒)、キャッシュありは ACCEL で 19 秒、なしで 78 秒。
   律速は Z の chacha20-poly1305 で **約 1.5 KB/s** (net/ssh/crypttest。TCP の送信だけなら 4096 ずつで 9〜11 KB/s)。
   受信も同じ速さでしか復号できないので、素の VT の Claude Code (4.4 KB/s) は Z では実時間に復号しきれない。zterm の
-  1 KB/s 前後に減らすことがそのまま効く。転送を縮める (xz・ヘルパの小型化) と暗号の 68000 向け高速化 (poly1305 の
+  1 KB/s 前後に減らすことがそのまま有効。転送を縮める (xz・ヘルパの小型化) と暗号の 68000 向け高速化 (poly1305 の
   64 ビット乗算) が次の課題。
 
 ### 全部入り (zterm + ssh の vt100 高速化 + chacha68k + ACCEL、2026-10-22)
@@ -275,4 +275,4 @@ B:/home/.ssh/known_hosts    既存 (-y を付けない)
 10. 異常系: リモートの zterm を `pkill zterm` → BYE が来ずにチャネルが閉じる → 画面を戻して終わるか。
 
 気をつけること: rcmd の環境ブロックは満杯なので ZTERMDIR は設定できない (既定 B:/zterm に置く)。
-`-v` は使わない (Z でバスエラー)。DEBUG=1 のビルドなら位相の印に zterm の段階も出る。
+`-v` は使わない (Z でバスエラー)。DEBUG=1 のビルドなら位相の区間に zterm の段階も出る。

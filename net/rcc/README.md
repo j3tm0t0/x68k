@@ -37,7 +37,7 @@ rcc.x -c a.c b.c                           (a.o と b.o が今のディレクト
 - 送るもの: 入力 (`.c` `.cc` `.cpp` `.s` `.o` `.a`)、`-include` のファイル、今のディレクトリ・ソースのディレクトリ・`-I` のディレクトリの `*.h`
 - メッセージのファイル名と行番号は Z で書いたとおり (`A:\SUB\E.C:1: ...`)。失敗したら出力のファイルを作らない。終了コードはコンパイラのもの
 - 大文字の `.C` は C として扱う (Human68k の名前は大文字になる。gcc は `.C` を C++ と見る)
-- つながらない (RCC_HOST が無い・相手が居ない) ときは `rcc: no compile server, compiling here`、途中で切れたときは
+- `RCC_HOST` が無いときは何も言わずに Z の gcc で。相手が居ないときは `rcc: no compile server, compiling here`、途中で切れたときは
   `rcc: lost the compile server while sending (receiving), compiling here` と出して、
   環境変数 `RCC_LOCAL` (既定 `gcc.x %s -lgcc2`。`%s` に引数が入る) を `system()` で動かす。`RCC_LOCAL` を空にすると 255 で終わる
 - `-c` でできる `.o` は ELF (elf2x68k の形式) で、Z の HLK.X ではリンクできない。リンクも rcc.x で行う。

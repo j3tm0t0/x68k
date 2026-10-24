@@ -35,7 +35,7 @@ X25519 scalarmult 1 回:
 
 固定基点 comb (`comb.h` + `basetable.h`): Ed25519 の `scalarbase` を ref10 式の符号付き 4bit 窓 ×64 と
 B の倍数の事前計算表 (32×8 点、~25KB) で、mixed-add 64 回 + 倍加 4 回に (元は倍加 256 + 加算 256)。
-sign/verify の [k]B に効く。表は `gen_basetable.py` で生成。verify の可変基点 [h]A は 4bit 窓 + 速い倍加 (ge_dbl=4M+4S) の `scalarmult_fast` で ~1.7 倍 (comb.h)。
+sign/verify の [k]B で有効。表は `gen_basetable.py` で生成。verify の可変基点 [h]A は 4bit 窓 + 速い倍加 (ge_dbl=4M+4S) の `scalarmult_fast` で ~1.7 倍 (comb.h)。
 
 ## 残りの最適化 (未実装)
 - **comba のアキュムレート最適化**: M を 10MHz で ~5〜6 s へ。

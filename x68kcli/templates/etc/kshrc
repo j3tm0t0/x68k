@@ -24,7 +24,7 @@ alias awk='gawk.x'
 alias h='history'
 # gcc = rcc.x (RCC_HOST の elf2x68k の gcc でコンパイル。つながらなければ Z の gcc.x "$@" -lgcc2)、Z だけなら gcc.x ... -lgcc2、
 # gcc295 = GCC 2.95.2 (68020 以上専用、Z では SIGBUS)、cc = XC 2.1
-export RCC_HOST=raspi5
+# export RCC_HOST=192.168.1.10   (コンパイルを任せる機械。無ければ黙って Z の gcc.x)
 gcc() { rcc.x "$@"; }
 gcc295() { A:/usr/gcc295/gcc.x -IA:/usr/gcc295/include "$@"; }
 cc() { include=A:/xc/include lib=A:/xc/lib A:/xc/cc/cc.x "$@"; }

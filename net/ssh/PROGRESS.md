@@ -95,7 +95,7 @@ Pi 側 `journalctl -u ssh`: `Accepted publickey for moto from 192.168.1.68 port 
 
 ## 位相別の所要時間 (DEBUG=1 ビルド、sshd:22、IOCS _ONTIME による Z 側実測)
 
-| 位相 | 区間 (印) | 秒 |
+| 位相 | 区間 (開始 → 終了) | 秒 |
 |---|---|---|
 | 起動 (乱数種・crypto_init・鍵ファイル読み込み・引数解析) | main → getopts-done | 0.6 |
 | TCP connect | connect-start → connected | 0.2 |
@@ -123,7 +123,7 @@ Pi 側 `journalctl -u ssh`: `Accepted publickey for moto from 192.168.1.68 port 
    → `setnonblocking` はソケット以外 (fd < 128) では何もしない (patches/dbutil.c.patch)。
    併せて `select` シムで非ソケット fd を「書き込みは常に可、読み込みは不可」に
    (x68k_shim.c)。libsocket の `poll` に fd 0〜2 を渡さない。
-3. **位相の印に経過秒を付けた** (`DEBUG=1 ./build.sh`、`x68dbg()`、IOCS _ONTIME)。dropbear の
+3. **位相ごとの区間に経過秒を付けた** (`DEBUG=1 ./build.sh`、`x68dbg()`、IOCS _ONTIME)。dropbear の
    `-v` (TRACE) は Z でバスエラーになった (原因未確認、`%f` 書式の疑い) ので使わない。
 
 ## 環境メモ

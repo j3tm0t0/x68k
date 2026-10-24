@@ -268,7 +268,8 @@ static int local(int argc, char **argv, const char *why)
   for (int i = 1; i < argc && n < (int)sizeof a - 2; i++)
     n += snprintf(a + n, sizeof a - n, "%s%s", i > 1 ? " " : "", argv[i]);
   snprintf(cmd, sizeof cmd, fmt, a);
-  fprintf(stderr, "rcc: %s, compiling here\n", why);
+  if (why)
+    fprintf(stderr, "rcc: %s, compiling here\n", why);
   for (int i = 1; i < argc; i++)
     if (is_elf(argv[i]))
       fprintf(stderr, "rcc: %s was made by the compile server (ELF); HLK can't link it, rebuild it here\n", argv[i]);
@@ -303,6 +304,8 @@ int main(int argc, char **argv)
   }
   add_headers("", 0);
 
+  if (!getenv("RCC_HOST") || !*getenv("RCC_HOST"))
+    return local(argc, argv, NULL);    /* 受け手を決めていない: 黙って Z の gcc で */
   if (dial() < 0)
     return local(argc, argv, "no compile server");
   if (!getcwd(cwd, sizeof cwd))
