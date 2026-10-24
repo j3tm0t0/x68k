@@ -60,7 +60,7 @@ POLL=${POLL:-1}
 [ "$POLL" = 1 ] && { heaplog & hp=$!; }
 
 # ケースの前後: UART と dmesg の位置を覚え、あとで PANIC と USB の切断を探す
-begin() { case_name=$1; u0=$(wc -l < $UART); k0=$(sudo dmesg | wc -l); t_case=$(date +%s); resets=()
+begin() { case_name=$1; u0=$(wc -l < $UART); t_case=$(date +%s); resets=()
   usbwatch & uw=$!; }
 mark_reset() { resets+=($(date +%s)); }
 finish() {   # $1 = そのケースの道具の結果 (OK / 説明)
@@ -68,7 +68,8 @@ finish() {   # $1 = そのケースの道具の結果 (OK / 説明)
   kill $uw 2>/dev/null; uw=
   [ -s "$out/usbdrop.$case_name" ] && why+=("USB dropped ($(head -1 "$out/usbdrop.$case_name"))")
   tail -n +$((u0 + 1)) $UART > "$out/$case_name.uart"
-  sudo dmesg | tail -n +$((k0 + 1)) > "$out/$case_name.dmesg"
+  # dmesg は drop_caches の行であふれるので、時刻で切れる journalctl -k から (drop_caches の行は捨てる)
+  sudo journalctl -k --since "@$t_case" -o short-precise --no-pager 2>/dev/null | grep -v drop_caches > "$out/$case_name.dmesg"
   grep -aiq "out of memory\|panic\|hardfault\|assert" "$out/$case_name.uart" && why+=("$(grep -aim1 'out of memory\|panic\|hardfault\|assert' "$out/$case_name.uart" | cut -c1-80)")
   # USB の切断: 自分でリセットした直後 (20 秒) 以外
   local disc; disc=$(grep -c "usb 1-1.3: USB disconnect" "$out/$case_name.dmesg")
@@ -77,6 +78,9 @@ finish() {   # $1 = そのケースの道具の結果 (OK / 説明)
   grep -q "unable to enumerate" "$out/$case_name.dmesg" && why+=("hub gave up on the port (re-enabled)")
   usb_up || { why+=("USB gone at the end"); recover; }
   [ "$res" != OK ] && why+=("$res")
+  # Linux の SCSI の時間切れ (30 秒) で機器をリセットした回数 (失敗ではないが、30 秒を超えて返事が止まったことを示す)
+  local rst; rst=$(grep -c "reset full-speed USB device" "$out/$case_name.dmesg")
+  [ "$rst" -gt 0 ] && say "  $case_name: Linux reset the device $rst time(s) ($(grep -m1 'reset full-speed' "$out/$case_name.dmesg" | cut -c8-22))"
   if [ ${#why[@]} -eq 0 ]; then say "PASS $case_name"; else say "FAIL $case_name: $(IFS='; '; echo "${why[*]}")"; fails=$((fails + 1)); fi
 }
 zfat_res() {   # zfat.py のログ → OK / 説明 ($2 = EIO を許す)
