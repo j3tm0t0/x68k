@@ -23,10 +23,12 @@ function saver {
 }
 alias h='history'
 alias dir='ls -alF'
-# C コンパイラ: gcc = 真里子版 1.42 (そのまま gcc.x), gcc295 = GCC 2.95.2, cc = XC 2.1 (純正)
+# C コンパイラ: gcc = rcc.x の前置き (下), gcc.x = 真里子版 1.42, gcc295 = GCC 2.95.2, cc = XC 2.1 (純正)
 #   gcc295 は 68020 以上専用 (X68030 / XEiJ の X68030 モード)。X68000 (Z) では SIGBUS で落ちる
+# gcc は rcc.x (RCC_HOST の elf2x68k の gcc でコンパイル。つながらなければ Z の gcc.x "$@" -lgcc2)。Z だけなら gcc.x ... -lgcc2
+# export RCC_HOST=192.168.1.10   (コンパイルを任せる機械。無ければ黙って Z の gcc.x)
 function gcc {
-  gcc.x "$@" -lgcc2
+  rcc.x "$@"
 }
 #   (zsh 2.5 X68k 版は `VAR=値 コマンド` の一時代入が親シェルに残るバグがあるので、明示的に戻す)
 function gcc295 {
