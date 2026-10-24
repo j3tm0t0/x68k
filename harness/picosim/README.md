@@ -299,6 +299,7 @@ x68k-zos の Z で sshd (issue #21) の Pico 側 (zsshd) の代わり。既定�
 |---|---|---|
 | `ZSS_PORT` | 2322 | 待ち受ける口 (127.0.0.1) |
 | `ZSS_CREDIT` | 4096 | CREDIT (Z が送ってよい出力の量、絶対値。本物の Pico の上限と同じ) |
+| `ZSS_CREDIT_HOLD` | 0 | CREDIT を出し直すまでの最短の間 (ms)。試験用: Z の出力を溜めさせて、大きい 0xA7 の要求を作らせる |
 
 - 接続 = `T_E_OPEN` (80x24、user "test"、TERM "xterm"、UTF-8)。受けたバイト = `T_E_INPUT` (Z の ACCEPT / WINDOW の範囲で)。
   `T_C_OUTPUT` は接続に書く。切れたら `T_E_CLOSED "disconnected"`。`T_C_EXIT` で "[exit N]" を書いて閉じ、`T_E_CLOSED "exit"`。

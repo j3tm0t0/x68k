@@ -37,6 +37,9 @@ static void *etd;                       /* npd.sys の ETD 入口 */
 static void *tis;                       /* tis.x -p の入口 (交換のたびに npd.sys から取り直す)、0 = 居ない */
 static int tsp_more;                    /* Pico の TSP 応答に続きがある */
 static void *zss;                       /* zos.x の 0xA7 の入口 (交換のたびに取り直す)、0 = 居ない */
+/* 0xA7 の新しい要求の上限: 半分ずつの交換で TSP が使う残り ((ZDATA - n) / 2 - 2、n = 0) のあとに残る場所と同じ。
+   これより大きい要求は、答えが来なかったときの送り直しが半分ずつの交換に入らない */
+#define ZSS_CAP ((ZDATA / 2 - 2) & ~1)
 static int share_tsp;                   /* TSP と 0xA7 がどちらも急ぐとき、この交換は TSP に場所を (1) / 半分ずつ (0)。交互に替える */
 
 /* zos.x (常駐しない、ふつうのプログラム) の入口を呼んでよいか: 入口の前に "ZSSE" があり、それを含むメモリのブロックが
@@ -401,7 +404,7 @@ static void zthread(void)
       long a[3], m;
       a[0] = (long)(zreq + 16 + n + 2);
       a[1] = ZDATA - n - 2;
-      if (a[1] > ZDATA / 2) a[1] = ZDATA / 2;
+      if (a[1] > ZSS_CAP) a[1] = ZSS_CAP;
       a[2] = 0;
       m = call_etd(zss, ZSS_NP_OUT, a);
       if (m > 0) {

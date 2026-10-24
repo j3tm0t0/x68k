@@ -33,6 +33,7 @@ struct ses {
   char cmd[64]; int cmdn, incmd;   /* 0xFF の命令の途中 */
   int winch, cols, rows, eof; char sig[16];
   int credit_dirty;                /* CREDIT を送る (開いたとき、OUTPUT を書いたあと) */
+  uint64_t credit_at;              /* 最後に CREDIT を送った時刻 (us) */
   char why[16];                    /* CLOSED の理由 */
 };
 static struct ses S[ZSS_NSESS];
@@ -42,7 +43,9 @@ static unsigned last_zseq = 0xffffffff;
 static uint8_t last_res[ZSS_RES_MAX];
 static int last_len, last_more;
 static unsigned credit = 4096;
+static unsigned hold_ms;           /* ZSS_CREDIT_HOLD: CREDIT を出し直すまで待つ (試験用。Z の出力を溜めて大きい要求を作らせる) */
 static unsigned long st_in, st_out, st_open, st_resend;
+static int st_maxreq;
 
 static void ses_close(struct ses *s)
 {
@@ -57,6 +60,7 @@ static void zss_init(void)
   int on = 1;
   for (int i = 0; i < ZSS_NSESS; i++) S[i].fd = -1;
   if (c) credit = (unsigned)atoi(c);
+  if (getenv("ZSS_CREDIT_HOLD")) hold_ms = (unsigned)atoi(getenv("ZSS_CREDIT_HOLD"));
   pepoch = (uint32_t)time(NULL) ^ 0xa7a7a7a7u;
   lfd = socket(AF_INET, SOCK_STREAM, 0);
   setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof on);
@@ -151,6 +155,7 @@ static int zss_exchange(const uint8_t *req, int reqlen, uint8_t *res, int resmax
   uint8_t *w, *end;
   if (reqlen < ZSS_HDR || req[1] != ZSS_VERSION) return 0;
   zseq = zss_get16(req + 4);
+  if (reqlen > st_maxreq) { st_maxreq = reqlen; if (reqlen >= 1024) picosim_log("zss: largest 0xA7 request %d bytes\n", reqlen); }
   ze = zss_get32(req + 8);
   if (zseq == last_zseq && ze == zepoch_seen && last_len <= resmax) {   /* 送り直し: 同じ応答 */
     memcpy(res, last_res, last_len);
@@ -193,9 +198,9 @@ static int zss_exchange(const uint8_t *req, int reqlen, uint8_t *res, int resmax
       if ((nw = put_msg(w, end, ZSS_E_CLOSED, i, s->gen, b, 1 + k))) { w = nw; s->closed_sent = 1; s->opened = 0; }
       continue;
     }
-    if (s->credit_dirty) {
+    if (s->credit_dirty && picosim_now_us() - s->credit_at >= (uint64_t)hold_ms * 1000) {
       zss_put32(b, credit);
-      if ((nw = put_msg(w, end, ZSS_E_CREDIT, i, s->gen, b, 4))) { w = nw; s->credit_dirty = 0; }
+      if ((nw = put_msg(w, end, ZSS_E_CREDIT, i, s->gen, b, 4))) { w = nw; s->credit_dirty = 0; s->credit_at = picosim_now_us(); }
     }
     if (s->accepted && s->inn && s->win) {
       unsigned n = s->inn, room = end - w - ZSS_MHDR - 1;
