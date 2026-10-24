@@ -107,15 +107,32 @@ static int sendstr(const char *kw, const char *s)
   return sendhdr(kw, strlen(s), NULL) < 0 || sendall(s, strlen(s)) < 0 ? -1 : 0;
 }
 
+/* 受け取りはまとめて recv して、ここから切り出す (xip.x の下では 1 バイトずつの recv が正しい中身を返さない) */
+static char rbuf[4096];
+static int rpos, rlen;
+
+static int fill(void)
+{
+  int r = recv(sock, rbuf, sizeof rbuf, 0);
+  if (r <= 0)
+    return -1;
+  rpos = 0;
+  rlen = r;
+  return 0;
+}
+
 static int recvall(void *b, int n)
 {
   char *p = b;
   while (n > 0) {
-    int r = recv(sock, p, n, 0);
-    if (r <= 0)
+    int k;
+    if (rpos == rlen && fill() < 0)
       return -1;
-    p += r;
-    n -= r;
+    k = rlen - rpos < n ? rlen - rpos : n;
+    memcpy(p, rbuf + rpos, k);
+    rpos += k;
+    p += k;
+    n -= k;
   }
   return 0;
 }
@@ -124,9 +141,9 @@ static int recvline(char *b, int size)
 {
   int n = 0;
   while (n < size - 1) {
-    if (recv(sock, b + n, 1, 0) != 1)
+    if (rpos == rlen && fill() < 0)
       return -1;
-    if (b[n++] == '\n')
+    if ((b[n++] = rbuf[rpos++]) == '\n')
       break;
   }
   b[n] = 0;
@@ -205,7 +222,7 @@ static int copyout(FILE *fp, long n)
 
 static int recvfile(const char *path, long n)
 {
-  static char buf[8192];
+  static char buf[4096];                /* xip.x の下では 4096 バイトを超える write が失敗する */
   int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0755);
   if (fd < 0) {
     fprintf(stderr, "rcc: %s: cannot create\n", path);
@@ -239,7 +256,7 @@ static int is_elf(const char *path)
 }
 
 /* つながらないとき: Z の gcc で同じ引数のまま */
-static int local(int argc, char **argv)
+static int local(int argc, char **argv, const char *why)
 {
   static char cmd[1024], a[900];
   const char *fmt = getenv("RCC_LOCAL");
@@ -251,7 +268,7 @@ static int local(int argc, char **argv)
   for (int i = 1; i < argc && n < (int)sizeof a - 2; i++)
     n += snprintf(a + n, sizeof a - n, "%s%s", i > 1 ? " " : "", argv[i]);
   snprintf(cmd, sizeof cmd, fmt, a);
-  fprintf(stderr, "rcc: no compile server, compiling here\n");
+  fprintf(stderr, "rcc: %s, compiling here\n", why);
   for (int i = 1; i < argc; i++)
     if (is_elf(argv[i]))
       fprintf(stderr, "rcc: %s was made by the compile server (ELF); HLK can't link it, rebuild it here\n", argv[i]);
@@ -261,7 +278,7 @@ static int local(int argc, char **argv)
 int main(int argc, char **argv)
 {
   char line[300], cwd[256];
-  const char *e;
+  const char *e, *step = "lost the compile server while sending";
   int rc, nout;
   long outlen, errlen;
 
@@ -287,7 +304,7 @@ int main(int argc, char **argv)
   add_headers("", 0);
 
   if (dial() < 0)
-    return local(argc, argv);
+    return local(argc, argv, "no compile server");
   if (!getcwd(cwd, sizeof cwd))
     cwd[0] = 0;
   if (sendall("RCC2\n", 5) < 0 || sendstr("CWD", cwd) < 0)
@@ -305,6 +322,7 @@ int main(int argc, char **argv)
       goto lost;
   if (sendall("END\n", 4) < 0)
     goto lost;
+  step = "lost the compile server while receiving";
 
   if (recvline(line, sizeof line) < 0 || sscanf(line, "RCC2 %d %ld %ld %d", &rc, &outlen, &errlen, &nout) != 4)
     goto lost;
@@ -329,5 +347,5 @@ int main(int argc, char **argv)
 lost:
   if (sock >= 0)
     close(sock);
-  return local(argc, argv);
+  return local(argc, argv, step);
 }
