@@ -22,13 +22,21 @@ Z の上の gcc (真里子版 1.42) は遅い。`rcc.x` は Z の `gcc` と同�
 python3 rccd.py --port 7790 --allow 192.168.1.0/24
 ```
 
-Z (zosh なら `/etc/zoshrc` の `gcc()` から呼ぶ):
+Z (コマンド名は `rcc`。`gcc` は Z の gcc のまま):
 
 ```
 set RCC_HOST=<受ける側の名前か番地>        (":ポート" も可。既定のポートは 7790)
-rcc.x -O hello.c -o hello.x
-rcc.x -c a.c b.c                           (a.o と b.o が今のディレクトリにできる)
+rcc -O hello.c -o hello.x
+rcc -c a.c b.c                             (a.o と b.o が今のディレクトリにできる)
 ```
+
+いつも任せたいときは、自分の設定ファイルに `RCC_HOST` と別名を書く:
+
+| シェル | ファイル | 書くこと |
+|---|---|---|
+| zosh | `~/zosh.rc` | `RCC_HOST=192.168.1.10` と `alias gcc=rcc` |
+| zsh | `~/.zshrc` | `export RCC_HOST=192.168.1.10` と `alias gcc=rcc` |
+| ksh | `ENV` で読ませるファイル | `export RCC_HOST=192.168.1.10` と `alias gcc=rcc` |
 
 - 引数は Z の gcc と同じ: `-O*`、`-o`、`-c`、`-S`、`-E`、`-I`、`-D`、`-U`、`-l`、`-L`、`-g`、`-W*` など。
   `-o` が無ければ `a.x`、`-c` / `-S` なら元の名前の `.o` / `.s` を今のディレクトリに書く。`-E` は標準出力に出す
