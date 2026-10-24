@@ -2,7 +2,7 @@
 # XEiJ を「システムフロッピーだけ、主記憶 2MB の Compact」として起動し、RS-232C を TCP に出す。
 #   usage: xeij-fd.sh RUNDIR [XDF]
 #   RUNDIR に fd0.xdf (XDF の書き込み用コピー)、XEiJControl (キー入力パイプ)、agent.cmd、xeij.log を置く。
-#   RS-232C は 127.0.0.1:${XPORT:-54368} (XEiJ がサーバ)。
+#   RS-232C は 127.0.0.1:${XPORT:-54368} (XEiJ がサーバ)。FD1=パス で 2 台目のドライブ (B:) にイメージを入れる。
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 top=$(cd "$here/../../.." && pwd)
@@ -29,7 +29,7 @@ AGENT=
 cd "$run"
 # shellcheck disable=SC2086
 exec "$JAVA" $AGENT -Djava.io.tmpdir="$run" -jar "$tools/xeij/XEiJ.jar" \
-  -config=default -model=Compact -memory=${XMEM:-2} -boot=fd0 -fd0="$run/fd0.xdf" \
+  -config=default -model=Compact -memory=${XMEM:-2} -boot=fd0 -fd0="$run/fd0.xdf" ${FD1:+-fd1="$FD1"} \
   -pastepipe=on -pipeencoding=utf8 -flrinformed=on -usecanvas=off \
   -tcpiphost=127.0.0.1 -tcpipport=${XPORT:-54368} -tcpiputf8=off \
   -rs232cconnection='TCP%2FIP+%E2%87%94+AUX' >"$run/xeij.log" 2>&1

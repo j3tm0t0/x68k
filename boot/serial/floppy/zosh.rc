@@ -1,0 +1,2 @@
+# ~/zosh.rc (A:/home/zosh.rc) -- 自分用の設定。プロンプトは PROMPT (%~ = カレント、%# = #/%)
+PROMPT='xvi:%~%# '
