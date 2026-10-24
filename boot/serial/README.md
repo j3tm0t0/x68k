@@ -79,17 +79,17 @@ X-BASIC (`BASIC2\BASIC.X`) と `COPY` はシステムフロッピーに入って
 
 ## 通信速度と所要時間
 
-X68000 エミュレータの XEiJ (機種 Compact、MC68000 16MHz、主記憶 2MB、システムフロッピーだけで起動) で測った値。XEiJ は RS-232C の通信速度を再現してデータを渡す。
+X68000 エミュレータの XEiJ (機種 Compact、MC68000 16MHz、主記憶 2MB、システムフロッピーだけで起動、RSDRV.SYS の受信バッファは実機と同じ 64 バイト) で測った値。XEiJ は RS-232C の通信速度を再現してデータを渡す。
 
 | 段階 | 速さ | 時間 |
 |---|---|---|
 | 起動 (電源投入から `A>` の表示まで) | | 13 秒 |
 | 0: `CTTY AUX` を打つ | 9 打鍵 | 数秒 |
 | 1: RX.BAS (930 バイト) を `COPY AUX` で送る | 9600bps | 3 秒 |
-| 1: rx.x (4204 バイト) を X-BASIC で受ける | 9600bps、1 行 64 バイト | 30 秒 |
+| 1: rx.x (4612 バイト) を X-BASIC で受ける | 9600bps、1 行 64 バイト | 33 秒 |
 | 2: rx.x を起動して 19200bps に切り替える | | 2 秒 |
 | 3: LHA.X (81602 バイト) と AUTOEXEC.BAT | 19200bps、1.79 KB/s | 47 秒 |
-| 0〜3 の合計 (最初のキー入力から `bootstrap done` の表示まで) | | 85 秒 |
+| 0〜3 の合計 (最初のキー入力から `bootstrap done` の表示まで) | | 90 秒 |
 | リセットしてから RS-232C の `A>` まで | | 13 秒 |
 
 rx.x の転送は 19200bps で 1.7〜1.8 KB/s (回線の上限 1.92 KB/s の 9 割強)。X-BASIC による受信は 1 バイトあたり約 7ms かかる。
@@ -100,6 +100,98 @@ X-BASIC は 1 文に 0.5〜1ms かかるので、受信プログラムでは 1 �
 通信速度は 19200bps を上限とする。X68000 の SCC はフロー制御なしの 38400bps で取りこぼすことがある。
 また IOCS と RSDRV.SYS 2.02 で設定できる通信速度は 19200bps までで、XEiJ は RSDRV.SYS を書き換えて 38400bps に対応させている (実機の RSDRV.SYS にこの変更はない)。
 rx.x は 1 フレーム (既定で 2048 バイト) を受信するたびに、フロッピーへの書き込みを終えてから応答を返すので、書き込み中にデータがあふれることはない。
+
+## 段階 4: 同じ回線を SLIP にして rcmd.x で操作する
+
+bootstrap のあと、同じ RS-232C を SLIP (シリアルの上で IP パケットを運ぶ方式) にして、TCP の上の rcmd.x で X68000 を操作できるようにする。
+TCP/IP 本体は ESP/X の xip.x (K.Shirakata 氏の改良版 β5)、その下は `net/slip` の slip.sys と `net/slipd` の slipd.x。
+X68000 Z で使っている組み合わせと同じで、SCC の割り込みは ROM と RSDRV.SYS に任せ、slipd.x が IOCS で 1 バイトずつ読み書きする。
+
+1. Mac で `./getnet.sh` を実行し、`files-net/` に送るファイルを用意する。
+   xip.x と ifconfig.x / inetdconf.x は retropc.net から取り、xip.x には `net/patchxip.py` で MSS 1460 などのパッチをあてる
+   (改変したバイナリは配布しない)。slip.sys / slipd.x は elf2x68k でビルドする。
+   rcmd.x は X68000 の上でビルドするものなので、x68kcli の HDS イメージ (`build/xipbase.hds` など) から取り出すか、`RCMD_X=パス` で渡す。
+2. コンソールが RS-232C の状態 (段階 3 の後) で、Pi から実行する。
+
+   ```
+   ./sx.py --port /dev/ttyUSB0 --baud 19200 stage4 --prune
+   ```
+
+   約 230KB を送り、`CONFIG.SYS` に `PROCESS` と `DEVICE = \SYS\SLIP.SYS` を、`A:\NETUP.BAT` を作り、AUTOEXEC.BAT の最後を `NETUP` にする
+   (元の CONFIG.SYS は `CONFIG.ORG`)。
+   システムディスクの空きでは足りないので、`--prune` を付けるとこのキットが使わないファイル
+   (`DEFSPTOOL.BAS` `DEFSPTOOL.HLP` `HISTORY.HLP` `BACKUP.X` `RESTORE.X` `RECOVER.X` `ASK68K.SYS`) を消し、CONFIG.SYS の ASK68K.SYS の行を REM にする。
+   複製したディスクでだけ使う。ASK68K.SYS (かな漢字変換) を外すと主記憶も空く。
+3. Pi を SLIP にして (`x68mode slip`、下の「Pi の準備」)、X68000 をリセットする。起動の最後に NETUP.BAT が
+   xip.x → ifconfig → slipd.x と進み、rcmd.x が前面で待つ。X68000 の画面には rcmd.x が受けたコマンドが出る。
+4. Pi から使う。
+
+   ```
+   x68 'dir'                        # COMMAND.X /c で実行して出力と終了コードを返す
+   x68put foo.x 'A:\FOO.X'          # 送る (X68000 に tar.x が無いので圧縮しない)
+   x68 'copy A:\AUTOEXEC.CON A:\AUTOEXEC.BAT'   # 次の起動からコンソール (CTTY AUX) に戻す
+   ```
+
+   rcmd.x は X68000 のキーボードの ESC か、Pi からの `exit` で止まる。コンソールに戻した後 SLIP にするには `sx mode slip`。
+   SLIP の速さを変えるには、コンソールの状態で `sx mode slip --netspeed 38400` (Pi の `/etc/default/ppp-x68k` の SPEED も合わせる)。
+
+段階 4 の後の主記憶の空きは約 1.1MB (XEiJ で xip.x と slipd.x が常駐し、rcmd.x を止めた状態。`rx -m` で表示)。
+X68000 の IP は 192.168.68.2、Pi は 192.168.68.1 (`--ip` / `--peer` で変えられる)。Pi は IP 転送と NAT をするので、X68000 から外にも出られる。
+
+### SLIP の速さ
+
+| 速さ | x68put (30000 バイト) | 確かめたこと |
+|---|---|---|
+| 19200bps | 19.6 秒 (1.49 KB/s) | XEiJ で動作 |
+| 38400bps | 10.5 秒 (2.80 KB/s) | XEiJ で動作。実機は未確認 |
+
+XEiJ で確かめられるのは動くかどうかまで。XEiJ の SCC には受信の FIFO が無く、実機の SCC とは取りこぼし方が違う
+(X68000 Z の実機では 38400bps で約 1.4%、XEiJ では 19200bps で約 5% の再送が出た)。
+実機の Compact XVI の SCC がフロー制御なしの 38400bps で取りこぼすかどうかは、実機で試して確かめる。
+RSDRV.SYS 2.02 は 38400bps (速度コード 9) を受け付ける。
+
+## Pi の準備 (raspi/setup.sh)
+
+X68000 を受け持つ Raspberry Pi (Pi 4、後で Pi Zero 2 W) を、Raspberry Pi OS / Debian の素の状態から用意する。何度実行してもよい。
+
+```
+git clone https://github.com/j3tm0t0/x68k && cd x68k/boot/serial
+./getlha.sh                       # 任意: files/LHA.X (Pi に lhasa が要る。setup.sh が入れる)
+#   files-net/ は Mac で ./getnet.sh を実行して作り、Pi の同じ場所にコピーする
+sudo raspi/setup.sh --dev /dev/serial/by-id/usb-FTDI_…-if00-port0
+```
+
+| 入るもの | 中身 |
+|---|---|
+| `sx` | sx.py を `/etc/default/x68k-serial` のポートと速さで動かす (`sx bootstrap`、`sx run 'dir'`、`sx put` など) |
+| `x68type` / `x68con` | コンソール (CTTY AUX) に 1 文字ずつ打つ / コンソールのログを追いかけて表示する |
+| `x68` / `x68put` | rcmd.x (SLIP の上の TCP) でコマンドを実行する / ファイルを送る (harness/raspi のもの) |
+| `x68mode console\|slip` | 起動時にどちらを動かすかを切り替える |
+| `x68-serlog.service` | コンソールのログ係。`/var/log/x68k/x68con.log` に書く。`sx` が動く間はロックファイル (`/run/x68k-serial/lock`) を見てポートを空ける |
+| `ppp-x68k.service` | SLIP (`net/raspi/ppp-x68k.sh`: slattach + IP 転送 + NAT + 時刻合わせ)。設定は `/etc/default/ppp-x68k` |
+
+どちらのサービスもログインしなくても起動時に動く。`--mode console|slip` で最初の状態を決め、後から `x68mode` で変える。
+USB シリアルは `/dev/serial/by-id/` の名前を使うと、挿し直しても名前が変わらない。Pi 自身の UART (`/dev/ttyS0` など) を使う場合は、
+setup.sh が raspi-config でシリアルコンソールを止める。
+
+### Pi を読み出し専用にする
+
+Pi Zero 2 W を SCSI のターミネータ電源から給電すると、X68000 の電源を切ったときに Pi の電源も急に切れる。
+SD カードのファイルシステムを壊さないように、ルートを読み出し専用にして書き込みを RAM に置く。
+
+```
+sudo raspi/setup.sh --data /data --overlay on     # 最後に raspi-config の overlayfs を有効にする。再起動で反映
+sudo raspi/setup.sh --overlay off                 # 設定を変えるとき。再起動してから作業し、終わったら on に戻す
+```
+
+- `--overlay on` の後は、`/etc` などを変えても再起動で元に戻る。設定を変えるときは `--overlay off` で戻して再起動してから行う。
+  setup.sh は読み出し専用の間は止まる (`--overlay off` のときだけ動く)。
+- ログや PiSCSI のディスクイメージなど残したいものは、別のパーティションに置く。ext4 のパーティションに `X68DATA` というラベルを付けておくと、
+  `--data /data` が `/etc/fstab` に書いて `/data` にマウントし、ログを `/data/log` に、PiSCSI 用に `/data/piscsi` を作る。
+  パーティションを作るのは setup.sh ではしない (SD カードの後ろを空けて作るか、USB メモリを使う)。
+  急な電源断でこのパーティションが壊れることはありうるので、PiSCSI のイメージは控えを取っておく。
+- 読み出し専用の切り替えは raspi-config (Raspberry Pi OS) の機能を使う。raspi-config の無い Debian では setup.sh は切り替えず、メッセージを出すだけにする。
+  そのため Pi には Raspberry Pi OS Lite を使う。
 
 ## うまくいかないとき
 
@@ -122,6 +214,10 @@ rx.x は 1 フレーム (既定で 2048 バイト) を受信するたびに、�
 XEiJ にキーボード入力として送り、`sx.py bootstrap` を実行してから XEiJ をリセットし、19200bps の RS-232C で `run` / `put` / `get` を確かめる。
 `E2E_PTY=1` を付けると、sx.py を疑似端末 (pty) 経由の `--port` で動かし、シリアルポートを開く処理 (termios) も通す (`test/ptybridge.py`)。
 `SX_CORRUPT=0.05` を付けると、送信の 5% で 1 バイトを壊して再送を確かめる。
+XEiJ は RSDRV.SYS 2.02 の受信バッファを 64 バイトから 1024 バイトに広げるパッチを自動であてるので、試験用のフロッピーでは
+AUTOEXEC.BAT の最後に `test/rsbuf64.x` を足し、実機と同じ 64 バイトに戻してから試す (`test/testfloppy.py`。`XEIJ_RSBUF=1024` で無効)。
+`E2E_SLIP=1` を付けると段階 4 も試す。SLIP の相手は `harness/xeij/xeijslip.py` が ssh 先の Pi (既定 raspi3、`E2E_SLIP_HOST`) に疑似端末と slattach で作り、
+Pi から x68 / x68put で rcmd.x を使う。19200bps のあと 38400bps に切り替えてもう一度試す。
 XEiJ の「TCP/IP ⇔ AUX」の設定で、RS-232C を TCP の 127.0.0.1:54368 につないでいる (`test/xeij-fd.sh`)。画面の文字は、文字表示用のメモリ (テキスト VRAM) を読んで確かめる (`test/xscreen.py`)。
 
 ## ファイル
@@ -135,4 +231,6 @@ XEiJ の「TCP/IP ⇔ AUX」の設定で、RS-232C を TCP の 127.0.0.1:54368 �
 | `sx.py` | Pi / Mac で動かす転送とコマンド実行のプログラム |
 | `getlha.sh` | `files/LHA.X` を用意する (LHA for X680x0 を取ってきて中の LHA.x を取り出す) |
 | `files/` | 段階 3 で送るファイルを置く (Git の管理対象外) |
-| `test/` | XEiJ での試験 (`e2e.py` `xeij-fd.sh` `xtype.py` `xscreen.py` `ptybridge.py`) |
+| `getnet.sh` | `files-net/` (段階 4 で送る xip.x、slip.sys、slipd.x、rcmd.x など) を用意する |
+| `raspi/` | Pi の準備 (`setup.sh`、`x68serlog`、`x68type`、`x68mode`、`x68-serlog.service`) |
+| `test/` | XEiJ での試験 (`e2e.py` `xeij-fd.sh` `xtype.py` `xscreen.py` `ptybridge.py` `testfloppy.py` `rsbuf64.c`) |

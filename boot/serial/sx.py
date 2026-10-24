@@ -18,6 +18,9 @@
   sx.py speed 19200        rx.x と送り手の両方の速さを変える
   sx.py quit               rx.x を止めて A> に戻す
   sx.py probe              CR を送って A> が返るかを見る
+  sx.py stage4 [--prune]   SLIP (xip.x + slip.sys + slipd.x) と rcmd.x を入れ、起動時に SLIP になるようにする
+  sx.py mode console|slip  起動時の動き (CTTY AUX か SLIP) を切り替える
+  sx.py stats              rx.x の受信の統計
   sx.py term               端末として打ち込む (Ctrl+] で終わる)
 """
 import argparse, os, select, socket, sys, time
@@ -58,10 +61,28 @@ class Link:
         else:
             import termios
             self.termios = termios
+            self.take_lock()
             self.fd = os.open(a.port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
             self.tty = True
             self.pace = False
             self.setbaud(self.baud)
+
+    def take_lock(self):
+        """Pi の x68serlog (ログ係) にポートを空けてもらう: ロックファイルに pid を書くと、ログ係はポートを閉じて待つ"""
+        path = os.environ.get("SX_LOCK", "/run/x68k-serial/lock")
+        if not os.path.isdir(os.path.dirname(path)):
+            return
+        try:
+            pid = int(open(path).read().split()[0])
+            if pid != os.getpid():
+                os.kill(pid, 0)
+                sys.exit("sx: serial port is used by pid %d (%s)" % (pid, path))
+        except (OSError, ValueError, IndexError):
+            pass
+        open(path, "w").write("%d\n" % os.getpid())
+        import atexit
+        atexit.register(lambda: os.path.exists(path) and os.remove(path))
+        time.sleep(0.5)
 
     def setbaud(self, b):
         self.baud = b
@@ -446,12 +467,46 @@ def stage2(L, a):
     return r
 
 
-# AUTOEXEC.BAT の末尾に足す。RX -K2 は 2 秒のうちにキーが押されたら 1 を返し、CTTY AUX を飛ばす
-AUTOEXEC_ADD = ("REM --- boot/serial: RS-232C 19200bps をコンソールにする (2 秒以内にキーで取りやめ) ---\r\n"
-                "RX -B19200 -K2\r\n"
-                "IF ERRORLEVEL 1 GOTO RXKEEP\r\n"
-                "CTTY AUX\r\n"
-                ":RXKEEP\r\n").encode("cp932")
+# AUTOEXEC.BAT の末尾に足す。RX -K2 は 2 秒のうちにキーが押されたら 1 を返し、その後を飛ばす
+def autoexec_block(mode, speed=19200):
+    """mode = console: CTTY AUX でコンソールを RS-232C に移す。slip: NETUP.BAT で SLIP と rcmd.x を起動する"""
+    if mode == "console":
+        head = "REM --- boot/serial: RS-232C %dbps をコンソールにする (2 秒以内にキーで取りやめ) ---\r\n" % speed
+        body = "CTTY AUX\r\n"
+    else:
+        head = "REM --- boot/serial: RS-232C %dbps で SLIP と rcmd.x を起動する (2 秒以内にキーで取りやめ) ---\r\n" % speed
+        body = "NETUP\r\n"
+    return (head + "RX -B%d -K2\r\nIF ERRORLEVEL 1 GOTO RXKEEP\r\n" % speed + body + ":RXKEEP\r\n").encode("cp932")
+
+
+AUTOEXEC_ADD = autoexec_block("console")
+
+
+def original_autoexec(r):
+    """元の AUTOEXEC.BAT (AUTOEXEC.ORG があればそれ、なければ今のもの。無ければ ORG に控える) の本文"""
+    try:
+        orig = r.get("A:\\AUTOEXEC.ORG")
+    except IOError:
+        orig = r.get("A:\\AUTOEXEC.BAT")
+        if b"BOOT/SERIAL" in orig.upper():
+            raise SystemExit("sx: AUTOEXEC.BAT is already modified but AUTOEXEC.ORG is missing")
+        r.put(orig, "A:\\AUTOEXEC.ORG", progress=False)
+    # 元の AUTOEXEC.BAT は末尾に 1Ah (EOF) がある。その後ろに足しても実行されないので、外してから足す
+    body = orig.split(b"\x1a")[0]
+    if body and not body.endswith(b"\n"):
+        body += b"\r\n"
+    return body
+
+
+def write_autoexec(r, mode, speed=19200):
+    """AUTOEXEC.CON (CTTY AUX) と AUTOEXEC.NET (SLIP、NETUP.BAT があるとき) を作り、mode の方を AUTOEXEC.BAT にする"""
+    body = original_autoexec(r)
+    con = body + autoexec_block("console", speed)
+    r.put(con, "A:\\AUTOEXEC.CON", progress=False)
+    net = body + autoexec_block("slip", speed)
+    if mode == "slip":
+        r.put(net, "A:\\AUTOEXEC.NET", progress=False)
+    r.put(con if mode == "console" else net, "A:\\AUTOEXEC.BAT", progress=False)
 
 
 def stage3(L, a, r=None):
@@ -473,20 +528,95 @@ def stage3(L, a, r=None):
         say("%s: %d bytes %.1fs %.2f KB/s%s" % (remote, len(data), el, len(data) / 1024.0 / el,
                                                " (verified)" if a.verify else ""))
     if a.autoexec:
-        orig = r.get("A:\\AUTOEXEC.BAT")
-        if b"CTTY AUX" in orig.upper():
-            say("AUTOEXEC.BAT already has CTTY AUX")
-        else:
-            # 元の AUTOEXEC.BAT は末尾に 1Ah (EOF) がある。その後ろに足しても実行されないので、外してから足す
-            body = orig.split(b"\x1a")[0]
-            if body and not body.endswith(b"\n"):
-                body += b"\r\n"
-            r.put(orig, "A:\\AUTOEXEC.ORG", progress=False)
-            r.put(body + AUTOEXEC_ADD, "A:\\AUTOEXEC.BAT", progress=False)
-            say("AUTOEXEC.BAT: added RX -B19200 -K2 / CTTY AUX (original saved as AUTOEXEC.ORG)")
+        write_autoexec(r, "console")
+        say("AUTOEXEC.BAT: added RX -B19200 -K2 / CTTY AUX (original saved as AUTOEXEC.ORG)")
     if total:
         say("stage3: %d bytes in %.1fs = %.2f KB/s, resends %d%s" % (total, tt, total / 1024.0 / tt, r.resends,
             " (corrupted %d frames on purpose)" % L.corrupted if L.corrupt else ""))
+    return r
+
+
+# ---------------------------------------------------------------- 段階 4: SLIP
+
+# 容量が足りないとき (--prune) に消す、システムディスクの中でこのキットが使わないファイル。複製したディスクでだけ使う
+PRUNE = ["A:\\ETC\\DEFSPTOOL.BAS", "A:\\ETC\\DEFSPTOOL.HLP", "A:\\HIS\\HISTORY.HLP", "A:\\BIN\\BACKUP.X",
+         "A:\\BIN\\RESTORE.X", "A:\\BIN\\RECOVER.X", "A:\\SYS\\ASK68K.SYS"]
+
+
+def free_kb(r, drive="A:"):
+    import re
+    rc, out = r.run("DIR %s\\" % drive)
+    m = re.search(r"(\d+)K Byte \u4f7f\u7528\u53ef\u80fd", out.decode("cp932", "replace"))   # 使用可能
+    return int(m.group(1)) if m else -1
+
+
+def write_netup(r, a):
+    """NETUP.BAT: RS-232C の速さを決め、xip.x と SLIP を上げて rcmd.x を前面で動かす (AUTOEXEC.BAT の最後から呼ぶ)"""
+    netup = ("REM --- boot/serial: SLIP (%s <-> %s, %d bps) と rcmd.x ---\r\n"
+             "SET SYSROOT=A:\\\r\nSET temp=A:\\TMP\r\nSET TEMP=A:\\TMP\r\n"
+             "RX -B%d\r\n"
+             "XIP -w 4096 -n 2\r\n"
+             "IFCONFIG lp0 up\r\n"
+             "IFCONFIG ep0 up %s\r\n"
+             "IFCONFIG ep0 netmask 128.0.0.0\r\n"
+             "INETDCONF +router %s\r\n"
+             "IFCONFIG ep0 netmask 255.255.255.255\r\n"
+             "INETDCONF +dns %s\r\n"
+             "SLIPD\r\n"
+             "RCMD -v -s command.x\r\n") % (a.ip, a.peer, a.netspeed, a.netspeed, a.ip, a.peer, a.dns)
+    r.put(netup.encode("cp932"), "A:\\NETUP.BAT", progress=False)
+
+
+def stage4(L, a, r=None):
+    if r is None:
+        r, h = connect_rx(L, a)
+    d = os.path.join(HERE, "files-net")
+    need = ["XIP.X", "IFCONFIG.X", "INETDCONF.X", "SLIPD.X", "RCMD.X", "SLIP.SYS", "protocols", "services"]
+    miss = [n for n in need if not os.path.exists(os.path.join(d, n))]
+    if miss:
+        raise SystemExit("sx: files-net/ lacks %s (getnet.sh で用意する)" % " ".join(miss))
+    dest = {"SLIP.SYS": "A:\\SYS\\SLIP.SYS", "protocols": "A:\\ETC\\protocols", "services": "A:\\ETC\\services"}
+    files = [(os.path.join(d, n), dest.get(n, "A:\\BIN\\" + n)) for n in need]
+    hosts = ("127.0.0.1\tlocalhost\tlocalhost\r\n%s\tx68k\t\tx68k\r\n%s\traspi\t\traspi\r\n" % (a.ip, a.peer)).encode()
+    nets = ("127\t\tloopback\r\n%s\tslip-net\r\n" % ".".join(a.ip.split(".")[:3])).encode()
+    size = sum(os.path.getsize(f) for f, _ in files) + len(hosts) + len(nets) + 4096
+    free = free_kb(r)
+    say("stage4: %d KB to send, %d KB free on A:" % (size // 1024 + 1, free))
+    if 0 <= free < size // 1024 + 16:
+        if not a.prune:
+            raise SystemExit("sx: not enough space on A:. 複製したディスクなら --prune で使わないファイル (%s) を消せる。"
+                             "LHA.X を消すのも手 (sx.py run 'del A:\\LHA.X')" % ", ".join(p.split("\\")[-1] for p in PRUNE))
+        for p in PRUNE:
+            r.run("DEL " + p)
+        say("pruned; %d KB free" % free_kb(r))
+    config = r.get("A:\\CONFIG.SYS")
+    try:
+        r.get("A:\\CONFIG.ORG")
+    except IOError:
+        r.put(config, "A:\\CONFIG.ORG", progress=False)
+    lines = config.split(b"\x1a")[0].replace(b"\r\n", b"\n").split(b"\n")
+    while lines and not lines[-1].strip():
+        lines.pop()
+    up = [l.upper().replace(b" ", b"") for l in lines]
+    if not any(u.startswith(b"PROCESS=") for u in up):
+        lines.append(b"PROCESS   = 8 10 19")
+    if not any(b"SLIP.SYS" in u for u in up):
+        lines.append(b"DEVICE    = \\SYS\\SLIP.SYS")
+    if a.prune:
+        lines = [b"REM " + l if b"ASK68K.SYS" in l.upper() and not l.upper().startswith(b"REM") else l for l in lines]
+    r.put(b"\r\n".join(lines) + b"\r\n", "A:\\CONFIG.SYS", progress=False)
+    total, tt = 0, 0.0
+    for local, remote in files:
+        data = open(local, "rb").read()
+        tt += r.put(data, remote, chunk=a.chunk)
+        total += len(data)
+    r.put(hosts, "A:\\ETC\\hosts", progress=False)
+    r.put(nets, "A:\\ETC\\networks", progress=False)
+    r.run("MD A:\\TMP")   # rcmd.x が出力を一時ファイル (%temp%\\rcmd.out) に書く。temp の値の末尾に \\ があると開けない
+    write_netup(r, a)
+    write_autoexec(r, "slip", a.netspeed)
+    say("stage4: %d bytes in %.1fs = %.2f KB/s; CONFIG.SYS + NETUP.BAT + AUTOEXEC.BAT (SLIP) written."
+        " X68000 をリセットすると %s で SLIP と rcmd.x が起動する" % (total, tt, total / 1024.0 / tt, a.ip))
     return r
 
 
@@ -539,6 +669,11 @@ def main():
     ap.add_argument("--manual", action="store_true", help="stage1 で COPY AUX / BASIC を X68000 のキーボードで打つ")
     ap.add_argument("--no-autoexec", dest="autoexec", action="store_false")
     ap.add_argument("--verify", action="store_true", help="送ったファイルを読み返して比べる")
+    ap.add_argument("--ip", default="192.168.68.2", help="段階 4: X68000 の IP")
+    ap.add_argument("--peer", default="192.168.68.1", help="段階 4: Pi (SLIP の相手) の IP")
+    ap.add_argument("--dns", default="8.8.8.8")
+    ap.add_argument("--netspeed", type=int, default=19200, help="段階 4: SLIP の速さ")
+    ap.add_argument("--prune", action="store_true", help="段階 4: 容量が足りなければシステムディスクの使わないファイルを消す")
     ap.add_argument("--log")
     ap.add_argument("-v", "--verbose", action="store_true")
     ap.add_argument("cmd")
@@ -572,6 +707,9 @@ def main():
         r.quit()
         say("bootstrap done; rx.x stopped, A> prompt is on the serial line")
         return
+    if c == "stage4":
+        stage4(L, a)
+        return
     if c in ("stage1", "stage2", "stage3"):
         return
     r, _ = connect_rx(L, a)
@@ -597,6 +735,17 @@ def main():
         r.quit()
     elif c == "hello":
         print(r.hello())
+    elif c == "stats":
+        st = r.call("S")
+        print("max bytes waiting in the receive buffer %d, bad frames %d" %
+              (int.from_bytes(st[:4], "big"), int.from_bytes(st[4:], "big")))
+    elif c == "mode":
+        if a.args[0] not in ("console", "slip"):
+            ap.error("mode console|slip")
+        if a.args[0] == "slip":
+            write_netup(r, a)
+        write_autoexec(r, a.args[0], a.netspeed)
+        say("AUTOEXEC.BAT -> %s (X68000 をリセットすると切り替わる)" % a.args[0])
     else:
         ap.error("unknown command %s" % c)
 

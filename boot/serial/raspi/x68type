@@ -1,0 +1,10 @@
+#!/bin/bash
+# x68type "コマンド" : X68000 のシリアルコンソール (CTTY AUX) に 1 文字ずつ送り、最後に CR を送る。
+#   一気に送ると X68000 の受信バッファ (RSDRV.SYS は 64 バイト) が溢れることがあるので、1 文字ごとに待つ。
+#   出力は x68con (ログ) で見る。ポートの速さは x68-serlog.service (x68serlog) が設定したものを使う
+[ -r /etc/default/x68k-serial ] && . /etc/default/x68k-serial
+DEV=${X68_DEV:-/dev/ttyUSB0}
+s=$1
+exec 3>"$DEV" || exit 1
+for ((i=0; i<${#s}; i++)); do printf '%s' "${s:$i:1}" >&3; sleep ${X68TYPE_DELAY:-0.01}; done
+printf '\r' >&3

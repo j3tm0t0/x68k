@@ -5,6 +5,7 @@
  *   rx -b19200    RS-232C を 19200bps 8N1 フロー制御なしにして終わる (AUTOEXEC.BAT の CTTY AUX の前に使う)
  *   rx -b19200 -s 速度を変えてからサーバとして動く
  *   rx -v         画面に要求を 1 行ずつ表示する
+ *   rx -m         いま確保できる最大のメモリの大きさを表示する
  *   rx -k2        2 秒待ち、その間に X68000 のキーが押されたら終了コード 1 で終わる (押されなければ 0)。
  *                 AUTOEXEC.BAT で IF ERRORLEVEL 1 と組み合わせ、CTTY AUX を飛ばしてキーボードを残すのに使う
  *
@@ -25,6 +26,7 @@
  *   X 行         COMMAND.X /C 行 を実行し、標準出力と標準エラー出力をファイルに落とす (標準入力は NUL)。
  *                応答は 終了コード(4) とファイル名
  *   B モード(2)  応答を返してから IOCS _SET232C でモードを変える
+ *   S            統計 (受信バッファに溜まった最大バイト数 (4)、壊れていた枠の数 (4))。最大値は 0 に戻す
  *   Q            応答を返して終わる
  */
 #include <x68k/dos.h>
@@ -40,11 +42,21 @@ static int slen;
 static int last_seq = -1, last_type = -1;
 static int wfd = -1, rfd = -1;
 static int verbose;
+static int maxlof;                      /* 受信バッファに溜まっていた最大のバイト数 (S で返す) */
+static long nbad;                       /* 壊れていた枠の数 */
 static char outname[] = "A:\\RX.OUT";
 static char execbuf[300];
 static struct dos_comline comline;
 
 static void put(const char *s) { _iocs_b_print(s); }
+
+/* いま確保できる最大のメモリブロックの大きさ (_MALLOC に大きすぎる値を渡すと、0x81000000 | 最大の大きさ が返る) */
+static long freemem(void)
+{
+  long r = (long)_dos_malloc(0x00ffffff);
+  if (r >= 0) { _dos_mfree((void *)r); return 0x00ffffff; }
+  return r & 0x00ffffff;
+}
 
 static void putnum(long v)
 {
@@ -101,8 +113,11 @@ static int getb(long timeout)
   long t = now();
   int n = 0;
   for (;;) {
-    if (_iocs_lof232c() > 0)
+    int l = _iocs_lof232c();
+    if (l > 0) {
+      if (l > maxlof) maxlof = l;
       return _iocs_inp232c() & 0xff;
+    }
     if (timeout >= 0 && since(t) > timeout)
       return -1;
     if (++n >= 2000) {
@@ -233,6 +248,7 @@ static int serve(void)
     }
     if (c < 0 || crc(rbuf, len + 4) != ((rbuf[4 + len] << 8) | rbuf[5 + len])) {
       bad++;
+      nbad++;
       if (verbose) { put("rx: bad frame "); putnum(bad); put("\r\n"); }
       nak(seq);
       continue;
@@ -250,9 +266,19 @@ static int serve(void)
         put("rx: "); put(t); putnum(len); put("\r\n");
       }
       switch (type) {
-      case 'H':
-        send('K', seq, "RX " VERSION " 4096", 9);
+      case 'H': {   /* "RX 版 最大長 空き(KB)" */
+        static char hb[40];
+        char *q = hb;
+        const char *h0 = "RX " VERSION " 4096 ";
+        long fr = freemem() / 1024;
+        char nb[12], *np = nb + 11;
+        while (*h0) *q++ = *h0++;
+        *np = 0;
+        do { *--np = '0' + fr % 10; fr /= 10; } while (fr);
+        while (*np) *q++ = *np++;
+        send('K', seq, hb, q - hb);
         break;
+      }
       case 'O':
         if (wfd >= 0) { _dos_close(wfd); wfd = -1; }
         cstr(name, d + 1, len - 1, sizeof name);
@@ -303,6 +329,12 @@ static int serve(void)
         __builtin_memcpy(rbuf + 4, outname, sizeof outname - 1);
         send('K', seq, rbuf, 4 + sizeof outname - 1);
         break;
+      case 'S':   /* 統計: 受信バッファの最大の溜まり (4)、壊れた枠の数 (4) */
+        put32(tmp, maxlof);
+        put32(tmp + 4, nbad);
+        maxlof = 0;
+        send('K', seq, tmp, 8);
+        break;
       case 'B':
         send('K', seq, 0, 0);
         n = now();
@@ -346,6 +378,7 @@ int rx_main(const unsigned char *cmd)
       i += 2;
       if (o == 'v') verbose = 1;
       else if (o == 's') { server = 2; }
+      else if (o == 'm') { put("rx: free "); putnum(freemem() / 1024); put(" KB\r\n"); if (server == 1) server = 0; }
       else if (o == 'k') {
         keywait = 0;
         while (i <= len && cmd[i] >= '0' && cmd[i] <= '9') keywait = keywait * 10 + cmd[i++] - '0';
@@ -358,7 +391,7 @@ int rx_main(const unsigned char *cmd)
         setspeed = 1;
         if (server == 1) server = 0;
       } else {
-        put("usage: rx [-b19200] [-k2] [-s] [-v]\r\n");
+        put("usage: rx [-b19200] [-k2] [-m] [-s] [-v]\r\n");
         return 1;
       }
     } else
