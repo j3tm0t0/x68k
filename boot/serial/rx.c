@@ -26,6 +26,8 @@
  *   X 行         COMMAND.X /C 行 を実行し、標準出力と標準エラー出力をファイルに落とす (標準入力は NUL)。
  *                応答は 終了コード(4) とファイル名
  *   B モード(2)  応答を返してから IOCS _SET232C でモードを変える
+ *   D 駆 番号(2) データ   ブロックデバイスにセクタ単位で直接書く (1024 バイト x 1〜3)。フロッピーにイメージを書く用
+ *   V 駆 番号(2) 数     セクタを読んで CRC16 (4) を返す (書いたものの確かめ)
  *   S            統計 (受信バッファに溜まった最大バイト数 (4)、壊れていた枠の数 (4))。最大値は 0 に戻す
  *   Q            応答を返して終わる
  */
@@ -37,7 +39,7 @@
 
 static unsigned short crctab[256];
 static unsigned char rbuf[MAXLEN + 8];          /* 受けた要求 */
-static unsigned char sbuf[MAXLEN + 8];          /* 最後に送った応答 (再送用) */
+static unsigned char sbuf[MAXLEN + 8] __attribute__((aligned(4)));          /* 最後に送った応答 (再送用) */
 static int slen;
 static int last_seq = -1, last_type = -1;
 static int wfd = -1, rfd = -1;
@@ -49,6 +51,26 @@ static char execbuf[300];
 static struct dos_comline comline;
 
 static void put(const char *s) { _iocs_b_print(s); }
+
+/* DOS _DISKRED / _DISKWRT (ブロックデバイスのセクタを直接読み書きする)。drive は 1 = A:。戻り値は d0 */
+static long diskio(int call, void *buf, int drive, int sect, int n)
+{
+  register long d0 __asm__("d0");
+  __asm__ volatile (
+    "move.w %4,%%sp@-\n\t"
+    "move.w %3,%%sp@-\n\t"
+    "move.w %2,%%sp@-\n\t"
+    "move.l %1,%%sp@-\n\t"
+    "tst.w %5\n\t"
+    "bne 1f\n\t"
+    ".short 0xfff3\n\t"          /* _DISKRED */
+    "bra 2f\n"
+    "1:\t.short 0xfff4\n"         /* _DISKWRT */
+    "2:\tlea %%sp@(10),%%sp"
+    : "=d"(d0) : "a"(buf), "d"((short)drive), "d"((short)sect), "d"((short)n), "d"((short)call)
+    : "d1", "d2", "a0", "a1", "a2", "cc", "memory");
+  return d0;
+}
 
 /* いま確保できる最大のメモリブロックの大きさ (_MALLOC に大きすぎる値を渡すと、0x81000000 | 最大の大きさ が返る) */
 static long freemem(void)
@@ -329,6 +351,28 @@ static int serve(void)
         __builtin_memcpy(rbuf + 4, outname, sizeof outname - 1);
         send('K', seq, rbuf, 4 + sizeof outname - 1);
         break;
+      case 'D':   /* ディスクに直接書く: ドライブ (1=A:) (1)、セクタ番号 (2)、データ (1024 バイトの倍数) */
+      case 'V': { /* 読んで CRC を返す: ドライブ (1)、セクタ番号 (2)、セクタ数 (1) */
+        int drv = d[0], sec = (d[1] << 8) | d[2];
+        int n = type == 'D' ? (len - 3) / 1024 : d[3];
+        unsigned char *buf = type == 'D' ? d + 3 : sbuf + 16;   /* 'V' は送信用の場所を借りる (応答は 8 バイト) */
+        long r;
+        if (n < 1 || n > 3 || (type == 'D' && len != 3 + n * 1024)) { put32(tmp, -1); send('E', seq, tmp, 4); break; }
+        if (type == 'D') {
+          /* d は rbuf+4 で偶数番地ではないので、偶数番地の sbuf に写してから書く */
+          __builtin_memcpy(sbuf + 16, buf, n * 1024);
+          r = diskio(1, sbuf + 16, drv, sec, n);
+          if (r < 0) { put32(tmp, r); send('E', seq, tmp, 4); }
+          else send('K', seq, 0, 0);
+        } else {
+          r = diskio(0, buf, drv, sec, n);
+          if (r < 0) { put32(tmp, r); send('E', seq, tmp, 4); break; }
+          r = crc(buf, n * 1024);
+          put32(tmp, r);
+          send('K', seq, tmp, 4);
+        }
+        break;
+      }
       case 'S':   /* 統計: 受信バッファの最大の溜まり (4)、壊れた枠の数 (4) */
         put32(tmp, maxlof);
         put32(tmp + 4, nbad);
