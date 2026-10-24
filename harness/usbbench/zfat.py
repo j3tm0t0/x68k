@@ -45,6 +45,8 @@ def log(kind, msg):
     with lock:
         print("%8.2f %-6s %s" % (time.time() - T0, kind, msg), flush=True)
 
+log("INFO", "T0 epoch=%.3f" % T0)          # stallclass.py が UART・カーネルのログと時刻を合わせる
+
 # ---- 1. マウント ----
 MAC = sys.platform == "darwin"
 if MAC:
