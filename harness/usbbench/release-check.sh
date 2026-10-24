@@ -16,7 +16,7 @@
 #
 # 前提 (raspi3): ~/bin の swdflash / x68key、~/usbbench の zhost.py / zfat.py / profiles、sudo、p2w の Probe、
 #   SMB の共有の実ファイル /srv/x68000z/pzltest.hds (p2w の設定の HDS0)。p2w は scratchpad/p2wlock を取ってから
-# 環境変数: POLL=0 で空きヒープの問い合わせ (UDP 6869 の status) をしない。UART の keepalive の行 (mallinfo、0047 から
+# 環境変数: PCAP=1 でケースごとに 445 番の通信を <case>.pcap に (tcpdump)。POLL=0 で空きヒープの問い合わせ (UDP 6869 の status) をしない。UART の keepalive の行 (mallinfo、0047 から
 #   タスクのスタックの残り) も uart に残る
 # 結果: ~/release-check/<elf の名前>-<時刻>/ (ケースごとのログ、uart.log、heap.log、summary.txt)。終了コード = 不合格の数
 set -u
@@ -61,11 +61,14 @@ POLL=${POLL:-1}
 
 # ケースの前後: UART と dmesg の位置を覚え、あとで PANIC と USB の切断を探す
 begin() { case_name=$1; u0=$(wc -l < $UART); t_case=$(date +%s); resets=()
+  # PCAP=1: Pico と smbd の間 (445 番) をケースごとに記録 (30 秒止まるときに、どちらが待っているかを見る)
+  [ "${PCAP:-0}" = 1 ] && { sudo tcpdump -i any -s 200 -w "$out/$case_name.pcap" host $PICO_IP and port 445 >/dev/null 2>&1 & tp=$!; }
   usbwatch & uw=$!; }
 mark_reset() { resets+=($(date +%s)); }
 finish() {   # $1 = そのケースの道具の結果 (OK / 説明)
   local res=$1 why=()
   kill $uw 2>/dev/null; uw=
+  [ -n "${tp:-}" ] && { sudo kill $tp 2>/dev/null; tp=; }
   [ -s "$out/usbdrop.$case_name" ] && why+=("USB dropped ($(head -1 "$out/usbdrop.$case_name"))")
   tail -n +$((u0 + 1)) $UART > "$out/$case_name.uart"
   # dmesg は drop_caches の行であふれるので、時刻で切れる journalctl -k から (drop_caches の行は捨てる)
@@ -91,7 +94,8 @@ zfat_res() {   # zfat.py のログ → OK / 説明 ($2 = EIO を許す)
   [ "$m" != 0 ] && r+=("$m sectors read back wrong ($(grep -m1 '^ *[0-9.]* BAD' "$log" | cut -c16-110))")
   [ "$d" != 0 ] && r+=("$d written sectors differ on the SMB file")
   [ "$e" != 0 ] && [ -z "$allow" ] && r+=("$e I/O errors")
-  grep -q "HANG\|STALL" "$log" && r+=("$(grep -c STALL "$log") stalls")
+  # SMB を止めるケースでは、止めている間の長い待ち (NOT READY の繰り返し) は正しい動き: 止まりは数えない
+  [ -z "$allow" ] && grep -q "HANG\|STALL" "$log" && r+=("$(grep -c STALL "$log") stalls")
   [ ${#r[@]} -eq 0 ] && echo OK || (IFS='; '; echo "${r[*]}")
 }
 ZFAT="sudo python3 $here/zfat.py --src $SRC"
