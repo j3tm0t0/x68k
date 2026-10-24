@@ -28,14 +28,15 @@ LWIP ?= $(HOME)/src/github.com/yunkya2/x68kzremotedrv/pico-sdk/lib/lwip
 TSPDIR = ../../net/tistack/pico/picosim
 TSP ?= $(if $(wildcard $(LWIP)/src/core/tcp.c),$(TSPDIR)/build/tsp_all.o)
 CFLAGS ?= -O2 -g -Wall
-SVC ?=
+# 足すサービス (picosim_register_svc)。zss_mock.c = 0xA7 (x68k-zos の端末のセッション) の Pico 側のまね (外のものを使わない)
+SVC ?= zss_mock.c
 # 待ち IPL / hdsboot / settingui の 68000 のバイナリ (フォークの driver/ でビルドしたもの。git には入れない)
 FW ?= $(HOME)/src/github.com/yunkya2/x68kzremotedrv-hid/driver
 SVCFLAGS ?=
 
 all: build/picosim
 
-build/picosim: picosim.c netpipe.c lan_slirp.c bootwait.c picosim.h build/libslirp.a $(SVC) $(REMOTE_SRC) $(TSP)
+build/picosim: picosim.c netpipe.c lan_slirp.c bootwait.c ../../net/npd/zss.h picosim.h build/libslirp.a $(SVC) $(REMOTE_SRC) $(TSP)
 	cc $(CFLAGS) -I$(SLIRP_DIR)/src -I$(ACCEL) -I$(ACCEL)/monocypher $(GLIB_CFLAGS) $(SVCFLAGS) -o $@ \
 	  picosim.c netpipe.c lan_slirp.c bootwait.c $(SVC) $(REMOTE_SRC) $(TSP) $(ACCEL)/accel_ops.c $(ACCEL)/monocypher/monocypher.c \
 	  $(ACCEL)/monocypher/monocypher-ed25519.c build/libslirp.a $(GLIB_LIBS) -lresolv $(LIBICONV)
@@ -95,6 +96,7 @@ test: test-host test-xeij
 
 test-host: build/picosim build/picosim-echo
 	python3 -I tests/bridgetest.py build/picosim-echo
+	python3 -I tests/zsstest.py build/picosim
 	python3 -I tests/bootwaittest.py build/picosim $(FW)
 	python3 -I tests/remotetest.py build/picosim $(FW)
 	@if [ -d "$(PZLREPO)" ] || [ -n "$(PZLSRC)" ]; then $(MAKE) build/picosim-pzl PZLREPO=$(PZLREPO) PZLSRC=$(PZLSRC) && \

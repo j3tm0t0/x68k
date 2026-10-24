@@ -58,6 +58,7 @@ static uint32_t st_acc_req, st_acc_res, st_acc_stale;
 
 /* tis.x -p の入口 (TSP レコードを作る / 受ける)。0 = 居ない */
 static void *tsp_entry;
+static void *zss_entry;                    /* (x68k-zos の zos.x) 端末のセッション (0xA7) の入口 */
 
 #define TX_PUT(c) (txbuf[h] = (c), h = (h + 1) & (TXSIZE - 1))
 
@@ -237,6 +238,11 @@ long etd_dispatch(long cmd, long *a)
     return 0;
   case 26:                                 /* (tistack, npd.x から) tis.x の入口。0 = 居ない */
     return (long)tsp_entry;
+  case 27:                                 /* (zos.x) 端末のセッション (0xA7、net/npd/zss.h) の入口を預かる (0 で外す) */
+    zss_entry = (void *)a;
+    return 0;
+  case 28:                                 /* (zos.x、npd.x から) その入口。0 = 居ない */
+    return (long)zss_entry;
   case 24:                                 /* (accel) 統計: state, req, res, stale */
     ((uint32_t *)a)[0] = acc_state; ((uint32_t *)a)[1] = st_acc_req;
     ((uint32_t *)a)[2] = st_acc_res; ((uint32_t *)a)[3] = st_acc_stale;
@@ -262,7 +268,7 @@ long dev_interrupt(struct req_header *req)
     char *b;
     for (b = &__bss_start; b < &_end; b++)
       *b = 0;
-    dos_print("\r\nnetpipe driver for ESP/X (/dev/ep0) npd.sys 1.2 (accel, tistack)\r\n");
+    dos_print("\r\nnetpipe driver for ESP/X (/dev/ep0) npd.sys 1.3 (accel, tistack, zss)\r\n");
     req->addr = &_end;
     return 0;
   }
