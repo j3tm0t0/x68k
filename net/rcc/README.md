@@ -76,7 +76,7 @@ python3 -I net/rcc/tests/rccd_test.py      # ホストだけで (m68k-xelf-gcc �
 net/rcc/tests/xeij_rcc.sh                   # XEiJ の Z から tis.x -p 越しに
 ```
 
-## 速さ (X68000 Z の実機、xip.x、受ける側は raspi5)
+## 速さ (X68000 Z の実機、xip.x、受ける側は LAN の Raspberry Pi 5)
 
 rcmd で 3 回ずつ動かした時間 (rcmd の往復の約 1.3 秒を含む)。Z の gcc は `gcc.x 〜 -lgcc2`、rcc は `rcc.x -O 〜`。
 
@@ -86,5 +86,5 @@ rcmd で 3 回ずつ動かした時間 (rcmd の往復の約 1.3 秒を含む)�
 | Z の gcc、道具とヘッダが C: (SD カード) | 26.0 / 26.1 / 26.0 秒 | 247.1 / 246.8 / 247.1 秒 | — |
 | rcc.x → raspi5 | 6.5 / 6.6 / 6.5 秒 | 11.2 / 10.4 / 11.5 秒 | 8.7 / 8.6 / 8.6 秒 |
 
-raspi5 での gcc は 0.1〜0.6 秒。残りは Z からの送り (big.c は 29KB で 1.6 秒、zosh.c は 47KB で 2.1 秒) と、rcc.x と結果の受け取り。
+受ける側の gcc は 0.1〜0.6 秒。残りは Z からの送り (big.c は 29KB で 1.6 秒、zosh.c は 47KB で 2.1 秒) と、rcc.x と結果の受け取り。
 
