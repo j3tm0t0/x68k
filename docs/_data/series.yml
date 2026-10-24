@@ -1,9 +1,15 @@
-# トップページに並べる順。id は記事の front matter の series と、page はシリーズのページと対応する
+# トップページに並べる順。id は記事の front matter の series と、page はシリーズのページと対応する。*_en は英語版 (en/) 用
 - id: x68000z
   title: X68000 Z 日記
   page: /x68000z/
   description: X68000 Z に CLI の環境を作っていたら、Wi-Fi 越しに TCP/IP が通るところまで来てしまった記録。
+  title_en: X68000 Z Diary
+  page_en: /en/x68000z/
+  description_en: I set out to give an X68000 Z a decent command line. Somehow I ended up running TCP/IP over Wi-Fi. This is the log.
 - id: psp
   title: PSP で X68000 日記
   page: /psp/
   description: X68000 エミュレータ px68k の PSP 版を、5 日かけて等速に近づけた記録。
+  title_en: X68000 on a PSP Diary
+  page_en: /en/psp/
+  description_en: Five days of dragging px68k, an X68000 emulator, on a PSP up to something close to full speed.
