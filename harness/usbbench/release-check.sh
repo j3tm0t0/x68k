@@ -42,6 +42,9 @@ usb_up() { lsusb | grep -q cafe:4002; }
 revive() {   # Pico は動いているのにハブがポートを諦めた (error -32、unable to enumerate) とき: ポートを入れ直す
   for i in 1 2 3; do usb_up && return 0
     echo 1 | sudo tee $PORT/disable >/dev/null; sleep 2; echo 0 | sudo tee $PORT/disable >/dev/null; sleep 10; done; usb_up; }
+# vfat の前に: ブロックデバイスがあるか (zhost が usb-storage を外したままだと USB にはいても /dev/sdX が無い)。無ければポートを入れ直す
+wait_blk() { for i in 1 2 3; do for j in $(seq 20); do [ -e $DEV ] && return 0; sleep 1; done
+  echo 1 | sudo tee $PORT/disable >/dev/null; sleep 2; echo 0 | sudo tee $PORT/disable >/dev/null; sleep 5; done; [ -e $DEV ]; }
 wait_usb() { for i in $(seq ${1:-40}); do usb_up && return 0; sleep 1; done; revive; }
 openocd_p2w() { local s; s=$(awk '$1=="p2w"{print $2}' ~/.picolog)
   (cd ~/src/openocd-rp && LD_LIBRARY_PATH=. timeout 60 ./openocd -s scripts -f interface/cmsis-dap.cfg -c "adapter serial $s" \
@@ -128,11 +131,11 @@ for c in $cases; do
     mark_reset; mark_reset    # zhost は最初と最後にバスリセットする
     r=$(grep "^RESULT" "$out/replay.log"); finish "$([[ $r == "RESULT OK"* ]] && echo OK || echo "zhost: ${r:-no result ($(tail -1 "$out/replay.log" | cut -c1-60))}")" ;;
   vfat-boot)
-    runlim 400 "$out/vfat-boot.log" $ZFAT --boot --ops 800 --seed 21 & p=$!
+    wait_blk; runlim 400 "$out/vfat-boot.log" $ZFAT --boot --ops 800 --seed 21 & p=$!
     sleep 1; reset_pico; mark_reset
     ( sleep 30; usb_up || revive ) ; wait $p; finish "$(zfat_res "$out/vfat-boot.log" eio-ok-before-open)" ;;
   vfat)
-    sleep 5; runlim 600 "$out/vfat.log" $ZFAT --ops 1200 --seed 22; finish "$(zfat_res "$out/vfat.log")" ;;
+    sleep 5; wait_blk; runlim 600 "$out/vfat.log" $ZFAT --ops 1200 --seed 22; finish "$(zfat_res "$out/vfat.log")" ;;
   smb-late)
     smb_block
     runlim 400 "$out/smb-late.log" $ZFAT --boot --ops 100000 --duration 150 --hang 240 --seed 23 & p=$!
@@ -140,11 +143,11 @@ for c in $cases; do
     sleep 45; smb_unblock; say "  smb-late: SMB unblocked at +45 s"
     wait $p; finish "$(zfat_res "$out/smb-late.log" eio-ok)" ;;
   smb-lost)
-    runlim 400 "$out/smb-lost.log" $ZFAT --ops 100000 --duration 180 --hang 240 --seed 24 & p=$!
+    wait_blk; runlim 400 "$out/smb-lost.log" $ZFAT --ops 100000 --duration 180 --hang 240 --seed 24 & p=$!
     sleep 40; smb_block; say "  smb-lost: SMB blocked at +40 s"; sleep 45; smb_unblock; say "  smb-lost: unblocked at +85 s"
     wait $p; finish "$(zfat_res "$out/smb-lost.log" eio-ok)" ;;
   soak)
-    runlim 800 "$out/soak.log" $ZFAT --ops 1000000 --duration 600 --rate 2 --seed 25
+    wait_blk; runlim 800 "$out/soak.log" $ZFAT --ops 1000000 --duration 600 --rate 2 --seed 25
     finish "$(zfat_res "$out/soak.log")" ;;
   *) say "unknown case $c" ;;
   esac
