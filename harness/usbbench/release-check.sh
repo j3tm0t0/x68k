@@ -16,7 +16,7 @@
 #
 # 前提 (raspi3): ~/bin の swdflash / x68key、~/usbbench の zhost.py / zfat.py / profiles、sudo、p2w の Probe、
 #   SMB の共有の実ファイル /srv/x68000z/pzltest.hds (p2w の設定の HDS0)。p2w は scratchpad/p2wlock を取ってから
-# 環境変数: PCAP=1 でケースごとに 445 番の通信を <case>.pcap に (tcpdump)。POLL=0 で空きヒープの問い合わせ (UDP 6869 の status) をしない。UART の keepalive の行 (mallinfo、0047 から
+# 環境変数: USBMON=1 でケースごとに USB バス 1 を usbmon で <case>.usbmon.pcap に。PCAP=1 でケースごとに 445 番の通信を <case>.pcap に (tcpdump)。POLL=0 で空きヒープの問い合わせ (UDP 6869 の status) をしない。UART の keepalive の行 (mallinfo、0047 から
 #   タスクのスタックの残り) も uart に残る
 # 結果: ~/release-check/<elf の名前>-<時刻>/ (ケースごとのログ、uart.log、heap.log、summary.txt)。終了コード = 不合格の数
 set -u
@@ -62,6 +62,9 @@ POLL=${POLL:-1}
 # ケースの前後: UART と dmesg の位置を覚え、あとで PANIC と USB の切断を探す
 begin() { case_name=$1; u0=$(wc -l < $UART); t_case=$(date +%s); resets=()
   # PCAP=1: Pico と smbd の間 (445 番) をケースごとに記録 (30 秒止まるときに、どちらが待っているかを見る)
+  # USBMON=1: raspi3 の USB バス 1 (p2w がいる) を usbmon で記録 (<case>.usbmon.pcap、先頭 96 バイトずつ)。
+  # バス 1 には Probe・キャプチャ・有線 LAN も載るので、p2w の機器番号で絞るのは読むときに (Wireshark: usb.device_address)
+  [ "${USBMON:-0}" = 1 ] && { sudo modprobe usbmon 2>/dev/null; sudo tcpdump -i usbmon1 -s 96 -w "$out/$case_name.usbmon.pcap" >/dev/null 2>&1 & um=$!; }
   [ "${PCAP:-0}" = 1 ] && { sudo tcpdump -i any -s 200 -w "$out/$case_name.pcap" host $PICO_IP and port 445 >/dev/null 2>&1 & tp=$!; }
   usbwatch & uw=$!; }
 mark_reset() { resets+=($(date +%s)); }
@@ -69,6 +72,7 @@ finish() {   # $1 = そのケースの道具の結果 (OK / 説明)
   local res=$1 why=()
   kill $uw 2>/dev/null; uw=
   [ -n "${tp:-}" ] && { sudo kill $tp 2>/dev/null; tp=; }
+  [ -n "${um:-}" ] && { sudo kill $um 2>/dev/null; um=; say "  $case_name: usbmon $(du -h "$out/$case_name.usbmon.pcap" 2>/dev/null | cut -f1), p2w is device $(lsusb | sed -n 's/^Bus 001 Device \([0-9]*\): ID cafe:4002.*/\1/p')"; }
   [ -s "$out/usbdrop.$case_name" ] && why+=("USB dropped ($(head -1 "$out/usbdrop.$case_name"))")
   tail -n +$((u0 + 1)) $UART > "$out/$case_name.uart"
   # dmesg は drop_caches の行であふれるので、時刻で切れる journalctl -k から (drop_caches の行は捨てる)
@@ -86,16 +90,36 @@ finish() {   # $1 = そのケースの道具の結果 (OK / 説明)
   [ "$rst" -gt 0 ] && say "  $case_name: Linux reset the device $rst time(s) ($(grep -m1 'reset full-speed' "$out/$case_name.dmesg" | cut -c8-22))"
   if [ ${#why[@]} -eq 0 ]; then say "PASS $case_name"; else say "FAIL $case_name: $(IFS='; '; echo "${why[*]}")"; fails=$((fails + 1)); fi
 }
-zfat_res() {   # zfat.py のログ → OK / 説明 ($2 = EIO を許す)
-  local log=$1 allow=${2:-}
+zfat_res() {   # zfat.py のログ → OK / 説明。$2 = EIO を許す、$3 $4 = SMB を止めた区間 (zfat の起動からの秒)
+  local log=$1 allow=${2:-} ws=${3:-} we=${4:-}
   grep -q "^STATS" "$log" || { echo "zfat did not finish ($(grep -m1 'HANG\|Traceback\|mount failed' "$log" | cut -c1-60))"; return; }
   local m e d; read m e d < <(sed -n 's/^STATS mismatch=\([0-9]*\) eio=\([0-9]*\) smbdiff=\([0-9]*\)/\1 \2 \3/p' "$log")
   local r=()
   [ "$m" != 0 ] && r+=("$m sectors read back wrong ($(grep -m1 '^ *[0-9.]* BAD' "$log" | cut -c16-110))")
   [ "$d" != 0 ] && r+=("$d written sectors differ on the SMB file")
   [ "$e" != 0 ] && [ -z "$allow" ] && r+=("$e I/O errors")
-  # SMB を止めるケースでは、止めている間の長い待ち (NOT READY の繰り返し) は正しい動き: 止まりは数えない
-  [ -z "$allow" ] && grep -q "HANG\|STALL" "$log" && r+=("$(grep -c STALL "$log") stalls")
+  # 10 秒を超えた操作 (SLOW の行: 終わった時刻と長さ)。SMB を止めた区間 (と、戻してから 15 秒) に重なるものは正しい待ち (NOT READY
+  # の繰り返し) なので数えない。戻らなかった操作 (STALL だけで SLOW が無い) は数える
+  local st; st=$(python3 - "$log" "$ws" "$we" <<'PY'
+import re, sys
+log, ws, we = sys.argv[1], sys.argv[2], sys.argv[3]
+win = (float(ws), float(we) + 15) if ws else None
+n = ex = 0; ended = set()
+for l in open(log, errors="replace"):
+    m = re.match(r"\s*([\d.]+) SLOW\s+(.*) took ([\d.]+) s", l)
+    if m and float(m.group(3)) > 10:
+        t1 = float(m.group(1)); t0 = t1 - float(m.group(3)); ended.add(m.group(2))
+        if win and t0 < win[1] and t1 > win[0]: ex += 1
+        else: n += 1
+for l in open(log, errors="replace"):
+    m = re.match(r"\s*[\d.]+ STALL\s+(.*): [\d.]+ s so far", l)
+    if m and m.group(1) not in ended: n += 1; ended.add(m.group(1))
+print(n, ex)
+PY
+)
+  local sn=${st% *} sx=${st#* }
+  [ "$sn" != 0 ] && r+=("$sn stalls over 10 s$([ "$sx" != 0 ] && echo " (+$sx during the SMB block, expected)")")
+  [ "$sn" = 0 ] && [ "$sx" != 0 ] && say "  $case_name: $sx long waits during the SMB block (expected)" >&2
   [ ${#r[@]} -eq 0 ] && echo OK || (IFS='; '; echo "${r[*]}")
 }
 ZFAT="sudo python3 $here/zfat.py --src $SRC"
@@ -149,11 +173,11 @@ for c in $cases; do
     runlim 400 "$out/smb-late.log" $ZFAT --boot --ops 100000 --duration 150 --hang 240 --seed 23 & p=$!
     sleep 1; reset_pico; mark_reset
     sleep 45; smb_unblock; say "  smb-late: SMB unblocked at +45 s"
-    wait $p; finish "$(zfat_res "$out/smb-late.log" eio-ok)" ;;
+    wait $p; finish "$(zfat_res "$out/smb-late.log" eio-ok 0 46)" ;;
   smb-lost)
     wait_blk; runlim 400 "$out/smb-lost.log" $ZFAT --ops 100000 --duration 180 --hang 240 --seed 24 & p=$!
     sleep 40; smb_block; say "  smb-lost: SMB blocked at +40 s"; sleep 45; smb_unblock; say "  smb-lost: unblocked at +85 s"
-    wait $p; finish "$(zfat_res "$out/smb-lost.log" eio-ok)" ;;
+    wait $p; finish "$(zfat_res "$out/smb-lost.log" eio-ok 40 85)" ;;
   soak)
     wait_blk; runlim 800 "$out/soak.log" $ZFAT --ops 1000000 --duration 600 --rate 2 --seed 25
     finish "$(zfat_res "$out/soak.log")" ;;

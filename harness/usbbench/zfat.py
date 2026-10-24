@@ -46,9 +46,24 @@ def log(kind, msg):
         print("%8.2f %-6s %s" % (time.time() - T0, kind, msg), flush=True)
 
 # ---- 1. マウント ----
-os.makedirs(args.mnt, exist_ok=True)
-subprocess.run(["umount", args.mnt], stderr=subprocess.DEVNULL)
-if args.boot:
+MAC = sys.platform == "darwin"
+if MAC:
+    # Mac (USB ホストを raspi3 の dwc_otg から替えて比べる): macOS が自分でマウントする (/Volumes/NO NAME)。
+    # O_DIRECT の代わりに F_NOCACHE、drop_caches は無し (purge は root が要る)、FAT の鎖の確認は省く
+    if args.mnt == "/mnt/zpico":
+        args.mnt = "/Volumes/NO NAME"
+    for i in range(300):
+        if os.path.exists(os.path.join(args.mnt, args.file)):
+            break
+        time.sleep(0.2)
+    else:
+        sys.exit("zfat: %s not mounted (is the Pico on this Mac's USB?)" % args.mnt)
+else:
+    os.makedirs(args.mnt, exist_ok=True)
+    subprocess.run(["umount", args.mnt], stderr=subprocess.DEVNULL)
+if MAC:
+    pass
+elif args.boot:
     # 先に起動しておき、Pico のリセット (swdflash / 電源) で機器が消えて、また現れたらすぐマウント
     t = time.time()
     while os.path.exists(args.dev) and time.time() - t < 60:
@@ -57,7 +72,7 @@ if args.boot:
     while not os.path.exists(args.dev):
         time.sleep(0.02)
     log("INFO", "device appeared")
-for i in range(200):
+for i in range(0 if MAC else 200):
     r = subprocess.run(["mount", "-t", "vfat", "-o", args.opts, args.dev, args.mnt], capture_output=True, text=True)
     if r.returncode == 0:
         break
@@ -65,13 +80,20 @@ for i in range(200):
         log("INFO", "mount: %s" % r.stderr.strip())
     time.sleep(0.1)
 else:
-    sys.exit("zfat: mount failed")
+    if not MAC:
+        sys.exit("zfat: mount failed")
 path = os.path.join(args.mnt, args.file)
 st0 = os.stat(path)
 log("INFO", "mounted; %s size 0x%x; seed %d; files %s" % (args.file, st0.st_size, seed,
     sorted(os.path.relpath(p, args.mnt) for p in glob.glob(args.mnt + "/X68000Z/image/*"))))
 
-shadow = bytearray(open(args.src, "rb").read())
+def read_src():
+    # --src は手元のファイル、または ssh:<host>:<path> (Mac から raspi3 の SMB の実ファイルを読む)
+    if args.src.startswith("ssh:"):
+        _, host, p_ = args.src.split(":", 2)
+        return subprocess.run(["ssh", host, "cat", p_], capture_output=True, check=True).stdout
+    return open(args.src, "rb").read()
+shadow = bytearray(read_src())
 span = min(args.span or len(shadow), len(shadow))
 log("INFO", "source %s %d bytes crc %08x; span %d" % (args.src, len(shadow), zlib.crc32(shadow), span))
 written = set()                          # 書いたセクタ
@@ -79,7 +101,11 @@ written = set()                          # 書いたセクタ
 MASK = {2, 0x20, 0x21}
 
 fd_b = os.open(path, os.O_RDWR)
-fd_d = os.open(path, os.O_RDWR | os.O_DIRECT)
+if MAC:
+    import fcntl
+    fd_d = os.open(path, os.O_RDWR); fcntl.fcntl(fd_d, 48, 1)      # F_NOCACHE
+else:
+    fd_d = os.open(path, os.O_RDWR | os.O_DIRECT)
 abuf = mmap.mmap(-1, args.maxsec * 512)  # O_DIRECT 用 (ページ境界)
 
 def classify(got, off):
@@ -198,11 +224,12 @@ for i in range(args.ops):
         stats["eio"] += 1
         log("ERR", "%s: %s" % (what, e)); bad.append(what)
     if not direct and i % 50 == 49:      # Z の Linux もキャッシュを追い出す: ページキャッシュ経由の読みが本当に USB まで行くように
-        open("/proc/sys/vm/drop_caches", "w").write("1\n")
+        if not MAC:
+            open("/proc/sys/vm/drop_caches", "w").write("1\n")
     if i % 500 == 499:
         # ---- 5. SMB の実ファイルと比べる (書き込みの道の端から端まで) ----
         os.fsync(fd_b); time.sleep(1.5)
-        real = open(args.src, "rb").read()
+        real = read_src()
         diff = [s for s in sorted(written) if real[s * 512:(s + 1) * 512] != shadow[s * 512:(s + 1) * 512]]
         if diff:
             log("BAD", "after %d ops: %d written sectors differ on the SMB file, first 0x%x" % (i + 1, len(diff), diff[0]))
@@ -212,10 +239,10 @@ for i in range(args.ops):
 stop.set(); idle_th.join(args.idle + 5)
 os.fsync(fd_b); os.close(fd_b); os.close(fd_d)
 time.sleep(2)
-real = open(args.src, "rb").read()
+real = read_src()
 diff = [s for s in sorted(written) if real[s * 512:(s + 1) * 512] != shadow[s * 512:(s + 1) * 512]]
 st1 = os.stat(path)
-r = subprocess.run(["umount", args.mnt], capture_output=True, text=True)
+r = subprocess.run(["true"] if MAC else ["umount", args.mnt], capture_output=True, text=True)
 
 def fatcheck():
     """マウントを外したあと、生のデバイスから: BPB → X68000Z/image の項目 → FAT の鎖の長さが大きさと合うか"""
@@ -266,7 +293,7 @@ def fatcheck():
                               " (dir keeps the tentative size; chain follows the real size)" if tentative else " SHORT"),
         ", %d non-contiguous links" % breaks if breaks else "")
 try:
-    fc = fatcheck()
+    fc = "skipped on the Mac" if MAC else fatcheck()
 except Exception as e:
     fc = "fatcheck failed: %s" % e
 
