@@ -251,6 +251,7 @@ def fatcheck():
     if c is None:
         return "no directory entry for %s" % args.file
     want = (size + spc * 512 - 1) // (spc * 512)
+    tentative = size == 0xfffffe00     # HDS が開く前に作られた項目 (fork は作り直さない): 鎖は本当の大きさで返る
     n, c0, breaks, last = 0, c, 0, None
     while 2 <= c < 0x0ffffff8 and n <= want + 0x40000:
         nx = fat(c)
@@ -260,7 +261,9 @@ def fatcheck():
     end = "ends at cluster 0x%x -> 0x%x" % last if last else "empty"
     # x68kzremotedrv の仮想 FAT は大きさより 1 クラスタ長い鎖を返す (fork 670fb84 で確認): 短いときだけ不合格
     return "%s: start cluster 0x%x size 0x%x, chain %d clusters (want %d, %s)%s%s" % (
-        args.file, c0, size, n, want, end, "" if n == want else (" (+%d extra)" % (n - want) if n > want else " SHORT"),
+        args.file, c0, size, n, want, end,
+        "" if n == want else (" (+%d extra)" % (n - want) if n > want else
+                              " (dir keeps the tentative size; chain follows the real size)" if tentative else " SHORT"),
         ", %d non-contiguous links" % breaks if breaks else "")
 try:
     fc = fatcheck()

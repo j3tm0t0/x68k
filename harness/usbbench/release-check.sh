@@ -35,7 +35,7 @@ say() { echo "$(date +%T) $*" | tee -a "$out/summary.txt"; }
 
 smb_block()   { sudo iptables -C INPUT -s $PICO_IP -p tcp --dport 445 -j DROP 2>/dev/null || sudo iptables -I INPUT -s $PICO_IP -p tcp --dport 445 -j DROP; }
 smb_unblock() { while sudo iptables -C INPUT -s $PICO_IP -p tcp --dport 445 -j DROP 2>/dev/null; do sudo iptables -D INPUT -s $PICO_IP -p tcp --dport 445 -j DROP; done; }
-cleanup() { smb_unblock; sudo umount /mnt/zpico 2>/dev/null; [ -n "${hp:-}" ] && kill $hp 2>/dev/null; }
+cleanup() { smb_unblock; sudo umount -l /mnt/zpico 2>/dev/null; [ -n "${hp:-}" ] && kill $hp 2>/dev/null; [ -n "${uw:-}" ] && kill $uw 2>/dev/null; }
 trap cleanup EXIT
 
 usb_up() { lsusb | grep -q cafe:4002; }
@@ -57,10 +57,13 @@ POLL=${POLL:-1}
 [ "$POLL" = 1 ] && { heaplog & hp=$!; }
 
 # ケースの前後: UART と dmesg の位置を覚え、あとで PANIC と USB の切断を探す
-begin() { case_name=$1; u0=$(wc -l < $UART); k0=$(sudo dmesg | wc -l); t_case=$(date +%s); resets=(); sudo dmesg -T >/dev/null; }
+begin() { case_name=$1; u0=$(wc -l < $UART); k0=$(sudo dmesg | wc -l); t_case=$(date +%s); resets=()
+  usbwatch & uw=$!; }
 mark_reset() { resets+=($(date +%s)); }
 finish() {   # $1 = そのケースの道具の結果 (OK / 説明)
   local res=$1 why=()
+  kill $uw 2>/dev/null; uw=
+  [ -s "$out/usbdrop.$case_name" ] && why+=("USB dropped ($(head -1 "$out/usbdrop.$case_name"))")
   tail -n +$((u0 + 1)) $UART > "$out/$case_name.uart"
   sudo dmesg | tail -n +$((k0 + 1)) > "$out/$case_name.dmesg"
   grep -aiq "out of memory\|panic\|hardfault\|assert" "$out/$case_name.uart" && why+=("$(grep -aim1 'out of memory\|panic\|hardfault\|assert' "$out/$case_name.uart" | cut -c1-80)")
@@ -69,7 +72,7 @@ finish() {   # $1 = そのケースの道具の結果 (OK / 説明)
   local expected=${#resets[@]}
   [ "$disc" -gt "$expected" ] && why+=("USB disconnects $disc (expected $expected)")
   grep -q "unable to enumerate" "$out/$case_name.dmesg" && why+=("hub gave up on the port (re-enabled)")
-  usb_up || why+=("USB gone at the end")
+  usb_up || { why+=("USB gone at the end"); recover; }
   [ "$res" != OK ] && why+=("$res")
   if [ ${#why[@]} -eq 0 ]; then say "PASS $case_name"; else say "FAIL $case_name: $(IFS='; '; echo "${why[*]}")"; fails=$((fails + 1)); fi
 }
@@ -85,6 +88,29 @@ zfat_res() {   # zfat.py のログ → OK / 説明 ($2 = EIO を許す)
   [ ${#r[@]} -eq 0 ] && echo OK || (IFS='; '; echo "${r[*]}")
 }
 ZFAT="sudo python3 $here/zfat.py --src $SRC"
+ZHOST="sudo $HOME/venv-usbbench/bin/python $here/zhost.py"   # pyusb は venv にだけある
+
+# ---- USB が消えたときの立て直し ----
+# Pico が PANIC すると USB から消え、読み書きの途中の python は (デバイスが残ったまま) 何時間も戻らない (10/24 02:07 に 16 時間)。
+# マウントを lazy で外し、Pico を SWD でリセットし、ハブのポートを入れ直す。古いデバイスが消えると止まっていた I/O は EIO で戻る
+recover() {
+  say "  $case_name: recovering (lazy umount, SWD reset, hub port)"
+  sudo umount -l /mnt/zpico 2>/dev/null
+  reset_pico; sleep 3; revive || { echo 1 | sudo tee $PORT/disable >/dev/null; sleep 3; echo 0 | sudo tee $PORT/disable >/dev/null; sleep 10; }
+}
+# USB の見張り: ケースの間ずっと、2 秒ごとに lsusb。30 秒続けて見えなければ記録して立て直す (自分でリセットした直後は数えない)
+usbwatch() { local gone=0
+  while :; do
+    if usb_up; then gone=0; else gone=$((gone + 2)); fi
+    if [ $gone -ge 30 ]; then echo "$(date +%T) USB gone for 30 s" >> "$out/usbdrop.$case_name"; recover >/dev/null 2>&1; gone=0; fi
+    sleep 2; done; }
+# runlim <秒> <ログ> <コマンド...>: 裏で動かし、時間を過ぎたら kill -9 して立て直す (D 状態のままでも待たない)。終了コード、時間切れは 124
+runlim() { local lim=$1 log=$2; shift 2
+  "$@" > "$log" 2>&1 & local p=$! t=0
+  while kill -0 $p 2>/dev/null; do sleep 2; t=$((t + 2))
+    if [ $t -ge $lim ]; then echo "$(date +%T) runlim: killed after $lim s" >> "$log"
+      sudo pkill -9 -P $p 2>/dev/null; kill -9 $p 2>/dev/null; recover; disown $p 2>/dev/null; return 124; fi; done
+  wait $p; }
 
 say "release-check $(basename "$elf") POLL=$POLL ($(sha256sum "$elf" | cut -c1-8)) on p2w (no SD card); cases: $cases"
 smb_unblock
@@ -98,33 +124,33 @@ for c in $cases; do
   idle)
     reset_pico; mark_reset; wait_usb; sleep 60; finish OK ;;
   replay)
-    sudo python3 $here/zhost.py -p $here/profiles/z-fork.json --speed 2 -t 5 > "$out/replay.log" 2>&1
+    runlim 300 "$out/replay.log" $ZHOST -p $here/profiles/z-fork.json --speed 2 -t 5
     mark_reset; mark_reset    # zhost は最初と最後にバスリセットする
-    r=$(grep "^RESULT" "$out/replay.log"); finish "$([ "${r%% *}" = "RESULT" ] && [[ $r == "RESULT OK"* ]] && echo OK || echo "zhost: ${r:-no result}")" ;;
+    r=$(grep "^RESULT" "$out/replay.log"); finish "$([[ $r == "RESULT OK"* ]] && echo OK || echo "zhost: ${r:-no result ($(tail -1 "$out/replay.log" | cut -c1-60))}")" ;;
   vfat-boot)
-    $ZFAT --boot --ops 800 --seed 21 > "$out/vfat-boot.log" 2>&1 & p=$!
+    runlim 400 "$out/vfat-boot.log" $ZFAT --boot --ops 800 --seed 21 & p=$!
     sleep 1; reset_pico; mark_reset
     ( sleep 30; usb_up || revive ) ; wait $p; finish "$(zfat_res "$out/vfat-boot.log" eio-ok-before-open)" ;;
   vfat)
-    sleep 5; $ZFAT --ops 1200 --seed 22 > "$out/vfat.log" 2>&1; finish "$(zfat_res "$out/vfat.log")" ;;
+    sleep 5; runlim 600 "$out/vfat.log" $ZFAT --ops 1200 --seed 22; finish "$(zfat_res "$out/vfat.log")" ;;
   smb-late)
     smb_block
-    $ZFAT --boot --ops 100000 --duration 150 --hang 240 --seed 23 > "$out/smb-late.log" 2>&1 & p=$!
+    runlim 400 "$out/smb-late.log" $ZFAT --boot --ops 100000 --duration 150 --hang 240 --seed 23 & p=$!
     sleep 1; reset_pico; mark_reset
     sleep 45; smb_unblock; say "  smb-late: SMB unblocked at +45 s"
     wait $p; finish "$(zfat_res "$out/smb-late.log" eio-ok)" ;;
   smb-lost)
-    $ZFAT --ops 100000 --duration 180 --hang 240 --seed 24 > "$out/smb-lost.log" 2>&1 & p=$!
+    runlim 400 "$out/smb-lost.log" $ZFAT --ops 100000 --duration 180 --hang 240 --seed 24 & p=$!
     sleep 40; smb_block; say "  smb-lost: SMB blocked at +40 s"; sleep 45; smb_unblock; say "  smb-lost: unblocked at +85 s"
     wait $p; finish "$(zfat_res "$out/smb-lost.log" eio-ok)" ;;
   soak)
-    $ZFAT --ops 1000000 --duration 600 --rate 2 --seed 25 > "$out/soak.log" 2>&1
+    runlim 800 "$out/soak.log" $ZFAT --ops 1000000 --duration 600 --rate 2 --seed 25
     finish "$(zfat_res "$out/soak.log")" ;;
   *) say "unknown case $c" ;;
   esac
   revive >/dev/null || true
 done
-kill $hp 2>/dev/null; hp=
+[ -n "${hp:-}" ] && kill $hp 2>/dev/null; hp=
 h=$(grep -o 'heap=[0-9]*' "$out/heap.log" 2>/dev/null | cut -d= -f2 | sort -n | head -1)
 say "sbrk headroom (status heap=): min ${h:-n/a}; UART mallinfo lines: $(cat "$out"/*.uart 2>/dev/null | grep -aic 'arena\|mallinfo')"
 say "result: $fails failing case(s); logs in $out"
