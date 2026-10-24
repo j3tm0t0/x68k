@@ -22,8 +22,8 @@ X68000 Z 向けに配っているもの (Pico のファーム、ssh.x / zterm、
 - npd.sys 1.3: Z-OS の zos.x が、Pico の SSH サーバーからの端末のセッション (0xA7 のレコード) の受け口を預けられるようにした (ETD 27 / 28)。npd.x はその受け口を交換のたびに呼ぶ。tis.x の TSP (0xA6) と同じ交換に載せるときは場所を分け合う。zos.x を使わないときは何も変わらない。
 
 ### x68kcli のイメージ
-- `/etc/zoshrc` (Z-OS のシェル zosh の別名と、gcc などの関数)。
-- `gcc` は `rcc.x` の前置きになった (zosh・ksh・zsh)。環境変数 `RCC_HOST` に LAN の別の機械 (net/rcc の rccd.py が動いているもの) を書くと、そこの elf2x68k の gcc 13 でコンパイルし、Z の gcc と同じ場所に結果を書く。つながらなければ 1 行知らせて Z の gcc (真里子版) でコンパイルする。`RCC_HOST` が無ければ今までどおり Z の gcc。Z だけでコンパイルするなら `gcc.x ... -lgcc2`。
+- `/etc/zoshrc` (Z-OS のシェル zosh の別名と、`-lgcc2` を付ける gcc などの関数)。
+- `rcc` (net/rcc の `rcc.x`): コンパイルを LAN の別の機械に任せるコマンド。引数は Z の gcc と同じで、環境変数 `RCC_HOST` に書いた機械 (net/rcc の rccd.py が動いているもの) の elf2x68k の gcc 13 でコンパイルし、Z の gcc と同じ場所に結果を書く。つながらなければ 1 行知らせて Z の gcc (真里子版) でコンパイルする。`gcc` は今までどおり Z の gcc。いつも任せたいときは、自分の設定ファイルに `RCC_HOST` と `alias gcc=rcc` を書く (zosh は `~/zosh.rc`、zsh は `~/.zshrc`)。
   Z の実機 (xip.x) で測った時間 (3 回の平均、rcmd の往復の約 1.3 秒を含む。詳しくは net/rcc/README.md):
 
   | | hello.c (6 行) | big.c (1,284 行) |

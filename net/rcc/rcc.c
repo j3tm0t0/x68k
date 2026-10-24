@@ -2,7 +2,7 @@
  * rcc.x -- gcc の前置き: 入力のファイルを LAN の向こうの rccd.py (elf2x68k の gcc) に送ってコンパイルし、結果を Z の gcc と
  * 同じ場所に書く。引数は Z の gcc と同じ (-O、-o、-c、-S、-E、-I、-D、-U、-l、-L、-g、-W など)
  *
- *   rcc.x -O hello.c -o hello.x          zosh の gcc() から呼ぶ (/etc/zoshrc)
+ *   rcc.x -O hello.c -o hello.x          alias gcc=rcc にすれば gcc の代わり (net/rcc/README.md)
  *
  * 相手は環境変数 RCC_HOST (名前か a.b.c.d、":ポート" も可。既定のポートは 7790)。TCP は xip.x でも tis.x -p でも動く。
  * 送るもの: 引数の入力 (.c .cc .cpp .s .S .o .a)、-include のファイル、今のディレクトリ・ソースのディレクトリ・-I の
