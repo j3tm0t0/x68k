@@ -103,27 +103,27 @@ rx.x は 1 フレーム (既定で 2048 バイト) を受信するたびに、�
 
 ## 段階 4: 同じ回線を SLIP にして rcmd.x で操作する
 
-bootstrap のあと、同じ RS-232C を SLIP (シリアルの上で IP パケットを運ぶ方式) にして、TCP の上の rcmd.x で X68000 を操作できるようにする。
-TCP/IP 本体は ESP/X の xip.x (K.Shirakata 氏の改良版 β5)、その下は `net/slip` の slip.sys と `net/slipd` の slipd.x。
-X68000 Z で使っている組み合わせと同じで、SCC の割り込みは ROM と RSDRV.SYS に任せ、slipd.x が IOCS で 1 バイトずつ読み書きする。
+bootstrap が終わったら、同じ RS-232C 回線を SLIP (シリアル回線で IP パケットを送受信する方式) に切り替え、TCP で接続する rcmd.x で X68000 を操作できるようにする。
+TCP/IP の処理には ESP/X の xip.x (K.Shirakata 氏の改良版 β5) を使い、SLIP には `net/slip` の slip.sys と `net/slipd` の slipd.x を使う。
+X68000 Z で使っている組み合わせと同じで、シリアル通信コントローラ (SCC) の割り込み処理は ROM と RSDRV.SYS が担当し、slipd.x は IOCS を使って 1 バイトずつ読み書きする。
 
-1. Mac で `./getnet.sh` を実行し、`files-net/` に送るファイルを用意する。
-   xip.x と ifconfig.x / inetdconf.x は retropc.net から取り、xip.x には `net/patchxip.py` で MSS 1460 などのパッチをあてる
+1. Mac で `./getnet.sh` を実行し、X68000 に転送するファイルを `files-net/` に用意する。
+   xip.x と ifconfig.x / inetdconf.x は retropc.net から取り、xip.x には `net/patchxip.py` で、TCP の最大セグメントサイズ (MSS) を 1460 バイトにするなどのパッチをあてる
    (改変したバイナリは配布しない)。slip.sys / slipd.x は elf2x68k でビルドする。
-   rcmd.x は X68000 の上でビルドするものなので、x68kcli の HDS イメージ (`build/xipbase.hds` など) から取り出すか、`RCMD_X=パス` で渡す。
+   rcmd.x は X68000 の上でビルドするものなので、ビルド済みのものを x68kcli のハードディスクイメージ (`build/xipbase.hds` など) から取り出すか、環境変数 `RCMD_X` にパスを指定する。
 2. コンソールが RS-232C の状態 (段階 3 の後) で、Pi から実行する。
 
    ```
    ./sx.py --port /dev/ttyUSB0 --baud 19200 stage4 --prune
    ```
 
-   約 230KB を送り、`CONFIG.SYS` に `PROCESS` と `DEVICE = \SYS\SLIP.SYS` を、`A:\NETUP.BAT` を作り、AUTOEXEC.BAT の最後を `NETUP` にする
-   (元の CONFIG.SYS は `CONFIG.ORG`)。
+   約 230KB を転送し、`CONFIG.SYS` に `PROCESS` と `DEVICE = \SYS\SLIP.SYS` を追加する。`A:\NETUP.BAT` を作り、AUTOEXEC.BAT の末尾を `NETUP` に変える。
+   元の CONFIG.SYS は `CONFIG.ORG` として残す。
    システムディスクの空きでは足りないので、`--prune` を付けるとこのキットが使わないファイル
-   (`DEFSPTOOL.BAS` `DEFSPTOOL.HLP` `HISTORY.HLP` `BACKUP.X` `RESTORE.X` `RECOVER.X` `ASK68K.SYS`) を消し、CONFIG.SYS の ASK68K.SYS の行を REM にする。
-   複製したディスクでだけ使う。ASK68K.SYS (かな漢字変換) を外すと主記憶も空く。
-3. Pi を SLIP にして (`x68mode slip`、下の「Pi の準備」)、X68000 をリセットする。起動の最後に NETUP.BAT が
-   xip.x → ifconfig → slipd.x と進み、rcmd.x が前面で待つ。X68000 の画面には rcmd.x が受けたコマンドが出る。
+   (`DEFSPTOOL.BAS` `DEFSPTOOL.HLP` `HISTORY.HLP` `BACKUP.X` `RESTORE.X` `RECOVER.X` `ASK68K.SYS`) を消し、CONFIG.SYS の ASK68K.SYS を読み込む行を `REM` でコメントにする。
+   `--prune` は複製したディスクでだけ使う。かな漢字変換の ASK68K.SYS を読み込まなくなるので、主記憶の空きも増える。
+3. Pi で `x68mode slip` を実行して SLIP に切り替え (後述の「Pi の準備」)、X68000 をリセットする。起動の最後に NETUP.BAT が
+   xip.x、ifconfig、slipd.x を順に起動し、rcmd.x がフォアグラウンドでコマンドを待つ。X68000 の画面には rcmd.x が受けたコマンドが出る。
 4. Pi から使う。
 
    ```
@@ -132,11 +132,11 @@ X68000 Z で使っている組み合わせと同じで、SCC の割り込みは 
    x68 'copy A:\AUTOEXEC.CON A:\AUTOEXEC.BAT'   # 次の起動からコンソール (CTTY AUX) に戻す
    ```
 
-   rcmd.x は X68000 のキーボードの ESC か、Pi からの `exit` で止まる。コンソールに戻した後 SLIP にするには `sx mode slip`。
-   SLIP の速さを変えるには、コンソールの状態で `sx mode slip --netspeed 38400` (Pi の `/etc/default/ppp-x68k` の SPEED も合わせる)。
+   rcmd.x を止めるには、X68000 のキーボードで ESC を押すか、Pi から `exit` を送る。コンソールに戻した後 SLIP にするには `sx mode slip`。
+   SLIP の通信速度を変えるには、コンソールの状態で `sx mode slip --netspeed 38400` を実行し、Pi の `/etc/default/ppp-x68k` の SPEED も同じ値にする。
 
 段階 4 の後の主記憶の空きは約 1.1MB (XEiJ で xip.x と slipd.x が常駐し、rcmd.x を止めた状態。`rx -m` で表示)。
-X68000 の IP は 192.168.68.2、Pi は 192.168.68.1 (`--ip` / `--peer` で変えられる)。Pi は IP 転送と NAT をするので、X68000 から外にも出られる。
+X68000 の IP は 192.168.68.2、Pi は 192.168.68.1 (`--ip` / `--peer` で変えられる)。Pi が IP パケットの転送とアドレス変換 (NAT) をするので、X68000 から外のネットワークにも接続できる。
 
 ### SLIP の速さ
 
@@ -145,7 +145,7 @@ X68000 の IP は 192.168.68.2、Pi は 192.168.68.1 (`--ip` / `--peer` で変�
 | 19200bps | 19.6 秒 (1.49 KB/s) | XEiJ で動作 |
 | 38400bps | 10.5 秒 (2.80 KB/s) | XEiJ で動作。実機は未確認 |
 
-XEiJ で確かめられるのは動くかどうかまで。XEiJ の SCC には受信の FIFO が無く、実機の SCC とは取りこぼし方が違う
+XEiJ で確かめられるのは動くかどうかまでで、実機での受信データの取りこぼしは評価できない。XEiJ の SCC には受信データを一時的に保持する FIFO が無く、実機の SCC とは取りこぼし方が違う
 (X68000 Z の実機では 38400bps で約 1.4%、XEiJ では 19200bps で約 5% の再送が出た)。
 実機の Compact XVI の SCC がフロー制御なしの 38400bps で取りこぼすかどうかは、実機で試して確かめる。
 RSDRV.SYS 2.02 は 38400bps (速度コード 9) を受け付ける。
@@ -167,7 +167,7 @@ sudo raspi/setup.sh --dev /dev/serial/by-id/usb-FTDI_…-if00-port0
 | `x68type` / `x68con` | コンソール (CTTY AUX) に 1 文字ずつ打つ / コンソールのログを追いかけて表示する |
 | `x68` / `x68put` | rcmd.x (SLIP の上の TCP) でコマンドを実行する / ファイルを送る (harness/raspi のもの) |
 | `x68mode console\|slip` | 起動時にどちらを動かすかを切り替える |
-| `x68-serlog.service` | コンソールのログ係。`/var/log/x68k/x68con.log` に書く。`sx` が動く間はロックファイル (`/run/x68k-serial/lock`) を見てポートを空ける |
+| `x68-serlog.service` | コンソールのログを `/var/log/x68k/x68con.log` に記録する。`sx` が動く間はロックファイル (`/run/x68k-serial/lock`) でそれを知り、シリアルポートを閉じる |
 | `ppp-x68k.service` | SLIP (`net/raspi/ppp-x68k.sh`: slattach + IP 転送 + NAT + 時刻合わせ)。設定は `/etc/default/ppp-x68k` |
 
 どちらのサービスもログインしなくても起動時に動く。`--mode console|slip` で最初の状態を決め、後から `x68mode` で変える。
@@ -177,7 +177,7 @@ setup.sh が raspi-config でシリアルコンソールを止める。
 ### Pi を読み出し専用にする
 
 Pi Zero 2 W を SCSI のターミネータ電源から給電すると、X68000 の電源を切ったときに Pi の電源も急に切れる。
-SD カードのファイルシステムを壊さないように、ルートを読み出し専用にして書き込みを RAM に置く。
+SD カードのファイルシステムを壊さないように、ルートファイルシステムを読み出し専用にし、書き込みは RAM に置く。
 
 ```
 sudo raspi/setup.sh --data /data --overlay on     # 最後に raspi-config の overlayfs を有効にする。再起動で反映
@@ -187,9 +187,9 @@ sudo raspi/setup.sh --overlay off                 # 設定を変えるとき。�
 - `--overlay on` の後は、`/etc` などを変えても再起動で元に戻る。設定を変えるときは `--overlay off` で戻して再起動してから行う。
   setup.sh は読み出し専用の間は止まる (`--overlay off` のときだけ動く)。
 - ログや PiSCSI のディスクイメージなど残したいものは、別のパーティションに置く。ext4 のパーティションに `X68DATA` というラベルを付けておくと、
-  `--data /data` が `/etc/fstab` に書いて `/data` にマウントし、ログを `/data/log` に、PiSCSI 用に `/data/piscsi` を作る。
-  パーティションを作るのは setup.sh ではしない (SD カードの後ろを空けて作るか、USB メモリを使う)。
-  急な電源断でこのパーティションが壊れることはありうるので、PiSCSI のイメージは控えを取っておく。
+  `--data /data` を指定すると、setup.sh が `/etc/fstab` に追加して `/data` にマウントし、ログの保存先を `/data/log` に変え、PiSCSI 用に `/data/piscsi` を作る。
+  setup.sh はパーティションを作らない。SD カードの末尾に空きを作ってパーティションを切るか、USB メモリを使う。
+  急な電源断でこのパーティションが壊れることはありうるので、PiSCSI のディスクイメージはバックアップを取っておく。
 - 読み出し専用の切り替えは raspi-config (Raspberry Pi OS) の機能を使う。raspi-config の無い Debian では setup.sh は切り替えず、メッセージを出すだけにする。
   そのため Pi には Raspberry Pi OS Lite を使う。
 
