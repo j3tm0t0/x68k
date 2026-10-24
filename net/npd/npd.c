@@ -10,6 +10,8 @@
  *   ETD 命令 19 の出力の後ろに載せ、応答は ETD 命令 23 で npd.sys に渡す (Pico が X25519 / Ed25519 を計算する)。
  *   中身の先頭が TSP_MARK (0xA6) のレコードは tis.x -p (net/tistack) のソケット要求 / 応答。tis.x が npd.sys に
  *   預けた入口 (ETD 命令 26) を呼んで、交換ごとに 1 個作ってもらい (TIS_NP_OUT)、応答を渡す (TIS_NP_IN)。
+ *   中身の先頭が ZSS_MARK (0xA7) のレコードは Pico の zsshd と zos.x (x68k-zos) の間の端末のセッション (zss.h)。
+ *   TSP と同じ形で、zos.x が預けた入口 (ETD 命令 28) を ZSS_NP_OUT / ZSS_NP_IN で呼ぶ。
  *
  *   npd.x [-iN] a.b.c.d : 常駐してスレッド "npd" を作る (2 回目以降は受信の受け入れを再開するだけ)。a.b.c.d は Z の
  *                         IP アドレス。xip.x の設定 (ifconfig / inetdconf) が済んでから起動する
@@ -25,6 +27,7 @@
 #include <stdint.h>
 #include "../accel/accel_proto.h"
 #include "../tistack/tsp.h"
+#include "zss.h"
 
 extern long call_etd(void *entry, long cmd, void *arg);
 extern char *mem_ptr;
@@ -33,6 +36,7 @@ extern unsigned char *cmd_line;
 static void *etd;                       /* npd.sys の ETD 入口 */
 static void *tis;                       /* tis.x -p の入口 (交換のたびに npd.sys から取り直す)、0 = 居ない */
 static int tsp_more;                    /* Pico の TSP 応答に続きがある */
+static void *zss;                       /* zos.x の 0xA7 の入口 (交換のたびに取り直す)、0 = 居ない */
 /* 動作確認用のカウンタ (メモリダンプで "SLPDSTAT" の後ろを読む) */
 static struct { char tag[8]; uint32_t loops, rx, tx, bad; } stat = { "SLPDSTAT" };
 static struct dos_prcctrl prc;           /* スレッドのメッセージ受け箱 (xip.x と同じく 4 バイト) */
@@ -253,6 +257,17 @@ static void rec_in(uint8_t *s, int n)
         tis = 0;
       if (tis && (call_etd(tis, TIS_NP_IN, arg) & 1))
         tsp_more = 1;
+    } else if (len >= ZSS_HDR && ip[0] == ZSS_MARK) {
+      /* zos.x の端末のセッションの応答 (入口の取り直しは TSP と同じ理由) */
+      long arg[2];
+      arg[0] = len;
+      arg[1] = (long)ip;
+      tap('Z', ip, len);
+      zss = (void *)call_etd(etd, NPD_ETD_ZSS_GET, 0);
+      if (zss == (void *)-1)
+        zss = 0;
+      if (zss && (call_etd(zss, ZSS_NP_IN, arg) & 1))
+        tsp_more = 1;
     } else if (len >= ACCEL_RES_HDR && ip[0] == ACCEL_MARK) {
       /* 暗号アクセラレータの応答 (IPv4 のバージョン nibble と重ならない) */
       long arg[2];
@@ -322,6 +337,17 @@ static void zthread(void)
       call_etd(tis, TIS_NP_OUT, a);
       turg = a[2];
     }
+    zss = (void *)call_etd(etd, NPD_ETD_ZSS_GET, 0);
+    if (zss == (void *)-1)               /* npd.sys 1.2 まで (ETD 28 が無い) */
+      zss = 0;
+    if (zss) {
+      long a[3];
+      a[0] = 0;
+      a[1] = 0;
+      a[2] = 0;
+      call_etd(zss, ZSS_NP_OUT, a);
+      turg |= a[2];
+    }
     now = ticks();
     if (n == 0 && hot == 0 && !turg && (unsigned)(now - last) < ((unsigned)(now - act) < 200 ? zidle : ZIDLE2)) {
       _dos_change_pr();
@@ -336,6 +362,21 @@ static void zthread(void)
       a[1] = ZDATA - n - 2;
       a[2] = 0;
       m = call_etd(tis, TIS_NP_OUT, a);
+      if (m > 0) {
+        zreq[16 + n] = m >> 8;
+        zreq[16 + n + 1] = m;
+        if (m & 1)
+          zreq[16 + n + 2 + m] = 0;
+        n += 2 + ((m + 1) & ~1);
+      }
+    }
+    if (zss && n + 2 + ZSS_HDR <= ZDATA) {
+      /* 0xA7 のレコードも同じ形で後ろに (zos.x は交換のたびに 1 個、送るものが無くても見出しだけ返す) */
+      long a[3], m;
+      a[0] = (long)(zreq + 16 + n + 2);
+      a[1] = ZDATA - n - 2;
+      a[2] = 0;
+      m = call_etd(zss, ZSS_NP_OUT, a);
       if (m > 0) {
         zreq[16 + n] = m >> 8;
         zreq[16 + n + 1] = m;
