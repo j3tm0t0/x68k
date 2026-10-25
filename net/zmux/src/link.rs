@@ -311,9 +311,9 @@ impl Link {
         for it in items {
             match it {
                 Item::Raw(b) => {
-                    if !self.up {
-                        raw.push(b);
-                    }
+                    // 枠の外の素の文字は、線が UP のままでもコンソールに出す。XVI を再起動すると、
+                    // こちらが切断に気づく (60 秒) 前に contee.sys の起動メッセージが届くため
+                    raw.push(b);
                 }
                 Item::Bad => {
                     if self.up {
