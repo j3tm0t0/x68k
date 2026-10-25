@@ -28,7 +28,7 @@ pub const OP_KICK: u8 = 4;
 const T_RESEND: Duration = Duration::from_millis(1000);
 const T_ACK: Duration = Duration::from_millis(20);
 const T_KEEP: Duration = Duration::from_millis(2000);
-const T_DEAD: Duration = Duration::from_millis(10000);
+const T_DEAD: Duration = Duration::from_millis(60000);
 
 pub fn crc16(mut c: u16, data: &[u8]) -> u16 {
     for &b in data {

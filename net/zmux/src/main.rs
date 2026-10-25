@@ -89,7 +89,7 @@ fn open_serial(path: &str, baud: u32) -> std::fs::File {
         38400 => libc::B38400,
         57600 => libc::B57600,
         115200 => libc::B115200,
-        _ => die("--baud: 9600 / 19200 / 38400 / 57600 / 115200"),
+        _ => libc::B38400, // 表に無い速さ (78125 など) は下で termios2 の BOTHER で設定する
     };
     unsafe {
         let mut t: libc::termios = std::mem::zeroed();
@@ -103,6 +103,20 @@ fn open_serial(path: &str, baud: u32) -> std::fs::File {
         libc::cfsetispeed(&mut t, speed);
         libc::cfsetospeed(&mut t, speed);
         libc::tcsetattr(fd, libc::TCSANOW, &t);
+        if ![9600, 19200, 38400, 57600, 115200].contains(&baud) {
+            // X68000 の SCC を直接設定した速さ (5MHz / 32 / (tc + 2)、tc=0 で 78125) に合わせる
+            let mut t2: libc::termios2 = std::mem::zeroed();
+            if libc::ioctl(fd, libc::TCGETS2, &mut t2) != 0 {
+                die(&format!("TCGETS2: {}", std::io::Error::last_os_error()));
+            }
+            t2.c_cflag &= !libc::CBAUD;
+            t2.c_cflag |= libc::BOTHER;
+            t2.c_ispeed = baud;
+            t2.c_ospeed = baud;
+            if libc::ioctl(fd, libc::TCSETS2, &t2) != 0 {
+                die(&format!("--baud {}: {}", baud, std::io::Error::last_os_error()));
+            }
+        }
         libc::tcflush(fd, libc::TCIOFLUSH);
         std::fs::File::from_raw_fd(fd)
     }

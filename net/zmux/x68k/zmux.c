@@ -56,7 +56,7 @@
 #define T_RESEND 100            /* 1/100 秒 */
 #define T_ACK    5
 #define T_HELLO  500
-#define T_DEAD   1000
+#define T_DEAD   6000           /* 60 秒: フロッピーから大きな .x を読む間に切れないように */
 #define T_KEEP   200            /* 送るものが無くても 2 秒に 1 回は確認だけのフレームを出す (Pi が 10 秒で切らないように) */
 
 #define VERSION  1
