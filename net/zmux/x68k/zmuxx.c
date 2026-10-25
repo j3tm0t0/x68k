@@ -50,20 +50,29 @@ static void *find_zmux(void)
   return 0;
 }
 
-/* contee.sys (画面の出力を RS-232C に写す) が居れば止める。zmux が線を使い始めた後に素の文字が混ざると枠が壊れる */
-static void stop_contee(void)
+/* デバイスチェインから contee.sys (画面の出力を RS-232C に写す) を探す。名前は新旧 2 つ。無ければ 0 */
+static uint8_t *find_contee(void)
 {
   uint16_t *p;
   for (p = (uint16_t *)0x6800; p < (uint16_t *)0x68000; p++)
     if (p[0] == 0x4e55 && p[1] == 0x4c20 && p[2] == 0x2020 && p[3] == 0x2020) {   /* "NUL     " */
       uint8_t *d = (uint8_t *)p - 14;
       while (d != (uint8_t *)0xffffffff) {
-        if (memeq(d + 14, "\001CONTEE ", 8) || memeq(d + 14, "CONTEE  ", 8))   /* 古い contee.sys の名前も */
-          d[22] = 0;
+        if (memeq(d + 14, "\001CONTEE ", 8) || memeq(d + 14, "CONTEE  ", 8))
+          return d;
         d = *(uint8_t **)d;
       }
-      return;
+      return 0;
     }
+  return 0;
+}
+
+/* contee.sys が居れば止める。zmux が線を使い始めた後に素の文字が混ざると枠が壊れる */
+static void stop_contee(void)
+{
+  uint8_t *d = find_contee();
+  if (d)
+    d[22] = 0;
 }
 
 static void thread(void)
@@ -82,6 +91,15 @@ static void thread(void)
       _dos_sleep_pr(idle >= IDLE_BACKOFF ? IDLE_SLEEP_MAX : IDLE_SLEEP);
     }
   }
+}
+
+static void puthex(unsigned long v, int w)
+{
+  char b[9];
+  int i;
+  for (i = 0; i < w; i++) b[i] = "0123456789abcdef"[(v >> (4 * (w - 1 - i))) & 15];
+  b[w] = 0;
+  _dos_print(b);
 }
 
 static void putnum(unsigned long v)
@@ -110,6 +128,33 @@ int zmux_main(void)
     i = call_entry(entry, 9, 0);
     if (ssp > 0) _dos_super(ssp);
     _dos_print(i ? "zmux: SCC time constant guard on\r\n" : "zmux: SCC time constant guard off\r\n");
+    return 0;
+  }
+  if (a[0] == '-' && (a[1] | 0x20) == 'r') {        /* contee.sys が控えた SCC の値 (contee.S のコメント) を出す */
+    uint8_t *d;
+    int n, k;
+    ssp = _dos_super(0);
+    d = find_contee();
+    if (!d || !memeq(d + 24, "CTEREC01", 8)) {
+      if (ssp > 0) _dos_super(ssp);
+      _dos_print("zmux: 記録つきの contee.sys が組み込まれていません\r\n");
+      return 1;
+    }
+    n = *(uint16_t *)(d + 34);
+    if (ssp > 0) _dos_super(ssp);
+    _dos_print("n   rr0 rr1 rr10 rr12 rr13 rr15 time\r\n");
+    for (k = 0; k < n; k++) {
+      uint8_t e[12];
+      int j;
+      ssp = _dos_super(0);
+      for (j = 0; j < 12; j++) e[j] = d[36 + k * 12 + j];
+      if (ssp > 0) _dos_super(ssp);
+      puthex((e[0] << 8) | e[1], 4); _dos_print("  ");
+      puthex(e[2], 2); _dos_print("  "); puthex(e[3], 2); _dos_print("  ");
+      puthex(e[4], 2); _dos_print("   "); puthex(e[5], 2); _dos_print("   ");
+      puthex(e[6], 2); _dos_print("   "); puthex(e[7], 2); _dos_print("   ");
+      putnum((e[8] << 8) | e[9]); _dos_print("\r\n");
+    }
     return 0;
   }
   if (a[0] == '-' && (a[1] | 0x20) == 's') {

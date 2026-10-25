@@ -17,6 +17,17 @@ devheader:
 enable:
     .byte   1                   /* 0 にすると写すのをやめる (ヘッダ +22。zmux.x が線を使い始めるときに 0 にする) */
     .even
+/* 記録 (zmux.x -r が読む。ヘッダ +24 から): SCC ch.B の読める所 (RR0 RR1 RR10 RR12 RR13 RR15) を、組み込み時と、送る最初の 40 文字と、
+   そのあと 2 の累乗番目の文字で控える。WR4 / WR11 / WR14 は読めない (Z8530 の書き込み専用)。1 件 12 バイト:
+   +0 番号 (0xfffd = 組み込み直前、0xfffe = 組み込み直後)、+2 RR0、+3 RR1、+4 RR10、+5 RR12、+6 RR13、+7 RR15、+8 時刻 (1/100 秒の下位 16 ビット)、+10 予備 */
+rec_tag:
+    .ascii  "CTEREC01"
+rec_n:
+    .word   0                   /* 送った文字の数 (0xffff で止まる) */
+rec_cnt:
+    .word   0                   /* 控えた件数 */
+rec_buf:
+    .space  64*12
 
 reqheader:
     .long   0
@@ -27,12 +38,65 @@ old_print:
 old_putmes:
     .long   0
 
+/* d1.w = 番号で SCC の読める所を控える (全レジスタを保つ) */
+rec:
+    movem.l %d0-%d3/%a0-%a1,%sp@-
+    move.w  rec_cnt,%d2
+    cmp.w   #64,%d2
+    bcc.s   9f
+    move.w  %d2,%d3
+    mulu.w  #12,%d3
+    lea     rec_buf,%a1
+    adda.l  %d3,%a1
+    move.w  %d1,%a1@
+    moveq   #0x7f,%d0           /* _ONTIME */
+    trap    #15
+    move.w  %d0,%a1@(8)
+    move.w  %sr,%sp@-
+    ori.w   #0x0700,%sr
+    lea     0xe98005,%a0
+    move.b  %a0@,%a1@(2)        /* RR0 */
+    move.b  #1,%a0@
+    move.b  %a0@,%a1@(3)        /* RR1 */
+    move.b  #10,%a0@
+    move.b  %a0@,%a1@(4)        /* RR10 */
+    move.b  #12,%a0@
+    move.b  %a0@,%a1@(5)        /* RR12 = WR12 */
+    move.b  #13,%a0@
+    move.b  %a0@,%a1@(6)        /* RR13 = WR13 */
+    move.b  #15,%a0@
+    move.b  %a0@,%a1@(7)        /* RR15 = WR15 */
+    move.w  %sp@+,%sr
+    addq.w  #1,rec_cnt
+9:  movem.l %sp@+,%d0-%d3/%a0-%a1
+    rts
+
+/* 送る文字を数えて、最初の 40 文字と 2 の累乗番目で控える */
+rec_maybe:
+    movem.l %d0-%d1,%sp@-
+    move.w  rec_n,%d0
+    cmp.w   #0xffff,%d0
+    beq.s   8f
+    addq.w  #1,%d0
+    move.w  %d0,rec_n
+    cmp.w   #40,%d0
+    bls.s   1f
+    move.w  %d0,%d1
+    subq.w  #1,%d1
+    and.w   %d0,%d1
+    bne.s   8f
+1:  move.w  %d0,%d1
+    bsr.w   rec
+8:  movem.l %sp@+,%d0-%d1
+    rts
+
 /* 1 文字を RS-232C に送る (d1.b)。d0/d1 以外は壊さない。enable が 0 なら送らない */
 out1:
     tst.b   enable
     bne.s   0f
     rts
 0:  move.l  %d0,%sp@-
+    bsr.w   rec_maybe           /* 時定数を直す前の SCC を控える */
 #ifdef TC0
     /* RSDRV.SYS は起動の途中で SCC を設定し直す (38400 に戻る)。送るたびに時定数を見て、0 でなければ 0 に戻す */
     move.l  %a0,%sp@-
@@ -103,7 +167,9 @@ interrupt:
     movem.l %d0-%d7/%a0-%a6,%sp@-
     movea.l reqheader,%a5
     tst.b   %a5@(2)             /* 命令 0 = 初期化 */
-    bne.s   9f
+    bne.w   9f
+    move.w  #0xfffd,%d1
+    bsr.w   rec
     move.w  #0x4c09,%d1         /* 38400bps 8N1 */
     moveq   #0x30,%d0           /* _SET232C */
     trap    #15
@@ -118,6 +184,8 @@ interrupt:
     clr.b   %a0@
     move.w  %sp@+,%sr
 #endif
+    move.w  #0xfffe,%d1
+    bsr.w   rec
     move.w  #0x120,%d1          /* _B_PUTC */
     lea     new_putc,%a1
     move.l  #0x80,%d0           /* _B_INTVCS */
@@ -139,7 +207,7 @@ interrupt:
     move.l  #init,%a5@(14)      /* ここから後ろは常駐しない */
     clr.b   %a5@(3)
     clr.b   %a5@(4)
-    bra.s   8f
+    bra.w   8f
 9:  move.b  #3,%a5@(3)          /* 知らない命令 */
     move.b  #0x10,%a5@(4)
 8:  movem.l %sp@+,%d0-%d7/%a0-%a6

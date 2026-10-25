@@ -200,6 +200,10 @@ try:
             s = screen()
             check("copy " + name, out is not None and "コピーしました" in out and "無効" not in out and "コピーはされませんでした" not in out and "無効なコマンド" not in s,
                   repr(out)[-100:] + " | " + s.replace("\n", " ")[-120:])
+        if "contee" not in os.environ.get("REAL_NO", "").split(","):
+            out, _ = a.cmd("zmux -r", 30)
+            print("e2e: zmux -r:\n" + (out or "").replace("\r", ""))
+            check("zmux -r lists the SCC records of contee78", out is not None and "fffd" in out and "fffe" in out and "0001" in out, repr(out)[-200:])
         back = os.path.join(drive, "BACK.SYS")
         check("round trip bytes match", os.path.exists(back) and open(back, "rb").read() == open(os.path.join(drive, "SMALL.SYS"), "rb").read())
         print("e2e: " + status())
