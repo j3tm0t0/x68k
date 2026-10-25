@@ -82,6 +82,7 @@ static const struct { const char *name; uint8_t code; uint8_t mod; } names[] = {
     { "f5", HID_KEY_F5 }, { "f6", HID_KEY_F6 }, { "f7", HID_KEY_F7 }, { "f8", HID_KEY_F8 },
     { "f9", HID_KEY_F9 }, { "f10", HID_KEY_F10 }, { "f11", HID_KEY_F11 }, { "f12", HID_KEY_F12 },
     { "ctrl", 0, KEYBOARD_MODIFIER_LEFTCTRL }, { "shift", 0, KEYBOARD_MODIFIER_LEFTSHIFT },
+    { "yen", 0x89 }, { "ro", 0x87 },   /* JIS 配列の円記号とろ。US の文字では打てない \\ | _ のため */
     { "alt", 0, KEYBOARD_MODIFIER_LEFTALT }, { "gui", 0, KEYBOARD_MODIFIER_LEFTGUI },
 };
 

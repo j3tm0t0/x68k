@@ -59,6 +59,7 @@ USB キーボード (0012) を入れるときは `cmake -DHID_KEYBOARD=ON ..` (�
 | `src/smb2connect.c` / `src/hdscache.c` / `src/connect.c` / `src/virtual_disk.c` | 0051: SMB の要求を 5 秒で打ち切る (`smb2_set_timeout`)。HDS の読み書きか keepalive が失敗したら、その接続はもう使わず (`smb_lost`)、接続のタスクが 5 秒ごとにつなぎ直す。その間 HDS は SMB に触らずに NOT READY (02/04/01) を返し、ホストが出し直す。SMB が止まっても USB の 1 命令が 30 秒を超えない (Linux が USB をリセットしない) |
 | `src/tsp_mdns.c` / `src/tsp_svc.c` / `src/connect.c` / `src/tsp_lwip/lwipopts.h` | 0052: mDNS。TSP の名前解決 (`tis.x -p`) で `.local` の名前を mDNS で引き (224.0.0.251:5353 に単発の問い合わせ、1 秒ごとに 3 回)、Pico 自身は `<ホスト名>.local` に答える (lwIP の mDNS)。TSP の入ったビルド (Pico 2 W) だけ |
 | `src/msc_disk.c` / `CMakeLists.txt` | 0053: USB の様子を UART に出す。READ10 / WRITE10 のコールバックが 1 秒を超えたとき、10 秒以上コールバックが来ないとき、端点の STALL とホストの clear-halt (リンカの `--wrap`)、NOT READY / MEDIUM ERROR を返したとき。ふだんは何も出ない |
+| `src/hidkbd_cmd.c` | 0054: キー名 `yen` と `ro` (JIS 配列の円記号とろのキー、HID 0x89 / 0x87)。US の文字では押せない `\` `|` `_` を打つため (`x68key key yen`、`x68key combo shift yen`) |
 | `driver/bootwait.S` / `driver/mkbootwait.py` | 0028: ◆ の行を本物の進み具合 (Wi-Fi → SMB → HDS → 起動) に |
 | `driver/mkbootwait.py` | 0027: ロゴの行は見た目の中央から 20 ドット左 (最終の配置) |
 | `driver/mkbootwait.py` | 0026: ロゴの行を「副題の左端にそろえる」と「見た目の中央」の中間に (既定 BW_LOGO=between) |
