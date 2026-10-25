@@ -58,7 +58,6 @@ def mkfloppy():
         open(os.path.join(t, "AUTOEXEC.BAT"), "wb").write(
             b"ECHO OFF\r\nPATH A:\\\r\nRX -B78125 -K2\r\nZMUX\r\n" + (b"" if "tis" in no else b"TIS -p\r\n")
             + (b"" if "npdx" in no or "npd" in no else b"NPD -m 192.168.68.2\r\n") + b"CTTY AUX\r\n")
-        open(os.path.join(t, "SYS", "CONTEE.OLD"), "wb").write(os.urandom(3000))
         used = sum(os.path.getsize(os.path.join(d, f)) for d, _, fs in os.walk(t) for f in fs)
         pad = max(0, 1232 * 1024 - 8 * 1024 - used - 19 * 1024 - 20 * 1024) if not os.environ.get("NOPAD") else 0
         open(os.path.join(t, "PAD.DAT"), "wb").write(b"\0" * pad)
@@ -168,6 +167,17 @@ try:
     check("dir %s: lists the Pi directory" % dl, out is not None and "HELLO" in out and "BIG" in out, repr(out)[-200:])
     out, _ = a.cmd("type %s:\\HELLO.TXT" % dl)
     check("type reads a file", out is not None and "hello from the Pi" in out, repr(out)[-120:])
+    # C: にある .x を実行する (zrmt.sys の読み込み・seek・属性の要求が Human68k の _EXEC に通じるか)
+    for xn in ("idlebench.x", "tcset.x"):
+        sh("cp", os.path.join(zm, "x68k", xn), os.path.join(drive, xn.upper()))
+    out, _ = a.cmd("%s:\\TCSET.X" % dl, 60)
+    check("run a .x on C: (tcset.x)", out is not None and "実行できません" not in out and "エラー" not in out, repr(out)[-160:])
+    out, _ = a.cmd("%s:TCSET.X" % dl, 60)
+    check("run a .x on C: without a backslash (c:tcset.x)", out is not None and "実行できません" not in out and "TCSET" in out.replace("C:TCSET.X", ""), repr(out)[-160:])
+    out, _ = a.cmd("%s:tcset" % dl, 60)
+    check("run a .x on C: lower case, no extension (c:tcset)", out is not None and "実行できません" not in out and "TCSET wr" in out, repr(out)[-160:])
+    out, _ = a.cmd("%s:\\IDLEBENCH.X" % dl, 120)
+    check("run a .x on C: (idlebench.x)", out is not None and "実行できません" not in out and "エラー" not in out, repr(out)[-160:])
     if SMALL:
         # 実機の構成: 空きの少ないフロッピーへ小さいファイルを写す (C: → A:、A: → A:)。エラーの窓 (あれば) が出ていないか画面も見る
         open(os.path.join(drive, "SMALL.SYS"), "wb").write(os.urandom(5000))

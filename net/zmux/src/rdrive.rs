@@ -128,7 +128,26 @@ fn conv_namebuf(root: &Path, ns: &[u8], full: bool) -> Option<PathBuf> {
     }
     let rel = sjis_to_utf8(&bb)?;
     let rel = rel.trim_start_matches('/');
-    Some(if rel.is_empty() { root.to_path_buf() } else { root.join(rel) })
+    Some(if rel.is_empty() { root.to_path_buf() } else { resolve_ci(root, rel) })
+}
+
+/// root の下の rel を、大文字小文字を区別せずに探す。Human68k は小文字で打っても (c:zos.x) 大文字で来るとは限らず、
+/// Pi のファイル名は大文字のことが多い。そのままで在ればそれ、無ければ各階層で名前が合うものを探す。見つからない部分はそのまま足す
+/// (新しく作るファイルの名前になる)。
+fn resolve_ci(root: &Path, rel: &str) -> PathBuf {
+    let direct = root.join(rel);
+    if direct.symlink_metadata().is_ok() { return direct; }
+    let mut cur = root.to_path_buf();
+    let mut comps = rel.split('/').filter(|c| !c.is_empty());
+    while let Some(c) = comps.next() {
+        let next = cur.join(c);
+        if next.symlink_metadata().is_ok() { cur = next; continue; }
+        let hit = std::fs::read_dir(&cur).ok().and_then(|rd| {
+            rd.flatten().map(|e| e.file_name()).find(|n| n.to_string_lossy().eq_ignore_ascii_case(c))
+        });
+        cur = cur.join(hit.as_deref().unwrap_or(std::ffi::OsStr::new(c)));
+    }
+    cur
 }
 
 fn dos_time_date(mtime: i64) -> (u16, u16) {
@@ -615,6 +634,21 @@ pub mod tests {
         assert!(split_name(b"a,b").is_none());
         assert!(split_name(b"-x").is_none());
         assert!(split_name(b"averyveryverylongname.txt").is_none());
+    }
+
+    #[test]
+    fn open_ignores_case() {
+        let root = tmpdir("ci");
+        std::fs::create_dir(root.join("SUB")).unwrap();
+        std::fs::write(root.join("SUB").join("TCSET.X"), b"abc").unwrap();
+        let mut d = Drive::new(vec![root.clone()]);
+        // 小文字で打った c:\sub\tcset.x (Human68k は大文字にしない) でも開ける
+        let r = d.exchange(&cmd_open(0x3000, 0, &namebuf("\\sub", "tcset.x")));
+        assert_eq!(r[0], 0, "open lower case");
+        assert_eq!(d.exchange(&cmd_close(0x3000)), vec![0]);
+        // 無い名前は無いまま
+        let r = d.exchange(&cmd_open(0x3000, 0, &namebuf("\\sub", "nope.x")));
+        assert_ne!(r[0], 0);
     }
 
     #[test]
