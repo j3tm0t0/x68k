@@ -226,7 +226,7 @@ rcmd.x の実行中は X68000 のコンソールはふさがる (ESC で終了�
 X68000 Z 実機 + PPP 9600bps で `ls` / `echo` / `gawk` の実行と終了コードの受け渡しを確認済み。日本語を含むコマンドは化ける (未調査)。
 XEiJ の PPP は外から来たパケット (Pi からの ping / 接続) に応答しないが、SLIP (xeijslip.py) なら rcmd も試せる。
 `netup` は `pppwait.x` (net/pppwait) で Pi の pppd が送ってくる LCP を受信してから ppp.x を起動する。
-ppp.x は相手が居ないと Phase: Dead で固まり BREAK も効かないため。pppwait は ESC / BREAK / Ctrl-C で中止できる (待ち時間は `NETWAIT=秒`、既定 30)。出力は Shift_JIS/CRLF のまま送られ、`x68` 側で UTF-8/LF に直す。
+ppp.x は相手が居ないと Phase: Dead で固まり BREAK も届かないため。pppwait は ESC / BREAK / Ctrl-C で中止できる (待ち時間は `NETWAIT=秒`、既定 30)。出力は Shift_JIS/CRLF のまま送られ、`x68` 側で UTF-8/LF に直す。
 終了コードは `--rcmd-end rc=N--` の行で返り、`x68` の終了コードになる。ESP/X PACK-B (libnetwork.a, ヘッダ, サンプルソース) も `/usr/lib` `/usr/include` `/usr/src/espx` に入れてある。
 
 ## 既知の制限

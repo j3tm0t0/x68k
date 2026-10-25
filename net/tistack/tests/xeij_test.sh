@@ -31,7 +31,7 @@ cp tis.x "$B/TIS.X"
 cp tests/tistest.x "$B/TISTEST.X"; cp tests/tisrun.x "$B/TISRUN.X"
 for f in ${TIS_FILES:-}; do cp "$f" "$B/$(basename "$f" | tr a-z A-Z)"; done   # 調べもの用に足すファイル
 # PROCESS はスレッド (_OPEN_PR) と libsocket の poll の時計 (_TIME_PR) に要る
-printf 'FILES = 30\r\nBUFFERS = 20 1024\r\nLASTDRIVE = Z:\r\nPROCESS = 16 10 20\r\n' > "$B/CONFIG.SYS"
+printf 'FILES = 30\r\nBUFFERS = 20 1024\r\nLASTDRIVE = Z:\r\nPROCESS = 16 10 19\r\n' > "$B/CONFIG.SYS"
 {
   printf 'ECHO OFF\r\nPATH A:\\\r\n'
   printf 'TIS.X > TIS.TXT\r\n'

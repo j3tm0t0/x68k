@@ -162,6 +162,10 @@ static int decawm = 1;        /* 自動折り返し (既定 ON) */
 static int cur_vis = 1;       /* カーソル表示 */
 static int csr_ok = 1;        /* この端末のカーソルを描いてよい (zos.x は前面のペインだけ 1。vt_con_cursor) */
 static int alt_active;        /* 代替画面を表示中か */
+#ifdef VT_VCONS
+static vt_sb *sb;             /* スクロールバックの置き場 (端末ごと。NULL なら取らない) */
+static int view_off;          /* 0 = いまの画面、n = n 行さかのぼって見ている (vt_view) */
+#endif
 static int g_special[2];      /* G0/G1 が DEC 特殊グラフィックか */
 static int gl;                /* いま GL に割り当てている G 番号 (0/1) */
 
@@ -644,17 +648,54 @@ static void down8(const unsigned char *g, unsigned char *o)   /* 8x16 -> 6x12 (�
     o[y] = r;
   }
 }
-#ifdef VT_HOSTTEST
-static void down16(const unsigned char *g, unsigned char *o)   /* 16x16 (2 バイト/行) -> 12x12 (2 バイト/行) */
+/* 16x16 -> 12x12: となり合う 2 行 (2 列) を OR でまとめるのを 4 か所。まとめても形が変わらない所 (同じ行どうし・空いた行) を選ぶ
+ * (決まった所を間引くと横線や縦線が消え、OR で詰めると太って潰れる。Z の実機の _FNTADR の 12 ドットは潰れて読みにくかった) */
+static int popc(unsigned v) { int n = 0; while (v) { v &= v - 1; n++; } return n; }
+static void pick4(const unsigned *d, int n, unsigned char *merge)   /* d[i] = i と i+1 をまとめる重さ。merge[i]=1 で i に i+1 を */
 {
-  int y, x;
-  for (y = 0; y < 12; y++) {
-    unsigned short b = (unsigned short)(g[(y * 4 / 3) * 2] << 8 | g[(y * 4 / 3) * 2 + 1]), r = 0;
-    for (x = 0; x < 12; x++) if (b & (0x8000 >> (x * 4 / 3))) r |= 0x8000 >> x;
-    o[y * 2] = (unsigned char)(r >> 8); o[y * 2 + 1] = (unsigned char)r;
+  int k, i;
+  for (i = 0; i < n; i++) merge[i] = 0;
+  for (k = 0; k < 4; k++) {
+    int best = -1;
+    unsigned bc = 0xffffffffU;
+    for (i = 0; i + 1 < n; i++) {
+      unsigned c = d[i] * 4 + (i < 2 || i > n - 4 ? 1 : 0);   /* 同じ重さなら真ん中寄り */
+      if (merge[i] || (i > 0 && merge[i - 1]) || merge[i + 1]) continue;
+      if (c < bc) { bc = c; best = i; }
+    }
+    if (best >= 0) merge[best] = 1;
   }
 }
-#endif
+static void shrink16(const unsigned char *g, unsigned char *o)   /* 16x16 (2 バイト/行) -> 12x12 (2 バイト/行、左詰め) */
+{
+  unsigned short r[16], t[12];
+  unsigned d[16];
+  unsigned char m[16];
+  int y, x, n = 0;
+  for (y = 0; y < 16; y++) r[y] = (unsigned short)(g[y * 2] << 8 | g[y * 2 + 1]);
+  for (y = 0; y + 1 < 16; y++) d[y] = popc(r[y] ^ r[y + 1]);
+  pick4(d, 16, m);
+  for (y = 0; y < 16 && n < 12; y++) { t[n] = r[y]; if (m[y]) { t[n] |= r[y + 1]; y++; } n++; }
+  /* 列: 12 行にした絵で、となりの列との違いを数える */
+  for (x = 0; x + 1 < 16; x++) {
+    unsigned c = 0;
+    for (y = 0; y < 12; y++) c += ((t[y] >> (15 - x)) ^ (t[y] >> (14 - x))) & 1;
+    d[x] = c;
+  }
+  pick4(d, 16, m);
+  for (y = 0; y < 12; y++) {
+    unsigned short v = 0;
+    int b = 0;
+    for (x = 0; x < 16 && b < 12; x++) {
+      int on = (t[y] >> (15 - x)) & 1;
+      if (m[x]) { on |= (t[y] >> (14 - x)) & 1; x++; }
+      if (on) v |= 0x8000 >> b;
+      b++;
+    }
+    o[y * 2] = (unsigned char)(v >> 8); o[y * 2 + 1] = (unsigned char)v;
+  }
+}
+int vt_kanji12_rom;   /* 1: 12 ドットの漢字は IOCS _FNTADR (ROM) のものを使う。0 (既定): CGROM の 16 ドットを shrink16 で縮める */
 #ifndef VT_HOSTTEST
 static long fntadr(int code, int size)   /* IOCS _FNTADR: d0 = 字形の番地 */
 {
@@ -684,14 +725,12 @@ static const unsigned char *kanji12(unsigned short jis)   /* 12x12 (2 バイト/
   int h = (jis ^ (jis >> 5)) & 31, i;
   if (ck[h] == jis && jis) return cg[h];
 #ifndef VT_HOSTTEST
-  {
+  if (vt_kanji12_rom) {
     const unsigned char *g = (const unsigned char *)fntadr(jis, 6);   /* JIS でも Shift_JIS でも引ける */
     for (i = 0; i < 24; i++) cg[h][i] = g[i];
-  }
-#else
-  (void)i;
-  down16(kanji_glyph(jis), cg[h]);
+  } else
 #endif
+  { (void)i; shrink16(kanji_glyph(jis), cg[h]); }
   ck[h] = jis;
   return cg[h];
 }
@@ -883,6 +922,17 @@ static void scroll(int n)
   if (-n > bot - top + 1) n = -(bot - top + 1);
   m = n > 0 ? n : -n;
   keep = (bot - top + 1) - m;
+#ifdef VT_VCONS
+  if (sb && n > 0 && top == 0 && bot == ROWS - 1 && !alt_active) {   /* 画面の上から流れ出る行をスクロールバックへ */
+    for (r = 0; r < m; r++) {
+      const cell_u32 *l = (const cell_u32 *)cur[r];
+      int k = COLS;
+      while (k > 0 && l[k - 1] == clr_cell) k--;   /* 行の終わりの空白は落とす */
+      sb->push(sb, (const unsigned int *)l, k);
+    }
+    if (view_off) view_off += m;   /* 見ている所はそのまま (流れた分だけ遠くなる) */
+  }
+#endif
   /* 空く行 (上スクロールなら下端の m 行、下スクロールなら上端の m 行) の VRAM には、ずらす前のその行の絵が
    * 残る (VRAM の移動はそこを触らない)。drawn もその絵にしておけば、flush は前の絵と違うセルだけ描けばよい
    * (less の 1 行送りなど)。行ポインタを回すと drawn のその位置に別の行が来るので、絵を控えて戻す。 */
@@ -971,6 +1021,9 @@ static NOINLINE void flush(void)
   int r, c, s, i;
   static unsigned char diff[MAXCOLS];
   if (VT_HIDDEN) return;   /* 裏の端末は描かない (表に出すとき vt_con_visible が全面を描く) */
+#ifdef VT_VCONS
+  if (view_off) return;   /* さかのぼって見ている間は描かない (書き換え範囲は残す。戻ったときに描く) */
+#endif
   PROF(4, 1);
   s = sup_enter();
   if (vs_pend) vs_apply();
@@ -1943,6 +1996,9 @@ void vt_init(int cols, int rows)
   cx = cy = 0; top = 0; bot = ROWS - 1; pend_wrap = 0;
   c_fg = 7; c_bg = 0; a_bold = a_uline = a_reverse = 0; attr_update();
   decckm = 0; decawm = 1; cur_vis = 1; alt_active = 0; cur = rows_main;
+#ifdef VT_VCONS
+  sb = 0; view_off = 0;
+#endif
   for (r = 0; r < MAXROWS; r++) { rows_main[r] = store_main[r]; rows_alt[r] = store_alt[r]; drawn[r] = store_drawn[r]; }
   g_special[0] = g_special[1] = 0; gl = 0; outq_len = 0; state = S_GROUND; u_need = 0;
   csr_shown = 0;
@@ -2082,7 +2138,7 @@ unsigned long vt_emoji_cp(int idx) { return (idx >= 0 && idx < EMOJITAB_N) ? emo
   X(decckm) X(decawm) X(cur_vis) X(alt_active) X(gl) X(sv_cx) X(sv_cy) X(sv_fg) X(sv_bg) X(sv_bold) X(sv_ul) X(sv_rev) \
   X(sv_sp0) X(sv_sp1) X(sv_gl) X(csr_shown) X(csr_x) X(csr_y) X(state) X(csi_priv) X(csi_inter) X(nparam) X(str_kind) \
   X(str_esc) X(str_len) X(cs_which) X(u_cp) X(u_need) X(outq_len) X(vt_hidden) \
-  X(vt_base) X(COLS) X(ROWS) X(vt_pane) X(pane_x) X(pane_y) X(pane_w) X(pane_h) X(pane_px) X(pane_py) X(csr_ok)
+  X(vt_base) X(COLS) X(ROWS) X(vt_pane) X(pane_x) X(pane_y) X(pane_w) X(pane_h) X(pane_px) X(pane_py) X(csr_ok) X(sb) X(view_off)
 #define VC_ARRS X(g_special) X(tabstop) X(param) X(str_buf) X(outq) X(rows_main) X(rows_alt) X(drawn)
 typedef struct {
 #define X(v) __typeof__(v) v;
@@ -2217,6 +2273,47 @@ unsigned short vt_jis_ucs(unsigned short jis)
 
 /* 状態表示: 最上行の右端に s を反転で重ねる (論理画面は変えない)。NULL で消す (その桁を論理画面の絵に戻す) */
 static int vc_st_c0 = -1;
+/* スクロールバック: いまの端末の置き場を決める (NULL で取らない) */
+void vt_con_set_sb(vt_sb *s) { sb = s; view_off = 0; }
+int vt_view_off(void) { return view_off; }
+/* delta 行さかのぼる (正) / 戻る (負)。0 に戻ったらいまの画面を描き直す。新しい位置を返す */
+int vt_view(int delta)
+{
+  static unsigned int line[MAXCOLS];
+  int n, r, c, sup;
+  if (!sb) return 0;
+  n = view_off + delta;
+  if (n < 0) n = 0;
+  if (n > sb->count(sb)) n = sb->count(sb);
+  if (n == view_off) return n;
+  sup = sup_enter();
+  if (csr_shown) { cursor_xor(csr_x, csr_y); csr_shown = 0; }
+  view_off = n;
+  if (n == 0) {   /* いまの画面へ: 全部描き直す */
+    for (r = 0; r < ROWS; r++) vc_unknown(r, 0, COLS - 1);
+    sup_leave(sup);
+    flush();
+    return 0;
+  }
+  if (!VT_HIDDEN) {
+    for (r = 0; r < ROWS; r++) {
+      const cell_t *row;
+      int k;
+      if (r >= n) row = cur[r - n];
+      else {
+        k = sb->get(sb, n - r, line, COLS);
+        for (c = k; c < COLS; c++) line[c] = clr_cell;
+        row = (const cell_t *)line;
+      }
+      for (c = 0; c < COLS; c++) blit(c, r, &row[c], 0);
+      for (c = 0; c < COLS; c++) { cell_t z; z.cp = 0xffff; z.at = F_EMOJI | F_WIDECONT; drawn[r][c] = z; }
+    }
+    sa_off();
+  }
+  sup_leave(sup);
+  return n;
+}
+
 void vt_con_status(const char *s)
 {
   int sup, i, n;

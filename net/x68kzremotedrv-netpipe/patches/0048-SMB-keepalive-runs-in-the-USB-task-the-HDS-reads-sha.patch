@@ -1,0 +1,89 @@
+From db6cf69e6fe35a2d2bf6256c9de849419bce0fb6 Mon Sep 17 00:00:00 2001
+From: moto <j3tm0t0@gmail.com>
+Date: Sat, 24 Oct 2026 00:15:17 +0900
+Subject: [PATCH] SMB keepalive runs in the USB task (the HDS reads share the
+ same smb2_context)
+
+keepalive_task called keepalive_smb2_all() from its own task while the USB task read the HDS
+through the same libsmb2 context; libsmb2 contexts are not thread-safe. The first keepalive comes
+right after the connect, i.e. while the Z (or a host mounting the virtual FAT early) is reading
+HDS0, and the overlap corrupted the context ("Keepalive: x68000z->-1", then "Out of memory"
+on p2w). keepalive_task now only marks it due; the USB task does it in keepalive_poll() when it
+can take remote_sem without waiting.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PrGdt1XK1exBgERrMmLA1u
+---
+ src/connect.c | 21 ++++++++++++++++++---
+ src/main.c    |  1 +
+ src/main.h    |  1 +
+ 3 files changed, 20 insertions(+), 3 deletions(-)
+
+diff --git a/src/connect.c b/src/connect.c
+index ffbc8ab..fe73662 100644
+--- a/src/connect.c
++++ b/src/connect.c
+@@ -410,18 +410,33 @@ void connect_task(void *params)
+ // Remote connection keepalive task
+ //****************************************************************************
+ 
++/* SMB の接続 (smb2_context) は HDS の読み書きをする USB タスクと共有している。libsmb2 は同じ接続を 2 つのタスクから
++   同時に使えない (keepalive の smb2_stat と USB タスクの smb2_read が重なると中が壊れ、"Out of memory" で落ちた。
++   最初の keepalive は接続した直後に来るので、Z が起動のために HDS を読んでいる最中と重なりやすい)。
++   keepalive は印を立てるだけにして、USB タスクが自分の番に keepalive_poll で行う */
++static volatile bool keepalive_due;
++
++void keepalive_poll(void)
++{
++    if (!keepalive_due || sysstatus < STAT_SMB2_CONNECTED)
++        return;
++    if (xSemaphoreTake(remote_sem, 0) != pdTRUE)
++        return;                         /* 接続タスクが繋ぎにいっている: 次の周で */
++    keepalive_due = false;
++    keepalive_smb2_all();
++    xSemaphoreGive(remote_sem);
++}
++
+ void keepalive_task(void *params)
+ {
+     while (1) {
+         TickType_t delay;
+-        xSemaphoreTake(remote_sem, portMAX_DELAY);
+         if (sysstatus >= STAT_SMB2_CONNECTED) {
+-            keepalive_smb2_all();
++            keepalive_due = true;
+             delay = pdMS_TO_TICKS(5 * 60 * 1000);
+         } else {
+             delay = pdMS_TO_TICKS(30 * 1000);
+         }
+-        xSemaphoreGive(remote_sem);
+         vTaskDelay(delay);
+ 
+         extern char __HeapLimit;
+diff --git a/src/main.c b/src/main.c
+index 18aabb3..5b781ba 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -114,6 +114,7 @@ static void main_task(void *params)
+     while (1) {
+         tud_task();
+         hidkbd_task();
++        keepalive_poll();               /* SMB の keepalive は HDS と同じ USB タスクで (connect.c) */
+         taskYIELD();
+     }
+ }
+diff --git a/src/main.h b/src/main.h
+index 416c5b0..896ad33 100644
+--- a/src/main.h
++++ b/src/main.h
+@@ -46,6 +46,7 @@ void connect_task(void *params);
+ void keepalive_task(void *params);
+ 
+ void net_setup(void);
++void keepalive_poll(void);
+ const char *net_hostname(void);
+ struct smb2_context *connect_smb2(const char *share);
+ void disconnect_smb2(struct smb2_context *smb2);
+-- 
+2.54.0 (Apple Git-157)
+

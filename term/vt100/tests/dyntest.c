@@ -60,5 +60,6 @@ int main(int argc, char **argv)
   vt_get_size(&cw, &ch);
   if (cw != 47 || ch != 31) { printf("FAIL 大きさ %dx%d\n", cw, ch); fails++; }
   printf(fails ? "dyntest: %d FAIL\n" : "dyntest: ok\n", fails);
+  free(d);
   return fails != 0;
 }

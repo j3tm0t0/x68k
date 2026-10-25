@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+"""x68serlog: X68000 の RS-232C (USB シリアル) から届く文字をログファイルに足していく (systemd の x68-serlog.service)。
+sx.py / x68type などがポートを使う間は、ロックファイル (/run/x68k-serial/lock、中身は使っているプロセスの pid) を見て
+ポートを閉じて待つ (同じポートを 2 つのプロセスが読むと、届いた文字がどちらか一方にしか渡らないため)。
+設定は /etc/default/x68k-serial の X68_DEV / X68_BAUD / X68_LOG。"""
+import os, select, sys, termios, time
+dev = os.environ.get("X68_DEV", "/dev/ttyUSB0")
+baud = int(os.environ.get("X68_BAUD", "19200"))
+log = os.environ.get("X68_LOG", "/var/log/x68k/x68con.log")
+lock = os.environ.get("SX_LOCK", "/run/x68k-serial/lock")
+os.makedirs(os.path.dirname(log), exist_ok=True)
+
+
+def locked():
+    try:
+        pid = int(open(lock).read().split()[0])
+        os.kill(pid, 0)
+        return True
+    except (OSError, ValueError, IndexError):
+        return False
+
+
+def open_port():
+    fd = os.open(dev, os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK)
+    at = termios.tcgetattr(fd)
+    at[0] = 0; at[1] = 0; at[3] = 0
+    at[2] = termios.CS8 | termios.CREAD | termios.CLOCAL
+    at[4] = at[5] = getattr(termios, "B%d" % baud)
+    termios.tcsetattr(fd, termios.TCSANOW, at)
+    return fd
+
+
+out = open(log, "ab", 0)
+fd = None
+while True:
+    if locked():
+        if fd is not None:
+            os.close(fd); fd = None
+            out.write(b"\n[x68serlog: port in use]\n")
+        time.sleep(0.2)
+        continue
+    if fd is None:
+        try:
+            fd = open_port()
+        except OSError as e:
+            sys.stderr.write("x68serlog: %s: %s\n" % (dev, e)); time.sleep(5); continue
+    r, _, _ = select.select([fd], [], [], 0.2)
+    if r:
+        try:
+            d = os.read(fd, 4096)
+        except OSError:
+            os.close(fd); fd = None; time.sleep(1); continue
+        if d:
+            out.write(d)

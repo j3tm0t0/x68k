@@ -40,7 +40,7 @@ cp tis.x "$B/TIS.X"; cp ../npd/npd.sys "$B/NPD.SYS"; cp ../npd/npd.x "$B/NPD.X"
 cp tests/tisnet.x "$B/TISNET.X"; cp tests/tisrun.x "$B/TISRUN.X"
 # SHELL は明示する (XEiJ のホストのディレクトリの起動は、Linux (Docker) では名前の大文字小文字を区別し、Human68k の既定の
 # "COMMAND.x" では COMMAND.X が見つからなかった)
-printf 'FILES = 30\r\nBUFFERS = 20 1024\r\nLASTDRIVE = Z:\r\nPROCESS = 16 10 20\r\nSHELL = A:\\COMMAND.X\r\nDEVICE = \\NPD.SYS\r\n' > "$B/CONFIG.SYS"
+printf 'FILES = 30\r\nBUFFERS = 20 1024\r\nLASTDRIVE = Z:\r\nPROCESS = 16 10 19\r\nSHELL = A:\\COMMAND.X\r\nDEVICE = \\NPD.SYS\r\n' > "$B/CONFIG.SYS"
 {
   printf 'ECHO OFF\r\nPATH A:\\\r\n'
   printf 'TIS.X -p > TIS.TXT\r\nNPD.X 192.168.1.68 > NPD.TXT\r\n'

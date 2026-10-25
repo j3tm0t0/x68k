@@ -1,0 +1,14 @@
+# X68000 の RS-232C のログ (x68serlog)。設定は /etc/default/x68k-serial。boot/serial/raspi/setup.sh が入れる
+[Unit]
+Description=X68000 serial console log
+After=local-fs.target
+Conflicts=ppp-x68k.service
+
+[Service]
+EnvironmentFile=-/etc/default/x68k-serial
+ExecStart=/usr/local/sbin/x68serlog
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

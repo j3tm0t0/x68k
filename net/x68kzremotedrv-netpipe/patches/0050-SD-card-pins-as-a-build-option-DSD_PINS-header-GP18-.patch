@@ -1,0 +1,54 @@
+From d0ce65567af3847423cd17ebe720a3382cf7c286 Mon Sep 17 00:00:00 2001
+From: moto <j3tm0t0@gmail.com>
+Date: Sat, 24 Oct 2026 19:00:48 +0900
+Subject: [PATCH] SD card pins as a build option: -DSD_PINS=header (GP18-21,
+ default) or usb (GP2-5)
+
+For boards that put the microSD at the USB end of the Pico (SPI0 SCK GP2, MOSI GP3, MISO GP4,
+CS GP5). The default is unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01PrGdt1XK1exBgERrMmLA1u
+---
+ CMakeLists.txt  | 8 ++++++++
+ src/hw_config.c | 3 ++-
+ 2 files changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 85ed1bb..8646b7f 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -176,8 +176,16 @@ target_link_libraries(${PROJECT_NAME}
+         tinyusb_device
+         tinyusb_board
+ )
++# SD カードの SPI0 のピン: header (既定、GP18 SCK / GP19 MOSI / GP20 MISO / GP21 CS、アンテナの側) か
++# usb (GP2 SCK / GP3 MOSI / GP4 MISO / GP5 CS、USB の側。ケースで SD を Pico の USB の端の下に重ねるとき)
++set(SD_PINS "header" CACHE STRING "SD card SPI0 pins: header (GP18-21) or usb (GP2-5)")
+ if(SD_CARD)
+     target_sources(${PROJECT_NAME} PRIVATE src/hw_config.c)
++    if(SD_PINS STREQUAL "usb")
++        target_compile_definitions(${PROJECT_NAME} PRIVATE SD_SCK=2 SD_MOSI=3 SD_MISO=4 SD_CS=5)
++    elseif(NOT SD_PINS STREQUAL "header")
++        message(FATAL_ERROR "SD_PINS must be header or usb (got ${SD_PINS})")
++    endif()
+     target_compile_definitions(${PROJECT_NAME} PRIVATE SD_CARD=1)
+     target_link_libraries(${PROJECT_NAME} no-OS-FatFS-SD-SDIO-SPI-RPi-Pico)
+ else()
+diff --git a/src/hw_config.c b/src/hw_config.c
+index 359be50..49c2eb4 100644
+--- a/src/hw_config.c
++++ b/src/hw_config.c
+@@ -1,7 +1,8 @@
+ /*
+  * hw_config.c -- SD カード (SPI 接続) の配線 (no-OS-FatFS-SD-SDIO-SPI-RPi-Pico 用)
+  *
+- *   SD の基板    Pico W / Pico 2 W (既定。CMake の SD_SCK / SD_MOSI / SD_MISO / SD_CS / SD_SPI_HZ で変えられる)
++ *   SD の基板    Pico W / Pico 2 W (既定。cmake -DSD_PINS=usb なら GP2 SCK / GP3 MOSI / GP4 MISO / GP5 CS。
++ *                ほかの番号は SD_SCK / SD_MOSI / SD_MISO / SD_CS / SD_SPI_HZ を定義する)
+  *   3V3          36 番ピン (3V3 OUT)
+  *   GND          38 番ピン
+  *   SCK          GP18 (24 番ピン)
+-- 
+2.54.0 (Apple Git-157)
+

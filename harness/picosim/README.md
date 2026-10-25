@@ -136,11 +136,11 @@ IMG=build/picosim.hds XEIJ_JAVA_OPTS="-Dpicosim=127.0.0.1:6868 -Dpicosim.ids=0,6
 
 `-R DIR` で Mac のディレクトリを Z の B: (と続くドライブ) にする。ファームと同じく、ID 6 の分割表 (LBA 4) に
 "Human68k" を数だけ並べ、SCSI のドライバ (LBA 6〜、`-F` の scsiremote.bin) を渡す。Human68k が起動時に組み込み、
-vdbuf ("X68Z" を LBA 0x20 に書き、応答を LBA 0x200000〜0x3fffff の範囲から 8 ページずつ下へ読む) で要求してくる。
+vdbuf ("X68Z" を LBA 0x20 に書き、応答を 0x200000〜0x3fffff の範囲から 8 ページずつ下へ読む) で要求してくる。
 要求はフォークの x68kserremote (サブモジュール) の `service/remoteserv.c` に渡す。これは写さず、ビルド時にそこから
 コンパイルする (`make RS=.../x68kserremote`、ファイル操作は同じ所の POSIX の fileop.h)。設定はファームの
 include/config.h と同じ値 (`remote/config.h`: 1 回の READ / WRITE は 15KB、FILES は 10 件)。
-`-vv` で要求ごとに記録する (`B: READ fcb=... pos=... len=... -> 返した長さ`)。`-vvv` で、Z がその範囲のどの LBA の
+`-vv` で要求ごとに記録する (`B: READ fcb=... pos=... len=... -> 返した長さ`)。`-vvv` で、Z が範囲のどの LBA の
 どのページを Pico から / キャッシュから受け取ったかも記録する。
 
 **見つけた不具合 (2026-10-23)**: Z の実機で、ある ssh.x を B: から起動すると _EXEC の中で落ちた (同じファイルが A: からは
@@ -194,7 +194,7 @@ XEiJ のソースは変えず、Java エージェントの中で XEiJ の public
    `spcReset` がリセットのたびにこのページを `MMD_NUL` に戻すので、見張りのスレッドが付け直す。
 
 SPC の模倣はデータアウトの後に必ず GOOD にするので、SPC の経路では **書き込みの失敗を Z に伝えられない** (picosim は
-応答の範囲の外への書き込みもファームと同じく成功扱いにするので、今は困らない)。
+範囲外の書き込みもファームと同じく成功扱いにするので、今は困らない)。
 
 ## 形式 (XEiJ ⇄ picosim、TCP、ビッグエンディアン)
 
@@ -254,7 +254,7 @@ XEiJ + picosim で試した (2026-10-23、`drive.x` で確かめた):
 
 | やり方 | 結果 |
 |---|---|
-| **ファーム: リモートドライブとして起動時に見せる ID をデータの HDS より小さくする** (`-Q 1 -H 2:data.hds`、やり取り自体は ID 6 のまま) | **A: = ID 0、B: = リモートドライブ、C: = データの HDS**。Z 側は何も変えない。netpipe (npd.x) も動く |
+| **ファーム: リモートドライブの署名・分割表・scsiremote.sys をデータの HDS より小さい ID に** (`-Q 1 -H 2:data.hds`、運ぶ経路は ID 6 のまま) | **A: = ID 0、B: = リモートドライブ、C: = データの HDS**。Z 側は何も変えない。netpipe (npd.x) も動く |
 | Z: AUTOEXEC.BAT で SUBST を 4 行 (`SUBST X: B:\` / `SUBST B: C:\` / `SUBST C: X:\` / `SUBST /D X:`) | B: でリモートドライブ、C: でデータの HDS (書き込みも)。`subst /l` は `B: > C:\`、`C: > B:\`。`drive.x` などの物理のドライブを見る道具は元の順のまま |
 | データの HDS を起動の走査の間だけ NOT READY (`:after-remote`) にし、あとで組み込む | 走査では B: = リモートドライブになり、データの HDS はドライブにならない。CONFIG.SYS の最後に SCSI のディスクドライバ (FORMAT.X の SCHDISK を DEVICE= で) を置いても **組み込まれない** (ドライブが増えず、ID 1 を読みにも来ない。SCHDISK は IPL から呼ばれる前提)。Human68k 3.02 にはあとから SCSI ディスクを組み込む道具が無い (SUSIE.X など外の道具は試していない) |
 
@@ -290,6 +290,22 @@ uint64_t picosim_now_us(void);                                                  
 - Z 側は、xip.x の代わりに tis.x を常駐させ、npd.x の交換に 0xA6 のレコードを載せれば、XEiJ の中の rcmd.x / ssh.x が
   そのまま picosim の lwIP 経由になる
 
+## 0xA7 (端末のセッション) のまね (zss_mock.c)
+
+x68k-zos の Z で sshd (issue #21) の Pico 側 (zsshd) の代わり。既定で入る (`SVC ?= zss_mock.c`。`SVC=` を指定すると外れる)。
+記録の形は `net/npd/zss.h` (x68k-zos の kernel/zss.h の写し)。SSH は話さず、平文の TCP の口を ssh のクライアントの代わりにする。
+
+| 環境変数 | 既定 | 意味 |
+|---|---|---|
+| `ZSS_PORT` | 2322 | 待ち受ける口 (127.0.0.1) |
+| `ZSS_CREDIT` | 4096 | CREDIT (Z が送ってよい出力の量、絶対値。本物の Pico の上限と同じ) |
+| `ZSS_CREDIT_HOLD` | 0 | CREDIT を出し直すまでの最短の間 (ms)。試験用: Z の出力を溜めさせて、大きい 0xA7 の要求を作らせる |
+
+- 接続 = `T_E_OPEN` (80x24、user "test"、TERM "xterm"、UTF-8)。受けたバイト = `T_E_INPUT` (Z の ACCEPT / WINDOW の範囲で)。
+  `T_C_OUTPUT` は接続に書く。切れたら `T_E_CLOSED "disconnected"`。`T_C_EXIT` で "[exit N]" を書いて閉じ、`T_E_CLOSED "exit"`。
+- 試験の台本からの命令は、流れの中の 0xFF で始まる行: `\xffW 100 30\n` (WINCH)、`\xffS INT\n` (SIGNAL)、`\xffE\n` (EOF)。
+- 試験: `tests/zsstest.py` (XEiJ なし、`make test-host` に入っている)。XEiJ では x68k-zos の `kernel/tests/sshd_test.sh`。
+
 ## 確かめたこと (2026-10-23、XEiJ 0.26.10.08 -model=SUPER、MacBook Pro)
 
 DNS: XEiJ の Z で `ping.x -c 2 localhost` → `PING localhost (127.0.0.1)` 2/2、`ping.x 192.168.1.1` の逆引きも
@@ -318,7 +334,7 @@ netpipe など (最初の日):
   メールボックスで交換を始めた (`netpipe: bridge 192.168.1.68 (records)`)
 - rcmd: Mac → 127.0.0.1:23268 → slirp → picosim → メールボックス → npd.x → xip.x → rcmd.x → zsh。
   `x68 'echo hello from Z'` が rc=0 (zsh のコールド起動込みで 15 秒)
-- ping: `ping.x -c 4 192.168.1.1` → 4/4、70〜130ms (npd.x の問い合わせ間隔 60ms で決まる)
+- ping: `ping.x -c 4 192.168.1.1` → 4/4、70〜130ms (npd.x の問い合わせ間隔 60ms が有効)
 - アクセラレータ: Z の上の `acceltest.x` (RFC 7748 / 8032) が 17/17 OK (0xA5 が picosim の accel_ops で往復)
 - ssh: リリースの `ssh.x -y -oAccel=all+log -l nobody 192.168.1.1` が Mac の OpenSSH と鍵交換・ホスト鍵の検証まで
   (X25519 と ed25519 verify は picosim で)、`No auth methods could be used` で終わる (鍵を置いていないので期待どおり)
@@ -342,7 +358,7 @@ netpipe など (最初の日):
 - SPC の道の書き込みの失敗は Z に伝わらない。メールボックスは READ(10)/WRITE(10) だけ
 - ファームの起動ローダ (LBA 2 の bootloader、remoteboot) は無い。
   NOT READY の前のファームの 5 秒の保留 (TinyUSB に呼び直させる) は真似ていない (XEiJ の ROM はすぐ NOT READY を見る)。
-  Wi-Fi / SMB は時間で進むだけで、設定画面で変えた SSID などは反映されない (反映されるのは HDS0 のパスだけ)
+  Wi-Fi / SMB は時間で進むだけで、設定画面で変えた SSID などは有効にならない (HDS0 のパスだけ有効)
 - XEiJ の ROM の起動は Z の Linux の起動と違う (Z は Linux が USB の HDS を読んでから X68000 の ROM が動く)。
   picosim の Z キャッシュの先読みでそれらしくしているだけ
 - LAN は slirp の NAT。外 (インターネットや家の LAN) にも出られるので、試験はゲートウェイ (Mac) 宛てに留める。

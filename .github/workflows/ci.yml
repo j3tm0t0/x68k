@@ -1,0 +1,222 @@
+# ホストで回せる試験 (実機も第三者のバイナリも要らないもの)。内容と飛ばしているものは README.md の「CI」。
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  vt100:
+    name: term/vt100 (tests/run.sh)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: python venv (pyte, Pillow)
+        run: python3 -m venv term/vt100/tests/venv && term/vt100/tests/venv/bin/pip install -q -r .github/ci/requirements.txt
+      - name: tests/run.sh
+        # CGROM (XEiJ の配布物) は置かないので glyph の 2 項目は run.sh が SKIP する。
+        env:
+          VT_OUT: ${{ runner.temp }}/vttest
+        run: term/vt100/tests/run.sh
+
+  zterm:
+    name: term/zterm (cargo + tests/replay.sh)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            term/zterm/server/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('term/zterm/server/Cargo.lock') }}-${{ hashFiles('term/vt100/kanjitab.h', 'term/vt100/emojitab.h') }}
+          restore-keys: cargo-${{ runner.os }}-${{ hashFiles('term/zterm/server/Cargo.lock') }}-
+      - name: cargo build / test
+        working-directory: term/zterm/server
+        run: |
+          cargo build --release --locked
+          cargo test --release --locked
+      - name: vthost と client の試験道具
+        run: |
+          make -s -C term/vt100 vthost
+          make -s -C term/zterm/client ztreplay ztpredtest ztvctest
+      - name: tests/replay.sh
+        run: term/zterm/tests/replay.sh
+
+  host:
+    name: net/accel + net/tistack (ホストの試験)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: python venv (cryptography)
+        run: python3 -m venv "$RUNNER_TEMP/venv" && "$RUNNER_TEMP/venv/bin/pip" install -q -r .github/ci/requirements.txt
+      - name: net/accel tests/run.sh
+        run: VENV=$RUNNER_TEMP/venv TMPDIR=$RUNNER_TEMP net/accel/tests/run.sh
+      - name: net/tistack hostsim (API 層 + ループバック)
+        run: make -s -C net/tistack/tests host && net/tistack/tests/hostsim
+      - name: lwIP (固定コミット)
+        run: .github/ci/yunkya2.sh "$RUNNER_TEMP/y2" lwip
+      - name: net/tistack picosim (Pico の backend + tsp_svc + lwIP)
+        run: make -s -C net/tistack/tests picosim LWIP=$RUNNER_TEMP/y2/lwip && net/tistack/tests/picosim
+
+  m68k:
+    name: m68k (ssh.x, npd, tis.x のビルド + crypto68k / chacha68k)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/elf2x68k
+      - name: python venv (cryptography, PyNaCl, Unicorn)
+        run: python3 -m venv "$RUNNER_TEMP/venv" && "$RUNNER_TEMP/venv/bin/pip" install -q -r .github/ci/requirements.txt
+      - name: ssh.x (dropbear 2022.83、ZTERM=1 FAST=1 ACCEL=1)
+        working-directory: net/ssh/dropbear
+        run: ./fetch.sh && ZTERM=1 FAST=1 ACCEL=1 ./build.sh > "$RUNNER_TEMP/ssh-build.log" 2>&1 || { tail -50 "$RUNNER_TEMP/ssh-build.log"; exit 1; }; ls -l ssh.x
+      - name: npd.sys / npd.x、tis.x、tisnet.x / tisrun.x
+        run: |
+          make -s -C net/npd
+          make -s -C net/tistack
+          make -s -C net/tistack/tests tisnet.x tisrun.x
+          ls -l net/npd/npd.sys net/npd/npd.x net/tistack/tis.x net/tistack/tests/tisnet.x net/tistack/tests/tisrun.x
+      - name: crypto68k tests/run.sh
+        run: VENV=$RUNNER_TEMP/venv net/ssh/crypto68k/tests/run.sh
+      - name: chacha68k (Musashi の csim、dropbear の chachapoly.o、RFC 8439)
+        run: PY=$RUNNER_TEMP/venv/bin/python .github/ci/chacha68k.sh
+
+  picosim:
+    name: harness/picosim (make test-host)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/elf2x68k
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq libglib2.0-dev
+      - name: yunkya2 氏のソース (x68kzremotedrv + パッチ、x68kserremote、lwIP) と driver/ のビルド
+        run: .github/ci/yunkya2.sh "$RUNNER_TEMP/y2"
+      - name: make test-host
+        # pzltest は x68k-zos (非公開) の PZL が要るので SKIP する
+        run: >-
+          make -C harness/picosim test-host
+          FW=$RUNNER_TEMP/y2/x68kzremotedrv/driver RS=$RUNNER_TEMP/y2/x68kzremotedrv/x68kserremote LWIP=$RUNNER_TEMP/y2/lwip
+          PZLREPO=/nonexistent
+
+  xeij:
+    # XEiJ (第三者の配布物) を非公開の S3 から取り、tis.x -p を XEiJ + picosim で端から端まで試す (make test-tsp)。
+    # 秘密 (AWS_ROLE_ARN、CI_ARTIFACTS_BUCKET) が渡るのは main への push と同じリポジトリからの PR だけ。フォークからの PR では動かない。
+    # XEiJ は actions/cache に置かない (フォークの PR も main のキャッシュを読めるため)。毎回取って、終わったら消す
+    name: harness/picosim (make test-tsp, XEiJ)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      HAS_AWS: ${{ secrets.AWS_ROLE_ARN != '' && secrets.CI_ARTIFACTS_BUCKET != '' }}
+      XEIJ_TGZ: xeij-0261008.tar.gz
+    steps:
+      - name: 秘密があるか
+        run: |
+          if [ "$HAS_AWS" != true ]; then echo "SKIP: AWS_ROLE_ARN / CI_ARTIFACTS_BUCKET が無いので XEiJ の試験は飛ばす"; fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.HAS_AWS == 'true'
+      - uses: ./.github/actions/elf2x68k
+        if: env.HAS_AWS == 'true'
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        if: env.HAS_AWS == 'true'
+        with:
+          distribution: temurin
+          java-version: "26"   # XEiJ.jar は class version 70
+      - name: apt (glib、Xvfb、sshd)
+        if: env.HAS_AWS == 'true'
+        run: sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libglib2.0-dev xvfb openssh-server
+      - name: OIDC トークンの claim (sub / aud / repository / ref だけ。トークン自体は出さない)
+        if: env.HAS_AWS == 'true'
+        run: |
+          t=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | python3 -c 'import sys,json;print(json.load(sys.stdin)["value"])')
+          python3 - "$t" <<'PY'
+          import sys,json,base64
+          p=sys.argv[1].split('.')[1]; p+='='*(-len(p)%4)
+          c=json.loads(base64.urlsafe_b64decode(p))
+          print({k:c.get(k) for k in ('sub','aud','iss','repository','ref','event_name')})
+          PY
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        if: env.HAS_AWS == 'true'
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ap-northeast-1
+      - name: XEiJ を S3 から (SHA256SUMS で確かめて x68kcli/tools/xeij に)
+        if: env.HAS_AWS == 'true'
+        env:
+          BUCKET: ${{ secrets.CI_ARTIFACTS_BUCKET }}
+        run: |
+          set -euo pipefail
+          d=$RUNNER_TEMP/ci-artifacts; mkdir -p "$d"
+          aws s3 cp --only-show-errors "s3://$BUCKET/v1/SHA256SUMS" "$d/SHA256SUMS"
+          aws s3 cp --only-show-errors "s3://$BUCKET/v1/$XEIJ_TGZ" "$d/$XEIJ_TGZ"
+          (cd "$d" && grep -E " \*?$XEIJ_TGZ\$" SHA256SUMS | sha256sum -c --quiet -) || { echo "SHA256 が合わない: $XEIJ_TGZ"; exit 1; }
+          x=$d/xeij; mkdir -p "$x" && tar xzf "$d/$XEIJ_TGZ" -C "$x" --no-same-owner
+          rm -f "$d/$XEIJ_TGZ"
+          j=$(find "$x" -maxdepth 2 -name XEiJ.jar | head -1); [ -n "$j" ] || { echo "XEiJ.jar が無い"; exit 1; }
+          mkdir -p x68kcli/tools && mv "$(dirname "$j")" x68kcli/tools/xeij
+          [ -f x68kcli/tools/xeij/data/HUMAN.SYS ] && [ -f x68kcli/tools/xeij/data/COMMAND.X ] || { echo "data/HUMAN.SYS か COMMAND.X が無い"; exit 1; }
+      - name: XEiJ のエージェント (make -C x68kcli agent)
+        if: env.HAS_AWS == 'true'
+        run: make -C x68kcli agent
+      - name: yunkya2 氏のソースと driver/、ssh.x
+        if: env.HAS_AWS == 'true'
+        run: |
+          .github/ci/yunkya2.sh "$RUNNER_TEMP/y2"
+          (cd net/ssh/dropbear && ./fetch.sh && ZTERM=1 FAST=1 ACCEL=1 ./build.sh > "$RUNNER_TEMP/ssh-build.log" 2>&1) || { tail -50 "$RUNNER_TEMP/ssh-build.log"; exit 1; }
+      - name: 試験の相手の sshd (127.0.0.1:22、パスワード認証なし) と Xvfb
+        if: env.HAS_AWS == 'true'
+        run: |
+          sudo systemctl stop ssh.socket ssh.service 2>/dev/null || true
+          sudo mkdir -p /run/sshd
+          sudo /usr/sbin/sshd -o ListenAddress=127.0.0.1 -o PasswordAuthentication=no
+          Xvfb :99 -screen 0 1280x1024x24 -nolisten tcp > "$RUNNER_TEMP/xvfb.log" 2>&1 &
+      - name: make test-tsp
+        # rcmd.x は X68000 上の gcc + ESP/X でビルドするもので CI には無い。tsptest は rcmd.x の 2 項目を飛ばす。
+        # zostest は x68k-zos (非公開) の kernel/ が要るので回さない
+        if: env.HAS_AWS == 'true'
+        env:
+          DISPLAY: ":99"
+          XEIJLOCK_NAME: ci
+        run: |
+          set -o pipefail
+          export TMPDIR=$RUNNER_TEMP/tmp/ && mkdir -p "$TMPDIR"
+          make -C harness/picosim test-tsp \
+            FW=$RUNNER_TEMP/y2/x68kzremotedrv/driver RS=$RUNNER_TEMP/y2/x68kzremotedrv/x68kserremote LWIP=$RUNNER_TEMP/y2/lwip \
+            SSH_X=$PWD/net/ssh/dropbear/ssh.x RCMD_X=/nonexistent | tee "$RUNNER_TEMP/test-tsp.out"
+          ! grep -q '^SKIP' "$RUNNER_TEMP/test-tsp.out" || { echo "test-tsp が SKIP した"; exit 1; }
+          ! grep -q '^FAIL' "$RUNNER_TEMP/test-tsp.out"
+      - name: 落ちたときの記録 (ログと試験の出力 .TXT だけ。XEiJ の中身は載せない)
+        if: failure() && env.HAS_AWS == 'true'
+        run: |
+          o=$RUNNER_TEMP/tsp-logs; mkdir -p "$o"
+          t=$RUNNER_TEMP/tmp/picosim-tsptest
+          cp "$t.log" "$o/" 2>/dev/null || true
+          cp "$t"/*.log "$o/" 2>/dev/null || true
+          cp "$t"/boot/*.TXT "$o/" 2>/dev/null || true
+          rm -f "$o"/CONFIG* "$o"/AUTOEXEC*
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure() && env.HAS_AWS == 'true'
+        with:
+          name: tsp-logs
+          path: ${{ runner.temp }}/tsp-logs
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: XEiJ と試験の作業場所を消す
+        if: always()
+        run: rm -rf x68kcli/tools/xeij x68kcli/tools/xeijagent.jar x68kcli/build "$RUNNER_TEMP/ci-artifacts" "$RUNNER_TEMP/tmp" "$RUNNER_TEMP/tsp-logs"

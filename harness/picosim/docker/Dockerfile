@@ -8,6 +8,7 @@
 #         つなぐ (docker/run-suite.sh)
 FROM eclipse-temurin:26-jdk-noble
 ARG ELF2X68K=20261004
+ARG ELF2X68K_SHA256=a57c00f33898e3a540504ac55bb5c15313ff7dd51d6fa197bd36230856bec3db
 ARG TARGETARCH
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       xvfb build-essential pkg-config libglib2.0-dev python3 rsync git curl bzip2 ca-certificates \
@@ -15,6 +16,7 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
       libxrender1 libxtst6 libxi6 libxext6 fontconfig fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 RUN [ "$TARGETARCH" != amd64 ] || { curl -fsSL -o /tmp/e.tbz https://github.com/yunkya2/elf2x68k/releases/download/$ELF2X68K/elf2x68k-Linux-$ELF2X68K.tar.bz2 \
+    && echo "$ELF2X68K_SHA256  /tmp/e.tbz" | sha256sum -c - \
     && mkdir -p /opt/elf2x68k && tar xjf /tmp/e.tbz -C /opt/elf2x68k && rm /tmp/e.tbz \
     && ln -s /opt/elf2x68k/m68k-xelf/bin/* /usr/local/bin/; }
 # 試験は tester で動かす。root は Mac の代わりの sshd (22 番、tsptest の ssh.x の相手) を上げるだけ (run-suite.sh)

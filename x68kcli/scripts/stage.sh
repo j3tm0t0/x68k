@@ -58,7 +58,7 @@ if [ "${PROFILE:-cli}" = dev ]; then
 fi
 crlf work/AUTOEXEC.BAT stage/AUTOEXEC.BAT
 crlf templates/STARTUP.ENV  stage/STARTUP.ENV
-for f in zshenv zshrc fishrc profile kshrc; do sjis templates/etc/$f stage/ETC/$f; done
+for f in zshenv zshrc fishrc profile kshrc zoshrc; do sjis templates/etc/$f stage/ETC/$f; done
 # ホームディレクトリのサンプル (hello.c など)
 for f in templates/home/*; do crlf "$f" "stage/HOME/$(basename "$f")"; done
 
@@ -227,6 +227,7 @@ for f in build/x/sed.x build/x/grep.x; do [ -s "$f" ] && cp "$f" stage/USR/BIN/;
 [ -s build/x/contee.sys ] && cp build/x/contee.sys stage/SYS/contee.sys
 [ -s build/x/rsspeed.x ] && cp build/x/rsspeed.x stage/USR/BIN/rsspeed.x
 [ -s build/x/clear.x ] && cp build/x/clear.x stage/USR/BIN/clear.x
+[ -s build/x/rcc.x ] && cp build/x/rcc.x stage/USR/BIN/rcc.x
 
 # --- ITA TOOLBOX ---
 mkdir -p stage/USR/DOC/ITA

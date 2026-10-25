@@ -133,7 +133,7 @@ tis.x は「ソケット操作を npd の郵便受け越しに Pico に頼む」
 - **スレッドは使わない** (ループバックは呼ばれたときに全部済む)。Pico 版でも、まずは呼び出し側の文脈で
   郵便受けを交換する (npd.x と郵便受けを共用するので、交換は npd.x のスレッドに頼む形が有力。下記)
 - **tick**: 入口に入るたびと、待ちの 1 周ごとに `be->tick()` を呼ぶ。ループバックは SYN SENT → ESTABLISHED の
-  昇格だけ (ノンブロッキング connect の非同期の道を本物と同じに通すため)。Pico 版は郵便受けの交換
+  昇格だけ (ノンブロッキング connect の非同期の処理を本物と同じ順に通すため)。Pico 版は郵便受けの交換
 - **バッファ**: ソケットごとに受信リング (既定 8KB × 32 = 256KB、常駐時に BSS の後ろに確保して `_KEEPPR` に含める)。
   ループバックの送信は相手の受信リングに直接書く (送信バッファ無し)。Human68k では常駐後に `_MALLOC` すると
   呼んだプロセスの持ち物になり、そのプロセスの終了で消えるので、動的確保はしない
@@ -169,7 +169,7 @@ Pico 版 (pico.c) で決めたことは次の章。以下は最初の見込み (
   に集め、tis.x は要求を共有リングに積んで npd のスレッドを起こす形にするのが安全 (SCSI の命令を 2 か所から
   出さない)
 - **状態**: Pico から来る状態変化 (connected / refused / peer FIN / reset) を API 層の状態に写す。
-  ブロッキング connect / read は tick を回しながら待つ (ループバックと同じ道)
+  ブロッキング connect / read は tick を回しながら待つ (ループバックと同じ処理)
 
 ## Pico に任せる (tis.x -p、TSP)
 
@@ -225,10 +225,10 @@ npd の X6NR 交換 (IP パケットの `[長さ 2][中身][詰め物]` の列) 
   閉じて同じ番号を開き直すと、戻ってきた応答の前のソケットのデータが新しいソケットに入るため
 - **accept**: Pico は Z の番号を決められないので、ACCEPT は Pico 側の handle を知らせ、Z が番号を割り当てて ADOPT で
   引き取る (子のデータは ADOPT の後から流れる。同じ要求の中で Z から送り始められる)。表が一杯なら REJECT (Pico が切る)。
-  **backlog 0 (rcmd.x)** は listen した番号自身が接続になる: ADOPT に LISTENER の印を付け、Pico は listen をやめる
+  **backlog 0 (rcmd.x)** は listen した番号自身が接続になる: ADOPT に LISTENER のフラグを付け、Pico は listen をやめる
   (引き取りまでの 2 本目は Pico が断る)。lwIP の backlog (TCP_LISTEN_BACKLOG) は使わず、tsp_svc が数える
 - **名前**: gethostbyname は RESOLVE (問い合わせ 4 個まで同時)。Pico の lwIP の DNS が引く。引いた名前とアドレスを
-  4 個覚えておき、そのアドレスへの CONNECT には NAME の印と名前を添える (TLS の SNI と、IPv6 のために Pico が名前を
+  4 個覚えておき、そのアドレスへの CONNECT には NAME のフラグと名前を添える (TLS の SNI と、IPv6 のために Pico が名前を
   知っておく)。addr が 0 で名前がある CONNECT は Pico が引いてからつなぐ (記録形式の試験で確認)
 - **TLS**: CONNECT の flags の TLS (0x02) を予約。いまの Pico は ERROR NOTSUP を返す
 
@@ -245,7 +245,7 @@ npd.x の交換は書き込み / 読み込みの失敗でレコードを失う�
 
 ### ブロッキングの待ち
 
-backend は待たない (be.h の約束のまま)。tis.c のブロッキングの道 (connect / read / write / accept) は状態を見ては
+backend は待たない (be.h の約束のまま)。tis.c のブロッキングする呼び出し (connect / read / write / accept) は状態を見ては
 `_CHANGE_PR` するだけで、その間に npd.x のスレッドが交換し、TIS_NP_IN で ts[] と受信リングが書き換わる
 (npd.x のスレッドはスーパーバイザで tis.x を呼ぶので、tis.c の排他 (_SUPER) と同じ仕組みで守られる)。
 ループバックの試験で確かめた _OPEN_PR のスレッドでの待ち方がそのまま使える。足したもの:
@@ -305,7 +305,7 @@ backend は待たない (be.h の約束のまま)。tis.c のブロッキング�
 - `tis.x -r` は npd.sys から入口を外す (npd.x が解放された入口を呼ばない)。Pico 側のソケットは次の tis.x の zepoch で捨てる
 - Pico は Wi-Fi が切れたら `tsp_shutdown()` → 別の epoch で `tsp_init()` (Z は Network is down を見る)
 
-### SLIP / xip.x の道との共存、Z の IP アドレス
+### SLIP / xip.x の経路との共存、Z の IP アドレス
 
 - 同じ npd.x の交換に IP のレコード (xip.x)、0xA5 (アクセラレータ)、0xA6 (tis.x) が並ぶ。npd.x は ETD 19 の IP レコードの
   後ろに TSP レコードを置き (入らなければ次の交換)、受けた 0xA6 を tis.x に渡す。古い npd.sys (1.1、ETD 26 が無い) では
@@ -332,7 +332,7 @@ backend は待たない (be.h の約束のまま)。tis.c のブロッキング�
 
 ### この先 (設計だけ)
 
-- **TLS**: CONNECT の TLS の印で Pico が mbedTLS (altcp_tls) を話し、名前を SNI と証明書の照合に使う。Z には平文の
+- **TLS**: CONNECT の TLS のフラグで Pico が mbedTLS (altcp_tls) を話し、名前を SNI と証明書の照合に使う。Z には平文の
   ストリームに見える。信頼の段階はアクセラレータと同じ考え (Pico が平文を見る)。Pico 2 W の RAM で 1〜2 本
 - **IPv6**: gethostbyname の答えが AAAA しか無い名前のとき、Pico が「名前の札」として使っていない IPv4 アドレス
   (240.0.0.0/4 から) を返し、その札への CONNECT を Pico が名前でつなぐ。Z は v6 アドレスを扱わずに済む
@@ -375,7 +375,7 @@ tsp_svc.c をそのまま載せる。LAN の相手 (echo 7 / discard 9 / source 
   保存した応答で答える)
 - Pico の再起動 (新しい pepoch → read 0、"Network is down"、そのあと新しい接続は通る)、tis.x の入れ直し
   (新しい zepoch → Pico が前のソケットを捨て、相手に RST)
-- 記録形式を直に: 同じ要求 2 回に同じ応答、addr 0 + 名前の CONNECT を Pico が引いてつなぐ、TLS の印は NOTSUP
+- 記録形式を直に: 同じ要求 2 回に同じ応答、addr 0 + 名前の CONNECT を Pico が引いてつなぐ、TLS のフラグは NOTSUP
 - 終わりごとに Z・Pico・lwIP にソケットが残っていない、Z の受信リングが溢れない、tcp_write の ERR_MEM が 0
 
 速さ (1MB、仮想の時計。「Z の写し」は tis.x と npd.x が 1 バイトを写す時間で、送りは 3 回・受けは 2 回写す):
@@ -409,7 +409,7 @@ tsp_svc.c をそのまま載せる。LAN の相手 (echo 7 / discard 9 / source 
 ```
 make -C pico/picosim              # harness/picosim/build/picosim に tsp_svc + lwIP (pico-sdk の lib/lwip) を入れる
 tests/xeij_pico.sh                # ホストのディレクトリから XEiJ を起動し、試験を流して結果を表示する (約 2 分)
-HDS=npd 入りの .hds tests/xeij_xip.sh   # 比べる用: 同じ XEiJ + picosim で xip.x の道
+HDS=npd 入りの .hds tests/xeij_xip.sh   # 比べる用: 同じ XEiJ + picosim で xip.x の経路
 ```
 
 - `pico/picosim/tsp_glue.c`: lwIP の netif を picosim の LAN (libslirp) の 1 台にする (`lan_attach` / `lan_send`)。
@@ -426,7 +426,7 @@ HDS=npd 入りの .hds tests/xeij_xip.sh   # 比べる用: 同じ XEiJ + picosim
 
 結果 (XEiJ 0.26.10.08 -model=SUPER、10MHz 68000、MacBook Pro。どれも通過):
 
-| 試験 | tis.x -p (tsp_svc + lwIP) | xip.x の道 (同じ XEiJ と picosim) |
+| 試験 | tis.x -p (tsp_svc + lwIP) | xip.x の経路 (同じ XEiJ と picosim) |
 |---|---|---|
 | gethostbyname | mac.test 17ms、example.com 82ms (Pico の DNS) | |
 | 1 バイトの往復 (20 回の平均) | **39 ms** | 102 ms |
@@ -440,10 +440,26 @@ HDS=npd 入りの .hds tests/xeij_xip.sh   # 比べる用: 同じ XEiJ + picosim
 - tis.c の memcpy を速くした (番地の偶奇がそろえば long で 16 バイトずつ、そろわなければ 1 バイトずつを 8 回並べる) 前後で:
   sink 82 → 166 KB/s、src 112 → 233 KB/s、x68put 87 → 167 KB/s、ループバックの 300KB 双方向 20 → 17.4 秒、
   tisrun echo 100,000 バイト往復 3.2 → 2.2 秒。XEiJ のループバックの試験は全部通る (tistest 46、echo 4、rcmd 4、ssh 2)
-- xip.x の道はイメージから起動 (zsh 常駐) で、tis.x の方はホストのディレクトリから COMMAND.X なので、Z の上の残りの
+- xip.x の経路はイメージから起動 (zsh 常駐) で、tis.x の方はホストのディレクトリから COMMAND.X なので、Z の上の残りの
   仕事は少し違う。XEiJ の CPU と picosim (交換の遅れ 0) は同じ。実機の Z (xip.x で 40〜56KB/s) とは比べない
 - XEiJ の中では交換 1 回の SCSI の時間がほぼ 0 なので、上の数字は **Z の CPU の律速** (tis.x と npd.x の写しと、
   libsocket / アプリの手間)。実機では交換の時間が足される (picosim の試験の「速さ」の表)
+
+### 実機の Z で (2026-10-23 23:10)
+
+X68000 Z + Pico 2 WH (sd 基板、fork 0036-0043、Wi-Fi で raspi3 の SMB)、相手は MacBook Pro (有線 192.168.1.90) の tisnet_peer.py。
+xip.x の経路は `b:netcon` (xip.x + npd5.x、ESP/X のブリッジ)、tis.x の経路はソフトリセットのあと `tis.x -p` + `npd.x` (1.2)。
+x68put の書き先はどちらも B: (SMB のリモートドライブ。同じ ID 6 の交換を tis.x と分け合う)。
+
+| 試験 | tis.x -p | xip.x | 倍 |
+|---|---|---|---|
+| 1 バイトの往復 (20 回の平均) | **53 ms** | 149 ms | 2.8 |
+| Z → Mac、1MB (tisnet sink) | **109 KB/s** (9.0 秒) | 25.7 KB/s (38.0 秒) | 4.2 |
+| Mac → Z、1MB (tisnet src) | **145 KB/s** (6.7 秒) | 16.5 KB/s (59.2 秒) | 8.8 |
+| Mac → Z、rcmd.x の x68put 300KB (圧縮なし、B: へ) | **35.7 KB/s** (8.4 秒、中身一致) | 12.1 KB/s (24.8 秒、中身一致) | 3.0 |
+
+- tis.x -p のときは、Z の待ち受け (rcmd.x の 2323) は Pico の番地 (192.168.1.4) に出る。xip.x のときは Z の番地 (192.168.1.68)
+- x68put は B: への書き込み (SMB) が律速に入る。A: (RAM ディスクなど) に書けばもっと速いはず (未計測)
 
 ### Pico 2 W のファームができたら確かめること
 
@@ -504,7 +520,7 @@ AUTOEXEC.BAT が tis.x を常駐させて試験を動かす。2026-10-22 に全�
   accept が listen ソケット自身を返す、UDP の sendto / recvfrom (区切りを保つ)、ソケットが残らない
 - **rcmd.x** (無修正。x68kcli/build/fix.hds の /USR/BIN/rcmd.x、ESP/X libnetwork でビルドされた少し前の版。
   @put はある): `tisrun.x rcmd` がフォアグラウンドで rcmd.x を起動し、スレッドが 127.0.0.1:2323 のクライアントに
-  なる。echo (終わりの印まで)、**@put 300,000 バイト (115KB/s、中身を照合)**、exit → bye
+  なる。echo (終わりを示す行まで)、**@put 300,000 バイト (115KB/s、中身を照合)**、exit → bye
   (返事を **ブロッキングの read** で受け、rcmd.x が書くまで tis.x の中で待って、EOF で 0 が返る)。
   backlog 0・大文字の sockstate・ASCII モードの recvline・1 接続ごとの bind し直しがそのまま通る
 - **ssh.x** (無修正。x68k-ssh の dropbear 移植、09:26 版): `tisrun.x ssh` のスレッドが 127.0.0.1:22 の偽の
@@ -520,7 +536,7 @@ AUTOEXEC.BAT が tis.x を常駐させて試験を動かす。2026-10-22 に全�
 スレッドが動く。スレッドはこのプログラムのメモリで動くので、子の終了後にスレッドの終わりを待ってから終わる。
 スレッドの中で malloc は使えない (子がすぐ後ろのメモリを取るので、ヒープを _SETBLOCK で伸ばせない)。
 
-XEiJ のホストファイルシステムで分かったこと (tis.x とは無関係、tests の作りに効く):
+XEiJ のホストファイルシステムで分かったこと (tis.x とは無関係、tests の作りに関係する):
 
 - **dup2 で付け替えた標準出力に、子 (_EXEC) の出力が入らない**。rcmd.x の rcmd.out が空になり、
   コマンドの出力を返す試験ができない (300KB の Z → 相手の向きは tistest.x で見ている)。

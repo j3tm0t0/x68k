@@ -1,0 +1,15 @@
+# /etc/zoshrc -- zosh.x (Z-OS のシェル) の共通設定。そのあと ~/zosh.rc を読む。関数は 1 行で書く
+alias ls='ls -F'
+alias ll='ls -alF'
+alias la='ls -aF'
+alias dir='ls -alF'
+alias vi='vim.x -T builtin_x68k'
+alias vim='vim.x -T builtin_x68k'
+alias less='vim.x -T builtin_x68k -R'
+alias awk='gawk.x'
+alias h='history'
+# C コンパイラ: gcc = 真里子版 1.42 (-lgcc2 を後ろに付けないとリンクで __ltdf2 などが足りない)、gcc295 = GCC 2.95.2 (68020 以上専用)、cc = XC 2.1
+gcc() { gcc.x $@ -lgcc2; }
+# コンパイルを LAN の別の機械に任せるなら (net/rcc): RCC_HOST=<機械の名前か番地> と alias gcc=rcc を ~/zosh.rc に
+gcc295() { A:/usr/gcc295/gcc.x -IA:/usr/gcc295/include $@; }
+cc() { include=A:/xc/include; lib=A:/xc/lib; A:/xc/cc/cc.x $@; include=A:/usr/include; lib=A:/usr/lib; }

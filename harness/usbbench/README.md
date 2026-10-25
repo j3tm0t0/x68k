@@ -9,9 +9,31 @@ Z の中の Linux は見られないので、Z が何を送るかは **Pico の�
 |---|---|---|
 | `capture/build-pzl.sh <rev> <out.elf> [-D...]` | Mac | 採取用の PZL: TinyUSB のログ (CFG_TUSB_DEBUG=2) を UART に、行頭に起動からの ms、READ/WRITE(10) の番地 (`ZC R/W`)、名前の無い SCSI 命令の CDB (`ZC C`)。毎回出る決まった行は省く (UART 115200 は 1 行 3 ms で、Z への返事を遅らせる) |
 | `capture/build-fork.sh <fork のツリー> <そのビルド dir> <out.elf>` | Mac | fork (x68kzremotedrv) の採取用。ツリーを一時ディレクトリに写し (元には触らない)、同じ ZC の行と TinyUSB のログを足して、指定のビルドの CMakeCache と同じ設定でビルド |
-| `zcap2profile.py <picouart.log> -o p.json` | raspi3 / Mac | 記録 → profile。列挙の制御転送 (元のファームが STALL した要求には `"stall": true` を付ける)、SCSI 命令の並びと時刻。WRITE(10) は入れない (数だけ) |
+| `zcap2profile.py <picouart.log> -o p.json` | raspi3 / Mac | 記録 → profile。列挙の制御転送 (STALL したものにフラグを立てる)、SCSI 命令の並びと時刻。WRITE(10) は入れない (数だけ) |
 | `zhost.py [-p p.json] [--speed N] [-t 秒]` | raspi3 (sudo、`~/venv-usbbench` の pyusb) | バスリセット → profile の列挙 → HID の IN を bInterval ごとに読み続けながら MSC (BOT) を時刻どおりに。どれかの転送が `-t` 秒を超えたら **HANG** (終了コード 2)、STALL や記録との違いは ERRORS (1)、問題なしは OK (0)。最後にバスリセットして Linux のドライバに返す |
 | `profiles/z-guess.json` | | 記録が無いときの推測 (Linux 風の列挙と起動の読み込み) |
+
+## 公開前の試験一式 (release-check.sh)
+
+raspi3 で `cd ~/usbbench && [USBMON=1] [PCAP=1] [POLL=0] bash release-check.sh <elf> [ケース...]`。p2w は scratchpad/p2wlock を取ってから。
+
+| ケース | すること |
+|---|---|
+| idle | 起動して 60 秒なにもしない |
+| replay | Z で採った USB の使い方 (profiles/z-fork.json) を zhost.py で送り直す |
+| vfat-boot | HDS が開く前 (大きさが仮の 0xfffffe00) に vfat でマウントして読み書き |
+| vfat | 落ち着いてから vfat で読み書き (zfat.py、元の HDS と比べる) |
+| smb-late | SMB を止めたまま起動し、45 秒後に戻す (raspi3 の iptables で 445 番を DROP) |
+| smb-lost | 読み書きの途中で SMB を 45 秒止める |
+| soak | 10 分、ゆっくり (2 回/秒) 読み書き |
+
+- 合格: PANIC / Out of memory が UART に出ない、USB が勝手に消えない、読み戻しと SMB の実ファイルが一致、10 秒を超える止まりが無い。
+- SMB を止めた区間 (戻してから 15 秒まで) の長い待ちは正しい動きとして数えない。
+- 約 30 秒の止まり (#38: Linux の USB リセットで終わる、UART に `msc: no callback for >=28000 ms`、445 番は無通信、`usb: stall` / NOT READY / MEDIUM ERROR が無い) は、1 ケースに 1 回までなら「known bench artefact (#38)」で合格 (stallclass.py)。raspi3 の USB ホストで起き、実機の Z では出ていない。
+- 各ケースに時間の上限があり、Pico が USB から消えたら SWD リセットとハブのポートの入れ直しで立て直す。
+- 結果は `~/release-check/<elf>-poll<0|1>-<時刻>/` (summary.txt、ケースごとの .log / .uart / .dmesg / .pcap / .usbmon.pcap)。
+- Mac から流す版: `mac-soak.sh` (p2w の USB を Mac に挿し替えて、raspi3 の USB ホストと Pico の TinyUSB を分ける)。
+- raspi3 のスクリプトを差し替えるときは、別名で置いてから `mv` で付け替える (動いている bash が読みかけのファイルを上書きしない)。
 
 ## 使い方 (p2w)
 
@@ -32,7 +54,7 @@ sudo ~/venv-usbbench/bin/python zhost.py -p profiles/<記録>.json -t 5
 ## 分かったこと・注意
 
 - TinyUSB の BOT: 求められた長さより短いデータ (MODE SENSE(6) の 4 バイトなど) のあと IN を STALL し、CSW はその後。zhost は STALL を解いて CSW を読む (仕様どおり)。
-- Device Qualifier の要求は full speed の機器なので STALL が正しい。記録で `"stall": true` の要求は、STALL が返れば合格。
+- Device Qualifier の要求は full speed の機器なので STALL が正しい。記録に `stall` のフラグが立った要求は、STALL なら合格。
 - HID の「Z がどの間隔で読むか」はデバイス側では見えない (NAK は記録に出ない)。zhost は endpoint の bInterval (10 ms) で読む。
 - raspi3 の /tmp は 453MB の tmpfs。いっぱいになると UART の記録係 (picouart-*.service、uartlog.py) が落ちる (10/23 21:06 に p2w の係が落ちていた)。採取の前に `systemctl is-active picouart-sd` を確かめる。
 - p2w のフラッシュの控えを openocd で取るとき、`flash read_bank` や 4MB 一度の `dump_image` は途中の番地で読み損なうことがある。256KB ずつ、読み損ねた塊だけ読み直すと揃う (`reset run; sleep 2000; halt` のあと)。
@@ -50,7 +72,7 @@ sudo ~/venv-usbbench/bin/python zhost.py -p profiles/<記録>.json -t 5
   Config (9 → 全部) → String 0/2/1/3 → SET_CONFIGURATION 1 → GET_MAX_LUN → HID ごとに **SET_IDLE(0) → Report 記述子** →
   キーボードに **SET_REPORT (LED、1 バイト)**。**SET_PROTOCOL も GET_REPORT も来ない** (boot protocol に切り替えない = report protocol のまま)。
   マウスがあると、マウスにも SET_IDLE と Report 記述子 (0x4d バイト)。fork と PZL で同じ。
-- **TEST UNIT READY が約 2.1〜2.5 秒ごと** に来るのは fork でも同じ (正常に動いている間も)。固まったことを示すものではない。
+- **TEST UNIT READY が約 2.1〜2.5 秒ごと** に来るのは fork でも同じ (正常に動いている間も)。固まったわけではない。
 - MSC の命令の種類も fork と PZL で同じ (MODE SENSE(6) は短い返事 + STALL が 12 回、Prevent/Allow、READ CAPACITY、INQUIRY)。
 - **採取用ビルドでは PZL が固まらなかった**。違いは返事の遅さだけ (ログの行ごとに UART で 3 ms ほど)。返事が速すぎるときだけ起きる、
   時間に敏感な不具合を疑う材料。

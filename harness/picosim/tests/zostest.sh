@@ -100,7 +100,7 @@ KEYS="$KEYS;dump zos.bin 0xE00000 0x80000;key f10;type a:/tis.x -s > a:/TISS.TXT
 AGENTJAR=$AGENT XEIJ=$XEIJ ZOS_OUT=$OUT ZOS_JAVA_OPTS="-Dpicosim=127.0.0.1:$PICOPORT -Dpicosim.ids=6" \
 FILES="$ZOS/zos.x $SSH_X $WORK/idzos $TOP/net/tistack/tis.x $TOP/net/npd/npd.sys $TOP/net/npd/npd.x" ZOS_STAGE="$STAGE" \
 ZOS_CONFIG='DEVICE = \npd.sys;DEVICE = \SYS\FLOAT2.X;ENVSET = 8192' ZOS_TIMEOUT=${ZOS_TIMEOUT:-420} ZOS_KEYS="$KEYS" \
-  "$WORK/t/xeij_run.sh" "${ENVL[@]}" 'zos.x -x A:\USR\BIN\ksh.x A:\USR\BIN\ksh.x' > "$WORK/run.log" 2>&1 || true
+  "$WORK/t/xeij_run.sh" "${ENVL[@]}" "zos.x ${ZOSARGS:+$ZOSARGS }-x A:\\USR\\BIN\\ksh.x A:\\USR\\BIN\\ksh.x" > "$WORK/run.log" 2>&1 || true
 
 fails=0
 ok() { if eval "$2"; then echo "PASS $1"; else echo "FAIL $1"; fails=$((fails + 1)); fi; }
@@ -119,6 +119,7 @@ ok "sshd accepted the ssh.x key" "grep -q 'Accepted publickey' '$WORK/sshd.log'"
 sz=$(echo "$right" | grep -o '^size [0-9]*x[0-9]*' | head -1)
 echo "     terminal size seen by the sshd: ${sz:-?} (screen: $OUT/zos.txt)"
 grep -q "tsp: first 0xA6" "$WORK/picosim.log" && echo "     picosim: lwIP joined the LAN on the first 0xA6"
+grep -a "pico xchg" "$OUT/boot/TISS.TXT" 2>/dev/null | tr -d '\r' | sed 's/^ */     tis.x -s: /'   # stall / gap (npd.x の交換の間の最長)
 # 鍵交換の時間: ssh.x を打ち終えてから画面に "type something" (相手の demo.sh の問い) が出るまで (xeijkeys.py の waittext の待ち時間)
 kex=$(grep -m1 "waittext 'type something' True" "$OUT/keys.log" 2>/dev/null | awk '{print $NF}')
 echo "     ssh.x connect + kex + login (to the demo prompt): ${kex:-?} s${ACCEL:+ (accel)}"
