@@ -113,7 +113,7 @@ for f in ("fd0.xdf", "cgrom.bin"):
     if os.path.exists(os.path.join(run, f)):
         os.remove(os.path.join(run, f))
 sh("cp", xdf, os.path.join(run, "fd0.xdf"))
-peer = subprocess.Popen([sys.executable, os.path.join(top, "net", "tistack", "tests", "tisnet_peer.py"), str(PEER)])
+peer = subprocess.Popen([sys.executable, os.path.join(top, "net", "tistack", "tests", "tisnet_peer.py"), str(PEER), "0.0.0.0"])
 xe = subprocess.Popen([os.path.join(serial, "test", "xeij-fd.sh"), run], env=env, stdin=subprocess.DEVNULL)
 zd = subprocess.Popen([ZBIN, "daemon", "--tcp", "127.0.0.1:%d" % XPORT, "-v"], env=env)
 fails = 0
@@ -131,10 +131,25 @@ try:
     a.send("\r")
     a.wait("A>", 20)
     # 192.168.68.1 は Pi 自身 (zmuxd が 127.0.0.1 につなぐ)。X68000 の 127.0.0.0/8 は tis.x の中のループバック
-    for line, want in (("tisnet resolve localhost", "PASS"),
+    # 名前 (.local など Pi の getaddrinfo / mDNS で引けるもの): X68000 の gethostbyname → tis.x -p → TSP の RESOLVE → zmuxd。ssh.x の getaddrinfo も同じ道
+    names = [n for n in (os.environ.get("RESOLVE_NAME"), socket.gethostname() + ".local", socket.gethostname()) if n]
+    rname = None
+    for n in names:
+        try:
+            socket.getaddrinfo(n, None, socket.AF_INET)
+            rname = n
+            break
+        except OSError:
+            pass
+    extra = []
+    if rname:
+        extra = [("tisnet resolve " + rname, "PASS"), ("tisnet echo %s %d 20" % (rname, PEER), "PASS")]
+    else:
+        print("e2e: no resolvable host name here, name tests skipped")
+    for line, want in extra + [("tisnet resolve localhost", "PASS"),
                        ("tisnet echo 192.168.68.1 %d 20" % PEER, "PASS"),
                        ("tisnet put 192.168.68.1 %d %d" % (PEER, PUT), "PASS"),
-                       ("tisnet get 192.168.68.1 %d %d" % (PEER, PUT), "PASS")):
+                       ("tisnet get 192.168.68.1 %d %d" % (PEER, PUT), "PASS")]:
         t1 = time.time()
         out = a.cmd(line, int(os.environ.get("CMDWAIT", "300")))
         ok = want in out and "FAIL" not in out
