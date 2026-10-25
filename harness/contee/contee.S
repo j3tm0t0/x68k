@@ -12,7 +12,8 @@ devheader:
     .word   0x8000              /* キャラクタデバイス */
     .long   strategy
     .long   interrupt
-    .ascii  "CONTEE  "
+    .ascii  "\001CONTEE "         /* 先頭を 0x01 にする。"CONTEE  " だと contee.sys という名前のファイルを開くときにデバイスとして
+                                   開かれ (CON や NUL と同じ)、書き込みが 「デバイスドライバに無効なコマンド」 になる */
 enable:
     .byte   1                   /* 0 にすると写すのをやめる (ヘッダ +22。zmux.x が線を使い始めるときに 0 にする) */
     .even

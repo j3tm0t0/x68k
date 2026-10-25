@@ -18,6 +18,8 @@ sock = "/tmp/zmux-e2e-%d.sock" % os.getpid()
 env = dict(os.environ, ZMUX_SOCK=sock, XPORT=str(XPORT))
 drive = os.path.join(run, "drive")
 fails = []
+REAL = bool(os.environ.get("REAL"))
+SMALL = REAL or bool(os.environ.get("SMALL"))     # 空きの少ないフロッピーへ小さいファイルを写す場面
 
 
 def check(name, cond, extra=""):
@@ -41,11 +43,31 @@ def mkfloppy():
     sh("cp", os.path.join(zm, "x68k", "zrmt.sys"), os.path.join(t, "SYS", "ZRMT.SYS"))
     sh("cp", os.path.join(zm, "x68k", "zmux.x"), os.path.join(t, "ZMUX.X"))
     sh("cp", os.path.join(serial, "rx.x"), os.path.join(t, "RX.X"))
-    open(os.path.join(t, "CONFIG.SYS"), "wb").write(
-        b"FILES     = 30\r\nBUFFERS   = 20 1024\r\nPROCESS   = 8 10 20\r\n"
-        b"DEVICE    = \\SYS\\RSDRV.SYS\r\nDEVICE    = \\SYS\\ZMUX.SYS\r\nDEVICE    = \\SYS\\ZRMT.SYS\r\n")
-    open(os.path.join(t, "AUTOEXEC.BAT"), "wb").write(
-        b"ECHO OFF\r\nPATH A:\\\r\nRX -B19200\r\nZMUX\r\nCTTY AUX\r\n")
+    if REAL:
+        # 実機の XVI の構成: contee78 (78125bps)、npd.sys、tis.x -p、npd.x -m、rx -K2、フロッピーの空きは 19KB
+        net = os.path.join(top, "net")
+        no = os.environ.get("REAL_NO", "").split(",")      # 切り分け用: contee / npd (npd.sys) / tis (tis.x -p) / npdx (npd.x -m)
+        sh("cp", os.path.join(top, "harness", "contee", "contee78.sys"), os.path.join(t, "SYS", "CONTEE.SYS"))
+        sh("cp", os.path.join(net, "npd", "npd.sys"), os.path.join(t, "SYS", "NPD.SYS"))
+        sh("cp", os.path.join(net, "npd", "npd.x"), os.path.join(t, "NPD.X"))
+        sh("cp", os.path.join(net, "tistack", "tis.x"), os.path.join(t, "TIS.X"))
+        open(os.path.join(t, "CONFIG.SYS"), "wb").write(
+            b"FILES     = 30\r\nBUFFERS   = 20 1024\r\nPROCESS   = 8 10 20\r\n"
+            b"DEVICE    = \\SYS\\RSDRV.SYS\r\n" + (b"" if "contee" in no else b"DEVICE    = \\SYS\\CONTEE.SYS\r\n") + b"DEVICE    = \\SYS\\ZMUX.SYS\r\n"
+            + (b"" if "npd" in no else b"DEVICE    = \\SYS\\NPD.SYS\r\n") + b"DEVICE    = \\SYS\\ZRMT.SYS\r\n")
+        open(os.path.join(t, "AUTOEXEC.BAT"), "wb").write(
+            b"ECHO OFF\r\nPATH A:\\\r\nRX -B78125 -K2\r\nZMUX\r\n" + (b"" if "tis" in no else b"TIS -p\r\n")
+            + (b"" if "npdx" in no or "npd" in no else b"NPD -m 192.168.68.2\r\n") + b"CTTY AUX\r\n")
+        open(os.path.join(t, "SYS", "CONTEE.OLD"), "wb").write(os.urandom(3000))
+        used = sum(os.path.getsize(os.path.join(d, f)) for d, _, fs in os.walk(t) for f in fs)
+        pad = max(0, 1232 * 1024 - 8 * 1024 - used - 19 * 1024 - 20 * 1024) if not os.environ.get("NOPAD") else 0
+        open(os.path.join(t, "PAD.DAT"), "wb").write(b"\0" * pad)
+    else:
+        open(os.path.join(t, "CONFIG.SYS"), "wb").write(
+            b"FILES     = 30\r\nBUFFERS   = 20 1024\r\nPROCESS   = 8 10 20\r\n"
+            b"DEVICE    = \\SYS\\RSDRV.SYS\r\nDEVICE    = \\SYS\\ZMUX.SYS\r\nDEVICE    = \\SYS\\ZRMT.SYS\r\n")
+        open(os.path.join(t, "AUTOEXEC.BAT"), "wb").write(
+            b"ECHO OFF\r\nPATH A:\\\r\nRX -B19200\r\nZMUX\r\nCTTY AUX\r\n")
     out = os.path.join(run, "zmuxrd.xdf")
     free = subprocess.run([sys.executable, os.path.join(serial, "floppy", "mkxdf.py"), out, xdf, t],
                           capture_output=True, text=True, check=True).stdout.strip()
@@ -146,10 +168,31 @@ try:
     check("dir %s: lists the Pi directory" % dl, out is not None and "HELLO" in out and "BIG" in out, repr(out)[-200:])
     out, _ = a.cmd("type %s:\\HELLO.TXT" % dl)
     check("type reads a file", out is not None and "hello from the Pi" in out, repr(out)[-120:])
+    if SMALL:
+        # 実機の構成: 空きの少ないフロッピーへ小さいファイルを写す (C: → A:、A: → A:)。エラーの窓 (あれば) が出ていないか画面も見る
+        open(os.path.join(drive, "SMALL.SYS"), "wb").write(os.urandom(5000))
+        for line, name in (("copy %s:\\SMALL.SYS A:\\SYS\\CONTEE.NEW" % dl, "C: to A:"),
+                           ("copy A:\\SYS\\CONTEE.NEW A:\\SYS\\CONTEE.BAK", "A: to A:"),
+                           ("copy A:\\SYS\\CONTEE.OLD A:\\SYS\\CONTEE.OL2", "A: to A: (2)"),
+                           ("copy A:\\SYS\\CONTEE.BAK %s:\\BACK.SYS" % dl, "A: to C:")):
+            out, _ = a.cmd(line, 120)
+            s = screen()
+            check("copy " + name, out is not None and "コピーしました" in out and "無効" not in out and "コピーはされませんでした" not in out and "無効なコマンド" not in s,
+                  repr(out)[-100:] + " | " + s.replace("\n", " ")[-120:])
+        back = os.path.join(drive, "BACK.SYS")
+        check("round trip bytes match", os.path.exists(back) and open(back, "rb").read() == open(os.path.join(drive, "SMALL.SYS"), "rb").read())
+        print("e2e: " + status())
+        a.close()
+        print("ZMUX RDRIVE E2E %s (%d failures)" % ("PASS" if not fails else "FAIL", len(fails)))
+        raise SystemExit(1 if fails else 0)
     out, t_rd = a.cmd("copy %s:\\BIG.BIN NUL" % dl, 300)
     check("copy BIG.BIN NUL (read, 64KB)", out is not None and "エラー" not in out, "%.1fs = %.2f KB/s" % (t_rd, 64 / t_rd))
     out, t_fd = a.cmd("copy %s:\\BIG.BIN A:\\BIG.BIN" % dl, 300)
     check("copy to the floppy", out is not None and "エラー" not in out, "%.1fs (フロッピーの書き込み込み)" % t_fd)
+    out, _ = a.cmd("copy A:\\BIG.BIN A:\\BIG2.BIN", 300)
+    check("copy A: to A: under zmux (floppy write with the console on AUX)", out is not None and "エラー" not in out and "無効" not in out and "コピーしました" in out, repr(out)[-120:])
+    s = screen()
+    check("no error dialog on the screen", "無効なコマンド" not in s and "デバイスドライバ" not in s, s[-200:])
     out, t_wr = a.cmd("copy A:\\BIG.BIN %s:\\BACK.BIN" % dl, 300)
     back = os.path.join(drive, "BACK.BIN")
     check("copy back to the Pi (write) and the bytes match", out is not None and os.path.exists(back) and open(back, "rb").read() == big,

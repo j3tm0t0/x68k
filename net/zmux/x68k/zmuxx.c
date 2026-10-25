@@ -58,7 +58,7 @@ static void stop_contee(void)
     if (p[0] == 0x4e55 && p[1] == 0x4c20 && p[2] == 0x2020 && p[3] == 0x2020) {   /* "NUL     " */
       uint8_t *d = (uint8_t *)p - 14;
       while (d != (uint8_t *)0xffffffff) {
-        if (memeq(d + 14, "CONTEE  ", 8))
+        if (memeq(d + 14, "\001CONTEE ", 8) || memeq(d + 14, "CONTEE  ", 8))   /* 古い contee.sys の名前も */
           d[22] = 0;
         d = *(uint8_t **)d;
       }
