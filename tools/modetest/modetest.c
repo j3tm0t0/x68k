@@ -508,6 +508,20 @@ static void show_mode(int mode, int lo, int hi)
 static u8 *saved;
 static int saved_ok;
 static u16 saved_pal[4];
+static int saved_cx, saved_cy, saved_cw, saved_ch, saved_con;
+
+/* IOCS _B_CONSOL: D1.L=-1 で現在のコンソール範囲を D1 (x,y) と D2 (幅,高さ) に返す。
+   _CRTMOD はこれを全画面に戻すので、終了時に元に戻す (ファンクションキー行を避けた行数) */
+static int consol_get(void)
+{
+  register int d1 __asm__("d1") = -1;
+  register int d2 __asm__("d2") = 0;
+  register int d0 __asm__("d0") = 0x2E;
+  __asm__ __volatile__ ("trap #15" : "+d"(d0), "+d"(d1), "+d"(d2) : : "d3", "d4", "d5", "d6", "d7", "a0", "a1", "a2", "a3", "a4", "a5", "cc", "memory");
+  saved_cx = (d1 >> 16) & 0xFFFF; saved_cy = d1 & 0xFFFF; saved_cw = (d2 >> 16) & 0xFFFF; saved_ch = d2 & 0xFFFF;
+  return saved_cw > 0 && saved_ch > 0 && saved_cw < 200 && saved_ch < 100;
+}
+
 static int saved_cur;
 
 static void save_text(void)
@@ -515,6 +529,7 @@ static void save_text(void)
   int p, y, s;
   saved = malloc((size_t)4 * SAVE_LINES * SAVE_BYTES);
   saved_cur = _iocs_b_locate(-1, -1);
+  saved_con = consol_get();
   for (p = 0; p < 4; p++) saved_pal[p] = (u16)_iocs_tpalet(p, -1);
   if (!saved) return;
   s = sup_enter();
@@ -537,6 +552,7 @@ static void restore_text(void)
         memcpy((void *)(TVRAM + (long)p * 0x20000 + (long)y * 128), saved + ((long)p * SAVE_LINES + y) * SAVE_BYTES, SAVE_BYTES);
     sup_leave(s);
   }
+  if (saved_con) _iocs_b_consol(saved_cx, saved_cy, saved_cw, saved_ch);
   _iocs_b_locate((saved_cur >> 16) & 0xFFFF, saved_cur & 0xFFFF);
   _iocs_b_curon();
 }

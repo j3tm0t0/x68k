@@ -18,6 +18,9 @@ rm -rf "$B" "$T" "$OUT/agent.cmd"; mkdir -p "$B" "$T"
 cp "$XEIJ/data/HUMAN.SYS" "$XEIJ/data/COMMAND.X" "$HERE/modetest.x" "$B/"
 printf 'FILES = 30\r\nBUFFERS = 20 1024\r\nLASTDRIVE = Z:\r\nSHELL = A:\\COMMAND.X\r\n' > "$B/CONFIG.SYS"
 printf 'ECHO OFF\r\nPATH A:\\\r\nECHO ORIGINAL TEXT BEFORE MODETEST\r\nA:\\MODETEST.X -l %s > A:\\LIST.TXT\r\nA:\\MODETEST.X %s %s\r\nCOPY CONFIG.SYS DONE.TXT\r\n' "$EXT" "$EXT" "$1" > "$B/AUTOEXEC.BAT"
+if [ -n "${FILL:-}" ]; then   # FILL=1: 先に 40 行出して、プロンプトを画面の下端にする
+  { printf 'ECHO OFF\r\n'; for i in $(seq 1 40); do printf 'ECHO fill %s\r\n' "$i"; done; sed 1d "$B/AUTOEXEC.BAT"; } > "$B/A2.BAT"; mv "$B/A2.BAT" "$B/AUTOEXEC.BAT"
+fi
 cd "$OUT"
 mkdir -p agent && "$JAVAC" -d agent "$TD/ShotAgent.java" && printf 'Premain-Class: ShotAgent\n' > agent/m.txt && (cd agent && "$JAR" cfm ../shotagent.jar m.txt ShotAgent*.class)
 "$JAVA" -javaagent:"$OUT/shotagent.jar=$OUT/agent.cmd" -Djava.io.tmpdir="$T" -jar "$XEIJ/XEiJ.jar" -config=default -saveonexit=off \
