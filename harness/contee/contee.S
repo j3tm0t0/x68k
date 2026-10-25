@@ -13,6 +13,9 @@ devheader:
     .long   strategy
     .long   interrupt
     .ascii  "CONTEE  "
+enable:
+    .byte   1                   /* 0 にすると写すのをやめる (ヘッダ +22。zmux.x が線を使い始めるときに 0 にする) */
+    .even
 
 reqheader:
     .long   0
@@ -23,9 +26,12 @@ old_print:
 old_putmes:
     .long   0
 
-/* 1 文字を RS-232C に送る (d1.b)。d0/d1 以外は壊さない */
+/* 1 文字を RS-232C に送る (d1.b)。d0/d1 以外は壊さない。enable が 0 なら送らない */
 out1:
-    move.l  %d0,%sp@-
+    tst.b   enable
+    bne.s   0f
+    rts
+0:  move.l  %d0,%sp@-
     moveq   #0x35,%d0           /* _OUT232C */
     trap    #15
     move.l  %sp@+,%d0
@@ -84,6 +90,17 @@ interrupt:
     move.w  #0x4c09,%d1         /* 38400bps 8N1 */
     moveq   #0x30,%d0           /* _SET232C */
     trap    #15
+#ifdef TC0
+    /* XVI の zmux 用: SCC の時定数を 0 にして 78125bps (5MHz / 32 / 2) にする */
+    move.w  %sr,%sp@-
+    ori.w   #0x0700,%sr
+    lea     0xe98005,%a0
+    move.b  #12,%a0@
+    clr.b   %a0@
+    move.b  #13,%a0@
+    clr.b   %a0@
+    move.w  %sp@+,%sr
+#endif
     move.w  #0x120,%d1          /* _B_PUTC */
     lea     new_putc,%a1
     move.l  #0x80,%d0           /* _B_INTVCS */
@@ -113,5 +130,5 @@ interrupt:
 
 init:
 title:
-    .ascii  "\r\ncontee.sys: screen output is copied to RS-232C (38400bps)\r\n\0"   /* as は -fexec-charset を見ないので ASCII で */
+    .ascii  "\r\ncontee.sys: screen output is copied to RS-232C\r\n\0"   /* as は -fexec-charset を見ないので ASCII で */
     .even

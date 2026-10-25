@@ -47,6 +47,22 @@ static void *find_zmux(void)
   return 0;
 }
 
+/* contee.sys (画面の出力を RS-232C に写す) が居れば止める。zmux が線を使い始めた後に素の文字が混ざると枠が壊れる */
+static void stop_contee(void)
+{
+  uint16_t *p;
+  for (p = (uint16_t *)0x6800; p < (uint16_t *)0x68000; p++)
+    if (p[0] == 0x4e55 && p[1] == 0x4c20 && p[2] == 0x2020 && p[3] == 0x2020) {   /* "NUL     " */
+      uint8_t *d = (uint8_t *)p - 14;
+      while (d != (uint8_t *)0xffffffff) {
+        if (memeq(d + 14, "CONTEE  ", 8))
+          d[22] = 0;
+        d = *(uint8_t **)d;
+      }
+      return;
+    }
+}
+
 static void thread(void)
 {
   for (;;) {
@@ -68,6 +84,7 @@ int zmux_main(void)
   int ssp = _dos_super(0);
   unsigned char *a = cmd_line + 1;
   entry = find_zmux();
+  if (entry) stop_contee();
   if (ssp > 0) _dos_super(ssp);
   if (!entry) {
     _dos_print("zmux: zmux.sys (AUX) が組み込まれていません\r\n");
