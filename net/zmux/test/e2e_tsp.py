@@ -117,6 +117,7 @@ peer = subprocess.Popen([sys.executable, os.path.join(top, "net", "tistack", "te
 xe = subprocess.Popen([os.path.join(serial, "test", "xeij-fd.sh"), run], env=env, stdin=subprocess.DEVNULL)
 zd = subprocess.Popen([ZBIN, "daemon", "--tcp", "127.0.0.1:%d" % XPORT, "-v"], env=env)
 fails = 0
+HKHOST = os.environ.get("HOSTKEY_HOST", "192.168.68.1")     # 例: raspberrypi5.local (名前で connect してホスト鍵の確認まで)
 try:
     t0 = time.time()
     for _ in range(150):
@@ -186,7 +187,7 @@ try:
             a.buf.clear()
         def ssh_try(answer, label):
             a.buf.clear()
-            a.send("ssh zmuxnouser@192.168.68.1 true\r")
+            a.send("ssh zmuxnouser@%s true\r" % HKHOST)
             end = time.time() + 240
             while time.time() < end and b"y/n" not in a.buf and b"A>" not in a.buf[20:]:
                 time.sleep(0.2)
