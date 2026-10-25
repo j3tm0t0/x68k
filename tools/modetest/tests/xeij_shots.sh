@@ -31,6 +31,7 @@ for i in $(seq 1 60); do [ -p "$T/XEiJControl" ] && break; sleep 1; done
 for i in $(seq 1 120); do [ -f "$B/LIST.TXT" ] && break; sleep 1; done
 sleep "${BOOTWAIT:-6}"
 mkdir -p "$OUT/shots"
+[ -n "${FRAME:-}" ] && ctl "typekey f" 4   # FRAME=1: 枠だけの画面にする
 cur=$1
 for m in "$@"; do
   while [ "$cur" -lt "$m" ]; do ctl "typekey space" "${STEPWAIT:-4}"; cur=$((cur+1)); done
