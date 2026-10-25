@@ -440,8 +440,10 @@ long rd_interrupt(struct req_header *req)
     break;
   }
   if (failed) {
-    req->status = -1;
-    return 0x1002;                      /* ドライブの準備ができていません (zmuxd が居ない、線が UP でない、時間切れ) */
+    /* zmuxd が居ない / 線が UP でない / 時間切れ。デバイスのエラー (0x1002) にすると Human68k の「ディスクが入っていません 中止/再実行/無視」の
+       箱が出てキー待ちになり、Z-OS の画面ではペインを無視して出る。箱の出ない DOS エラー (-15 ドライブ指定が無効) にして呼んだ側に返す */
+    req->status = -15;
+    return 0;
   }
   return 0;
 }
