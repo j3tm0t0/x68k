@@ -4,14 +4,14 @@ RS-232C 1 本で、X68000 (Compact XVI) と Raspberry Pi の間に次を同時�
 
 | チャネル | 中身 | X68000 側 | Pi 側 (zmuxd) |
 |---|---|---|---|
-| 0 | コンソール (COMMAND.X の CTTY AUX の入出力) | zmux.sys の文字デバイス `AUX` (RSDRV.SYS の AUX の代わり) | `zmux attach 0` (herdr のタブ 0) |
+| 0 | コンソール (COMMAND.X の CTTY AUX の入出力) | zmux.sys の文字デバイス `AUX` (RSDRV.SYS の AUX の代わり) | Pi の zmux のタブ 0 (`zmux attach 0`) |
 | 1 | netpipe の交換 (X6NR レコード: TSP 0xA6、暗号 0xA5、端末のセッション 0xA7) | zmux.x (npd.x と同じ交換を、SCSI ID6 の代わりにこの線で) | TSP は普通のソケット、0xA5 は Rust の暗号ライブラリ、0xA7 は `zmux attach 1..4` |
 | 2 | リモートドライブ (後で) | zmux.sys のブロックデバイス | ホストのディレクトリ |
 | 3 | キー入力の注入 | zmux.sys が IOCS _B_KEYINP / _B_KEYSNS を横取り | `zmux key`、`zmux attach` の対応表 |
 | 15 | 線の管理 (あいさつ、速さの切り替え、統計、時刻) | zmux.x | zmuxd |
 
-画面のレイアウトは X68000 では持たない。X68000 は独立したバイト列 (コンソール 1 本と zosh のセッション N 本) を出すだけで、
-タブにするかペインにするかは herdr / tmux の使い方で決まる。
+画面のレイアウトは X68000 では持たない。X68000 は独立したバイト列 (コンソール 1 本と zosh のセッション N 本) を出すだけ。
+Pi の zmux が tmux のような端末の多重化ソフトになり、タブとペインを Pi で描く (§5、moto の決定 2026-10-25。herdr には頼らない)。
 
 ## 1. 線の上の形
 
@@ -109,30 +109,22 @@ TSP の CONNECT / LISTEN / DATA / RESOLVE は `std::net` と `TcpStream` / `UdpS
 Z-OS (x68k-zos) の sshd 用の見えないペイン (0xA7、net/npd/zss.h、x68k-zos の kernel/sshs.c、x68k-zos PR #34 でマージ済み) をそのまま使う。0xA7 は Pico の zsshd が SSH の
 クライアントの代わりにセッションを開く形なので、zmuxd が zsshd の役をする。
 
-- `zmux attach` (番号なし) は空いているセッション番号 (1〜4、ZSS_NSESS) を取り、zmuxd が `ZSS_E_OPEN` (端末の大きさ、TERM) を送る。
-  zos.x は見えないペインを作って zosh を起動し、`ZSS_C_ACCEPT` を返す。
-- 以後、クライアントの入力は `ZSS_E_INPUT`、出力は `ZSS_C_OUTPUT`、端末の大きさの変化 (SIGWINCH) は `ZSS_E_WINCH`。
-  流量は zss.h の CREDIT / WINDOW のまま。
-- クライアントが切れたら `ZSS_E_EOF`。zosh が終わったら `ZSS_C_EXIT` でクライアントも終わる。
-- `zmux attach N` は既にあるセッション N につなぎ直す (zmuxd が出力の直近 64KB を持っていて、つないだときに流す)。
-- herdr で新しいタブやペインを開いてそこで `zmux attach` を実行すれば、新しい zosh になる。herdr のソケット API で
-  タブを作るのは herdr 側の設定に任せ、zmux は持たない (例: herdr の起動設定でタブ 0 に `zmux attach 0`、
-  ペインを割ったら `zmux attach`)。必要なら後で `zmux sessions` (一覧の JSON) を出して、herdr の設定から使えるようにする。
+- セッションの開き方は今の実装のとおり (`zmux attach` が OPEN を送る)。§5 の TUI では「新しいタブ / ペイン」が同じことをする。
+- zmuxd はセッションの出力の直近 64KB を持ち、つなぎ直したときに流す。
 
-## 5. キー
+## 5. Pi の zmux: tmux のような TUI (moto の決定、まだ作っていない)
 
-`zmux attach` にはホットキーも前置キーも自前のエスケープも無い。端末を raw にして、届いたバイトをそのまま送る
-(CSI u などの拡張キーの並びも素通し)。タブ・ペイン・切り離しは herdr の役目 (moto の herdr と tmux の前置キーは Ctrl+X)。
+Pi に ssh で入るか iTerm2 のペインで `zmux` を実行すると、tmux のような画面になる。
 
-- コンソール (チャネル 0) と zosh のセッションでは、キーはただのバイト列 (セッションは VT 風の並び)。
-- X68000 にあって端末に無いキー (XF1〜XF5、HELP、UNDO、かな、ローマ字、コード入力、記号入力、登録、OPT.1/2、BREAK、COPY、CLR、
-  テンキーの ENTER) は、`~/.config/zmux/keys.toml` の対応表で、端末から来る並びをキー入力の注入 (チャネル 3) に変える。
-  既定は普段使われないキーにだけ割り当てる (F13〜F24。例: F13 = XF1 ... F17 = XF5、F18 = OPT.1、F19 = OPT.2、F20 = BREAK、
-  F21 = COPY、F22 = HELP、F23 = UNDO、F24 = かな)。対応表に無い並びは全部そのままバイトとして送る。
-- キー入力の注入 (チャネル 3): zmux.sys が IOCS _B_KEYINP / _B_KEYSNS を横取りし、チャネル 3 から来たキー (スキャンコード + 文字コード、
-  _B_KEYINP の戻り値と同じ形) を先に返す。DOS のキー入力も IOCS を通るので届く。キーボードの行列を直接読むプログラム (ゲームなど)
-  には届かない (README に書く)。`zmux key 'dir\r'` や `zmux key --scan 0x63` で、本体の画面で動いているもの (Z-OS の前の Human68k、
-  画面のエディタ) を操作する。タブ 0 (COMMAND.X の CTTY) の入力とは別物。
+- **サーバーとクライアント**: zmuxd (サーバー) がシリアル回線とセッションを持ち、`zmux` (クライアント) は unix ソケットでつなぐ。
+  ssh が切れてもセッションは残り、`zmux` でつなぎ直す。
+- **タブとペイン**: タブ 0 = CTTY AUX の COMMAND.X (チャネル 0)。ほかのタブ・ペインは zosh のセッション (0xA7) で、必要なときに開く。
+  各ペインに VT のパーサ (`vt100` クレート、term/zterm と同じ) を持ち、ratatui + crossterm で描く。マウスあり。下に状態の行 (タブ、速さ、線の統計)。
+- **キー** (moto の tmux / herdr の設定と同じ): 前置キー Ctrl+X のあとに `|` 縦に割る、`-` 横に割る、`c` 新しいタブ (新しい zosh のセッション)、
+  `n` / `p` / 数字 タブの切り替え、`k` ペインを閉じる、`d` 切り離し。**ほかのホットキーは無い**。前置キーの組以外は全部そのまま XVI に送る。
+- **X68000 にしか無いキー**: `~/.config/zmux/keys.toml` の対応表 (端末から来る並び → X68000 のキー) で、チャネル 3 のキー入力の注入に変える
+  (実装済みの `keys.rs`)。既定は F13〜F20 と Shift+F1〜F9。
+- 今ある `zmux attach 0 / N`、`zmux key`、`zmux kbd` は試験と道具として残す。
 
 ## 6. 速さの見込み
 
@@ -149,7 +141,8 @@ Z-OS (x68k-zos) の sshd 用の見えないペイン (0xA7、net/npd/zss.h、x68
 1. **線 (チャネル 0 と 15)**: zmux.x (IOCS ポーリング、フレーム、Go-Back-N) + zmux.sys (AUX) と、zmuxd の線の部分 + `zmux attach 0`。
    XEiJ (RS-232C を TCP に) で、素の文字 → zmux → 素の文字の切り替え、バイトの破損で再送、COMMAND.X が `CTTY AUX` で動くこと。**済み** (`test/e2e.py`)。
 2. **チャネル 1 (TSP と 0xA5)**: npd.x の交換を差し替えた zmux.x、zmuxd の TSP / 暗号。rcmd.x / ssh.x が tis.x -p でつながること。**済み** (`npd.x -m`、TSP と 0xA5、`test/e2e_tsp.py`)。
-3. **セッション (0xA7)**: `zmux attach` で zosh。herdr の中で複数。**済み** (`test/e2e_zss.py`)。
+3. **セッション (0xA7)**: `zmux attach` で zosh。**済み** (`test/e2e_zss.py`)。
+3b. **tmux のような TUI** (§5)。**まだ**。
 4. **キーの注入 (チャネル 3)** と keys.toml。**済み** (`zmux key` / `zmux kbd`、`test/e2e_key.py`)。
 5. **リモートドライブ (チャネル 2)**: x68kserremote の要求の形を参考に。
 6. 実機 (Compact XVI) で 19200 / 38400 を測る。
