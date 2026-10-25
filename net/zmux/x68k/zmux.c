@@ -117,18 +117,10 @@ extern long call_orig(void *entry, long num);
 static void zl_poll(void);
 
 static void zl_poll(void);
+static volatile uint32_t kp_n;           /* key_peek の呼ばれた回数 (st.kp に写す) */
 long key_peek(void)
 {
-  /* 画面が CON のときの COMMAND.X は、キーを待つあいだ _B_KEYSNS だけを繰り返す (_B_KEYINP は押されてから)。ここで線を回さないと、
-     常駐スレッドは線が UP になるまで何もしないので、zmuxd をつないでも UP にならない */
-  if (!up) {
-    /* 線が UP になった後は常駐スレッドが回す。割り込みの中 (IPL が 0 でない) から呼ばれたときは回さない: AUX の書き込み (con_out) と読み出しは
-       lock なしで txr / rxr を触るので、そこへ割り込みから zl_poll が入ると送るバイトが壊れる (実機 XVI で ver が化けた) */
-    uint16_t sr;
-    __asm__ volatile ("move.w %%sr,%0" : "=d"(sr));
-    if (!(sr & 0x0700))
-      zl_poll();
-  }
+  kp_n++;
   return kh != kt ? keyq[kt] : 0;
 }
 
@@ -149,7 +141,9 @@ long key_get(void)
 static uint8_t rxbuf[RXBUF];
 
 /* 動作確認用 (メモリダンプで "ZMUXSTAT" の後ろ) */
-static struct { char tag[8]; uint32_t rxf, txf, bad, resend, rawin, rawout, ups, downs, polls, maxgap, lastpoll, gapat, outbytes, outq, refused, win, lockfail, downat, lastrx_at_down, lockat, rxbytes, rxbytes_at_lastrx, tcalls, tcfix; } st = { "ZMUXSTAT" };
+static struct { char tag[8]; uint32_t rxf, txf, bad, resend, rawin, rawout, ups, downs, polls, maxgap, lastpoll, gapat, outbytes, outq, refused, win, lockfail, downat, lastrx_at_down, lockat, rxbytes, rxbytes_at_lastrx, tcalls, tcfix,
+  rx0, rx0rej, auxrd, c4, c5, c6, kp, kpoll, busysent, rxrcnt; } st = { "ZMUXSTAT" };
+static int rawpoll;                     /* 1 = 線が UP でなくても常駐スレッドが線を回す (画面が CON のとき: zmux.x -c) */
 
 /* 線の処理の排他。Human68k はスーパーバイザの間はスレッドを切り替えないが、Z-OS (zos.x) は自前の横取りで
    スーパーバイザの途中でも切り替えるので、zmux.x のスレッドと npd.x のスレッドと AUX の読み書きが重なりうる
@@ -361,11 +355,13 @@ static void got_frame(void)
   }
   if (chan == CH_CON) {
     if (ring_free(&rxr) < len) {        /* 受け皿が一杯: 受け取らない (Pi は送り直す) */
+      st.rx0rej++;
       need_ack = 1;
       return;
     }
     for (i = 0; i < len; i++)
       ring_put(&rxr, d[i]);
+    st.rx0 += len;
   } else if (chan == CH_KEY) {
     /* メッセージの列 (フレームの切れ目とメッセージの切れ目は一致しなくてよい)。
        種類の知らないメッセージは長さが分からないので、そのフレームの残りを捨てて次のフレームの頭から読み直す */
@@ -515,6 +511,7 @@ static void zl_poll_locked(void)
       }
       /* 確認だけのフレーム (生存の知らせも兼ねる) */
       if ((need_ack && since(t_ack_due) >= 1) || nak_pending || since(t_last_tx) > T_KEEP) {
+        if (ring_free(&rxr) < MAXLEN) st.busysent++;
         emit(CH_CON, 0, (nak_pending ? F_NAK : 0) | (ring_free(&rxr) < MAXLEN ? F_BUSY : 0), 0, 0);
         nak_pending = 0;
       }
@@ -533,6 +530,8 @@ static void zl_poll_locked(void)
     st.outbytes++;
   }
   st.outq = (oh - ot) & (OUTSZ - 1);
+  st.rxrcnt = ring_count(&rxr);
+  st.kp = kp_n;
   st.win = (uint8_t)(tx_seq - tx_base) | (need_ack << 8) | (nak_pending << 9) | (up << 10) | (btx_len - btx_pos) << 16;
 }
 
@@ -555,12 +554,16 @@ long zmux_call(long cmd, long *a)
     tc0 = scc_tc_read() == 0;
     return tc0;
   }
+  if (cmd == 10) {                      /* 画面が CON: 線が UP でなくても常駐スレッドが線を回す */
+    rawpoll = a ? 1 : 0;
+    return rawpoll;
+  }
   if (cmd == 0) {
     /* 戻り値: bit0 = UP、bit1 = この回に仕事があった (受信・送信・送り直しのどれか)。常駐スレッドは仕事が無ければ眠る。
        これまでの呼び出し側は 0 / 1 しか見ないので、bit1 は無視される */
     uint32_t w0, w1;
     st.tcalls++;
-    if (!up)
+    if (!up && !rawpoll)
       return 0;
     w0 = st.rxbytes + st.outbytes + st.resend + st.txf + st.rxf;
     zl_poll();
@@ -686,17 +689,21 @@ long dev_interrupt(struct req_header *req)
     return 0;
   }
   case 4:                               /* 入力: 揃うまで戻らない */
+    st.c4++;
     for (i = 0; i < req->status; i++) {
       while (ring_count(&rxr) == 0)
         zl_poll();
       req->addr[i] = ring_get(&rxr);
+      st.auxrd++;
     }
     return 0;
   case 5:                               /* 1 文字先読み */
+    st.c5++;
     zl_poll();
     req->attr = ring_count(&rxr) ? rxr.b[rxr.tail] : 0;
     return 0;
   case 6:                               /* 入力ステータス: 0 = 読める、1 = 無い */
+    st.c6++;
     zl_poll();
     return ring_count(&rxr) ? 0 : 1;
   case 7:                               /* 入力を捨てる */

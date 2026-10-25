@@ -130,6 +130,13 @@ int zmux_main(void)
     _dos_print(i ? "zmux: SCC time constant guard on\r\n" : "zmux: SCC time constant guard off\r\n");
     return 0;
   }
+  if (a[0] == '-' && (a[1] | 0x20) == 'c') {        /* 画面が CON: 線が UP でなくても常駐スレッドが線を回す (zmuxd をつなげば UP になる) */
+    ssp = _dos_super(0);
+    call_entry(entry, 10, (void *)1);
+    if (ssp > 0) _dos_super(ssp);
+    a += 2;
+    while (*a == ' ') a++;
+  }
   if (a[0] == '-' && (a[1] | 0x20) == 'r') {        /* contee.sys が控えた SCC の値 (contee.S のコメント) を出す */
     uint8_t *d;
     int n, k;
@@ -177,6 +184,17 @@ int zmux_main(void)
     i = s[23];
     if (ssp > 0) _dos_super(ssp);
     _dos_print("tc fixed "); putnum(i); _dos_print("\r\n");
+    {
+      static const char *n2[] = { "ch0 rx bytes", "ch0 rx rejected (ring full)", "AUX read bytes", "AUX cmd4 (read)", "AUX cmd5 (peek)", "AUX cmd6 (status)",
+                                  "key_peek calls", "(unused)", "busy sent", "rx ring count now" };
+      int k;
+      for (k = 0; k < 10; k++) {
+        ssp = _dos_super(0);
+        i = s[24 + k];
+        if (ssp > 0) _dos_super(ssp);
+        _dos_print(n2[k]); _dos_print(" "); putnum(i); _dos_print("\r\n");
+      }
+    }
     return 0;
   }
   prc.length = sizeof mbox;

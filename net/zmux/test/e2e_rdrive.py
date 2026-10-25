@@ -68,7 +68,7 @@ def mkfloppy():
             b"FILES     = 30\r\nBUFFERS   = 20 1024\r\nPROCESS   = 8 10 20\r\n"
             b"DEVICE    = \\SYS\\RSDRV.SYS\r\nDEVICE    = \\SYS\\ZMUX.SYS\r\nDEVICE    = \\SYS\\ZRMT.SYS\r\n")
         open(os.path.join(t, "AUTOEXEC.BAT"), "wb").write(
-            b"ECHO OFF\r\nPATH A:\\\r\nRX -B19200\r\nZMUX\r\n" + (b"" if CON else b"CTTY AUX\r\n"))
+            b"ECHO OFF\r\nPATH A:\\\r\nRX -B19200\r\n" + (b"ZMUX -c\r\n" if CON else b"ZMUX\r\nCTTY AUX\r\n"))
     out = os.path.join(run, "zmuxrd.xdf")
     free = subprocess.run([sys.executable, os.path.join(serial, "floppy", "mkxdf.py"), out, xdf, t],
                           capture_output=True, text=True, check=True).stdout.strip()
@@ -162,7 +162,7 @@ try:
             break
     check("line up", status().startswith("line up"), status())
     if CON:
-        # 画面が CON で、誰も AUX を読んでいない。常駐スレッドは線が UP になるまで何もしないので、COMMAND.X のキー待ち (_B_KEYSNS) が線を回さないと UP にならない
+        # 画面が CON で、誰も AUX を読んでいない。常駐スレッドは線が UP になるまで何もしないので、zmux -c (UP でなくても回す) が無いと UP にならない
         for _ in range(150):
             time.sleep(0.2)
             if status().startswith("line up"):
@@ -178,11 +178,41 @@ try:
     check("dir %s: lists the Pi directory" % dl, out is not None and "HELLO" in out and "BIG" in out, repr(out)[-200:])
     out, _ = a.cmd("type %s:\\HELLO.TXT" % dl)
     check("type reads a file", out is not None and "hello from the Pi" in out, repr(out)[-120:])
+    if os.environ.get("RESET"):
+        # 実機 XVI の退行: 起動 → ver → ctty con → リセット → 起動して A> は出るが入力が返らない、を繰り返す
+        for n in range(int(os.environ["RESET"])):
+            a.send("ctty con\r")
+            time.sleep(2)
+            with open(os.path.join(run, "XEiJControl"), "w") as f:
+                f.write("reset\n")
+            time.sleep(20)
+            for _ in range(150):
+                time.sleep(0.5)
+                if status().startswith("line up"):
+                    break
+            time.sleep(3)
+            a.buf.clear()
+            a.send("ver\r")
+            out = a.wait("A>", 20)
+            ok = out is not None and "Human68k version 3.02" in out
+            if not ok:   # 打ち直してみる (最初の 1 文字が化けただけかを見分ける)
+                a.send("\r")
+                out2 = a.wait("A>", 10)
+                a.send("ver\r")
+                out3 = a.wait("A>", 10)
+                print("e2e: retry: %r %r" % (out2, out3))
+            check("reset %d: console input works again (ver)" % n, ok, repr(out)[-100:] + " | " + status()[:120])
+            print("e2e: " + screen().replace("\n\n", "\n")[-300:])
+        print("ZMUX RDRIVE E2E %s (%d failures)" % ("PASS" if not fails else "FAIL", len(fails)))
+        raise SystemExit(1 if fails else 0)
     # CTTY AUX のコンソールに打った文字が化けずに届く (実機 XVI で ver が 0x9D と BS になった退行の守り)
     for i in range(3):
         word = "".join(chr(97 + (i * 7 + k * 5) % 26) for k in range(120))
         out, _ = a.cmd("echo " + word, 30)
         check("console echo %d: %d chars arrive intact" % (i, len(word)), out is not None and out.count(word) >= 2, repr(out)[-80:])
+    out, _ = a.cmd("zmux -s", 30)
+    m = re.search(r"AUX read bytes (\d+)", out or "")
+    check("zmux -s shows the console counters", m is not None and int(m.group(1)) > 300 and "ch0 rx bytes" in out and "key_peek calls" in out, repr(out)[-200:])
     out, _ = a.cmd("ver", 30)
     check("ver over the console", out is not None and "Human68k version 3.02" in out, repr(out)[-80:])
     # C: にある .x を実行する (zrmt.sys の読み込み・seek・属性の要求が Human68k の _EXEC に通じるか)
