@@ -512,11 +512,22 @@ static int saved_fnk;
 
 static int saved_cur;
 
+/* 現在のカーソル位置。IOCS の作業領域 ($974 = 桁、$976 = 行) を読む。_B_LOCATE の問い合わせは
+   機種によって返り値が違うことがあったので、これを優先する */
+static int cursor_pos(void)
+{
+  int s = sup_enter(), c, r;
+  { volatile u16 *wa = (volatile u16 *)(long)0x974; c = wa[0]; r = wa[1]; }
+  sup_leave(s);
+  if (c < 200 && r < 100) return (c << 16) | r;
+  return _iocs_b_locate(-1, -1);
+}
+
 static void save_text(void)
 {
   int p, y, s;
   saved = malloc((size_t)4 * SAVE_LINES * SAVE_BYTES);
-  saved_cur = _iocs_b_locate(-1, -1);
+  saved_cur = cursor_pos();
   saved_fnk = _dos_c_fnkmod(-1);   /* ファンクションキー行の表示モード */
   for (p = 0; p < 4; p++) saved_pal[p] = (u16)_iocs_tpalet(p, -1);
   if (!saved) return;
@@ -551,7 +562,14 @@ static void restore_text(int orig)
     _dos_c_fnkmod(fm);
     _iocs_b_consol(0, 0, g->w / 8 - 1, g->h / 16 - 1 - (fm == 2 ? 0 : 1));   /* 終わりの桁・行 */
   }
-  _iocs_b_locate((saved_cur >> 16) & 0xFFFF, saved_cur & 0xFFFF);
+  {
+    /* 最初に 0,0 だった (前に動かしたものが残っていた) ときは、最下行 (ファンクションキー行の 1 行上) に置く。
+       画面を 0 行目から使い直すと、残っている文字に重なる */
+    const struct group *g = orig >= 0 && orig <= MAXMODE ? info[orig].g : 0;
+    int rows = (g ? g->h : 512) / 16 - (saved_fnk == 2 ? 0 : 1);
+    if (saved_cur == 0) _iocs_b_locate(0, rows - 1);
+    else _iocs_b_locate((saved_cur >> 16) & 0xFFFF, saved_cur & 0xFFFF);
+  }
   _iocs_b_curon();
 }
 
@@ -561,6 +579,7 @@ int main(int argc, char **argv)
   build_table();
   for (i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "-l")) { list_modes(); return 0; }
+    else if (!strcmp(argv[i], "-c")) { int p = cursor_pos(), q = _iocs_b_locate(-1, -1); printf("work area col %d row %d, B_LOCATE col %d row %d\n", p >> 16, p & 0xFFFF, (q >> 16) & 0xFFFF, q & 0xFFFF); return 0; }
     else if (!strcmp(argv[i], "-x")) ext = 1;
     else if (argv[i][0] >= '0' && argv[i][0] <= '9') mode = atoi(argv[i]);
     else { fprintf(stderr, "usage: modetest [-x] [-l] [mode]\n"); return 1; }
