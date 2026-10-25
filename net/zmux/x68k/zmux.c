@@ -138,7 +138,7 @@ long key_get(void)
 static uint8_t rxbuf[RXBUF];
 
 /* 動作確認用 (メモリダンプで "ZMUXSTAT" の後ろ) */
-static struct { char tag[8]; uint32_t rxf, txf, bad, resend, rawin, rawout, ups, downs, polls, maxgap, lastpoll, gapat, outbytes, outq, refused, win, lockfail, downat, lastrx_at_down, lockat, rxbytes, rxbytes_at_lastrx, tcalls; } st = { "ZMUXSTAT" };
+static struct { char tag[8]; uint32_t rxf, txf, bad, resend, rawin, rawout, ups, downs, polls, maxgap, lastpoll, gapat, outbytes, outq, refused, win, lockfail, downat, lastrx_at_down, lockat, rxbytes, rxbytes_at_lastrx, tcalls, tcfix; } st = { "ZMUXSTAT" };
 
 /* 線の処理の排他。Human68k はスーパーバイザの間はスレッドを切り替えないが、Z-OS (zos.x) は自前の横取りで
    スーパーバイザの途中でも切り替えるので、zmux.x のスレッドと npd.x のスレッドと AUX の読み書きが重なりうる
@@ -160,6 +160,40 @@ static void unlock(void) { busy = 0; }
 
 static long now(void) { return _iocs_ontime().sec; }
 static long since(long t) { long d = now() - t; if (d < 0) d += 8640000; return d; }
+
+/* 78125bps (XVI): SCC ch.B の時定数 WR12/WR13 が 0 の構成 (contee78.sys などが 0 にする)。RSDRV.SYS や IOCS が SCC を
+   設定し直すと 38400 などに戻り、線が壊れる (切れた後に遅い速さで送り続けた)。組み込むときに 0 だったら、
+   10ms に 1 回だけ読み、0 でなければ 0 に書き直す。0 でない構成 (19200 など) では何もしない */
+static int tc0;                         /* 組み込みのとき WR12 = WR13 = 0 だった */
+static long t_tcchk;
+
+static int scc_tc_read(void)            /* WR12 | WR13 (0 なら 78125bps) */
+{
+  volatile uint8_t *c = (volatile uint8_t *)0xe98005;
+  uint16_t sr;
+  uint8_t a, b;
+  __asm__ __volatile__("move.w %%sr,%0\n\tori.w #0x0700,%%sr" : "=d"(sr) : : "cc");
+  *c = 12; a = *c;
+  *c = 13; b = *c;
+  __asm__ __volatile__("move.w %0,%%sr" : : "d"(sr) : "cc");
+  return a | b;
+}
+
+static void scc_tc_guard(void)
+{
+  volatile uint8_t *c = (volatile uint8_t *)0xe98005;
+  uint16_t sr;
+  if (!tc0 || since(t_tcchk) < 1)
+    return;
+  t_tcchk = now();
+  if (!scc_tc_read())
+    return;
+  __asm__ __volatile__("move.w %%sr,%0\n\tori.w #0x0700,%%sr" : "=d"(sr) : : "cc");
+  *c = 12; *c = 0;
+  *c = 13; *c = 0;
+  __asm__ __volatile__("move.w %0,%%sr" : : "d"(sr) : "cc");
+  st.tcfix++;
+}
 
 static void crcinit(void)
 {
@@ -419,6 +453,7 @@ static void zl_poll_locked(void)
   }
   st.polls++;
   st.lastpoll = t;
+  scc_tc_guard();
   for (n = 0; n < 512 && _iocs_isns232c(); n++) {
     rx_byte(_iocs_inp232c() & 0xff);
     st.rxbytes++;
@@ -505,6 +540,10 @@ long zmux_call(long cmd, long *a)
   long r;
   if (cmd == 1)
     return (long)&st;
+  if (cmd == 9) {                       /* 時定数 0 (78125bps) の見張りを入れ直す: 今 0 なら見張る */
+    tc0 = scc_tc_read() == 0;
+    return tc0;
+  }
   if (cmd == 0) {
     /* 戻り値: bit0 = UP、bit1 = この回に仕事があった (受信・送信・送り直しのどれか)。常駐スレッドは仕事が無ければ眠る。
        これまでの呼び出し側は 0 / 1 しか見ないので、bit1 は無視される */
@@ -625,6 +664,7 @@ long dev_interrupt(struct req_header *req)
     st.tag[0] = 'Z'; st.tag[1] = 'M'; st.tag[2] = 'U'; st.tag[3] = 'X';
     st.tag[4] = 'S'; st.tag[5] = 'T'; st.tag[6] = 'A'; st.tag[7] = 'T';
     crcinit();
+    tc0 = scc_tc_read() == 0;
     grow_rsdrv();
     old_keysns = (void *)_iocs_b_intvcs(0x101, hk_keysns);   /* IOCS _B_KEYSNS */
     old_keyinp = (void *)_iocs_b_intvcs(0x100, hk_keyinp);   /* IOCS _B_KEYINP */

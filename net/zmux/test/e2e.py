@@ -41,6 +41,9 @@ def mkfloppy():
     ib = os.path.join(zm, "x68k", "idlebench.x")
     if os.path.exists(ib):
         sh("cp", ib, os.path.join(t, "IDLEBENCH.X"))
+    tcs = os.path.join(zm, "x68k", "tcset.x")
+    if os.path.exists(tcs):
+        sh("cp", tcs, os.path.join(t, "TCSET.X"))
     open(os.path.join(t, "CONFIG.SYS"), "wb").write(
         b"FILES     = 30\r\nBUFFERS   = 20 1024\r\nPROCESS   = 8 10 20\r\n"
         b"DEVICE    = \\SYS\\RSDRV.SYS\r\nDEVICE    = \\SYS\\ZMUX.SYS\r\n")
@@ -172,6 +175,23 @@ try:
     if b"Human68k version 3.02" not in out:
         sys.exit("e2e: ver: %r" % out)
     print("e2e: ver over zmux ok")
+    # 78125bps の見張り: 時定数を 0 にして見張りを入れ、誰かが 0 以外に書き換えても 0 に戻る
+    if os.path.exists(os.path.join(zm, "x68k", "tcset.x")):
+        a.send("tcset 0\r")
+        o = a.wait("A>", 20)
+        a.send("zmux -g\r")
+        o2 = a.wait("A>", 20)
+        a.send("tcset 9\r")
+        a.wait("A>", 20)
+        time.sleep(1)
+        a.send("tcset r\r")
+        o3 = a.wait("A>", 20)
+        a.send("zmux -s\r")
+        o4 = a.wait("A>", 20)
+        m = re.search(rb"tc fixed (\d+)", o4)
+        if b"guard on" not in o2 or b"wr12=0 wr13=0" not in o3 or not m or int(m.group(1)) < 1:
+            sys.exit("e2e: SCC time constant guard: %r %r %r" % (o2, o3, o4))
+        print("e2e: SCC time-constant guard ok (tc fixed %s)" % m.group(1).decode())
     # 線が UP で何も流れていない間に、常駐スレッドがどれだけ CPU を食うか (MHz 換算。小さいほど食っている)
     if os.path.exists(os.path.join(zm, "x68k", "idlebench.x")):
         a.send("zmux -s\r")

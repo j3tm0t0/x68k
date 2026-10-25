@@ -453,6 +453,11 @@ int rx_main(const unsigned char *cmd)
     put("rx: CTTY AUX (RS-232C) -- press a key within ");
     putnum(keywait);
     put(" s to keep the keyboard\r\n");
+    /* 待ち始めに、キーバッファに残っている分 (起動のとき押していたキーなど) を捨てる。最初の 0.5 秒は届いた分も捨てる
+       (誰も触っていないのに「keyboard kept」になった実機の XVI の対策) */
+    while (since(t) < 50L)
+      while (_iocs_b_keysns())
+        _iocs_b_keyinp();
     while (since(t) < keywait * 100L)
       if (_iocs_b_keysns()) {
         _iocs_b_keyinp();

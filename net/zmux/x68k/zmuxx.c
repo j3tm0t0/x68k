@@ -96,6 +96,7 @@ int zmux_main(void)
 {
   int ssp = _dos_super(0);
   unsigned char *a = cmd_line + 1;
+  int i;
   entry = find_zmux();
   if (entry) stop_contee();
   if (ssp > 0) _dos_super(ssp);
@@ -104,6 +105,13 @@ int zmux_main(void)
     return 1;
   }
   while (*a == ' ') a++;
+  if (a[0] == '-' && (a[1] | 0x20) == 'g') {        /* 78125bps (SCC の時定数 0) の見張りを今の SCC の値で入れ直す */
+    ssp = _dos_super(0);
+    i = call_entry(entry, 9, 0);
+    if (ssp > 0) _dos_super(ssp);
+    _dos_print(i ? "zmux: SCC time constant guard on\r\n" : "zmux: SCC time constant guard off\r\n");
+    return 0;
+  }
   if (a[0] == '-' && (a[1] | 0x20) == 's') {
     static const char *nm[] = { "rx frames", "tx frames", "bad", "resend", "raw in", "raw out", "up", "down", "polls" };
     uint32_t *s;
@@ -120,6 +128,10 @@ int zmux_main(void)
     i = s[22];
     if (ssp > 0) _dos_super(ssp);
     _dos_print("thread calls "); putnum(i); _dos_print("\r\n");
+    ssp = _dos_super(0);
+    i = s[23];
+    if (ssp > 0) _dos_super(ssp);
+    _dos_print("tc fixed "); putnum(i); _dos_print("\r\n");
     return 0;
   }
   prc.length = sizeof mbox;
