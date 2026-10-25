@@ -116,8 +116,12 @@ extern void hk_keysns(void), hk_keyinp(void);
 extern long call_orig(void *entry, long num);
 static void zl_poll(void);
 
+static void zl_poll(void);
 long key_peek(void)
 {
+  /* 画面が CON のときの COMMAND.X は、キーを待つあいだ _B_KEYSNS だけを繰り返す (_B_KEYINP は押されてから)。ここで線を回さないと、
+     常駐スレッドは線が UP になるまで何もしないので、zmuxd をつないでも UP にならない */
+  zl_poll();
   return kh != kt ? keyq[kt] : 0;
 }
 
@@ -563,8 +567,9 @@ long zmux_call(long cmd, long *a)
     const uint8_t *b = (const uint8_t *)a[0];
     long t0;
     int n = a[1], i, r;
-    while (!lock())
-      ;
+    t0 = now();
+    while (!lock())                     /* 持ち主が切り替えられて戻ってこない場合 (Z-OS の横取り) に永遠には待たない */
+      if (since(t0) > a[4]) return -3;
     if (!up) { unlock(); return -1; }
     if (rtx_pos < rtx_len || n > BLK || n <= 0) { unlock(); return -2; }
     for (i = 0; i < n; i++)

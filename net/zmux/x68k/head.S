@@ -15,11 +15,37 @@ devheader:
     .ascii  "ZMUX"              /* +0x16 zmux.x が探す印 */
 zmux_entry:                     /* +0x1a 入口: d0 = 命令, a0 = 引数 → d0 (命令は zmux.c の zmux_call) */
     movem.l %d1-%d7/%a0-%a6,%sp@-
+    move.w  %sr,%d1
+    btst    #13,%d1
+    bne.s   1f
+    /* ユーザーモード (zmux.x / npd.x のスレッド) から呼ばれたら、スーパーバイザに上がって回る。線の排他 (busy) を持ったまま
+       タイマーでスレッドを切り替えられると、スーパーバイザで来た zrmt.sys / AUX の読み書きが busy を待ち続けて止まる
+       (Human68k はスーパーバイザの間はスレッドを切り替えないので、持ち主に順番が回らない) */
+    move.l  %a0,%sp@-
+    move.l  %d0,%sp@-
+    clr.l   %sp@-
+    .short  0xff20              /* DOS _SUPER (0) */
+    addq.l  #4,%sp
+    move.l  %d0,%d7             /* 元のスーパーバイザスタック (0 以下ならもう上がっていた) */
+    move.l  %sp@+,%d0
+    movea.l %sp@+,%a0
+    bsr.s   zmux_do
+    move.l  %d0,%d6
+    tst.l   %d7
+    ble.s   0f
+    move.l  %d7,%sp@-
+    .short  0xff20              /* DOS _SUPER (ssp): ユーザーモードに戻る */
+    addq.l  #4,%sp
+0:  move.l  %d6,%d0
+    bra.s   2f
+1:  bsr.s   zmux_do
+2:  movem.l %sp@+,%d1-%d7/%a0-%a6
+    rts
+zmux_do:
     move.l  %a0,%sp@-
     move.l  %d0,%sp@-
     jsr     zmux_call
     addq.l  #8,%sp
-    movem.l %sp@+,%d1-%d7/%a0-%a6
     rts
 
 strategy:

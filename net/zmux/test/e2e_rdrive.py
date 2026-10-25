@@ -19,6 +19,7 @@ env = dict(os.environ, ZMUX_SOCK=sock, XPORT=str(XPORT))
 drive = os.path.join(run, "drive")
 fails = []
 REAL = bool(os.environ.get("REAL"))
+CON = bool(os.environ.get("CON"))                  # CTTY AUX にしない (画面が CON のまま。Z-OS の下と同じ)
 SMALL = REAL or bool(os.environ.get("SMALL"))     # 空きの少ないフロッピーへ小さいファイルを写す場面
 
 
@@ -43,6 +44,7 @@ def mkfloppy():
     sh("cp", os.path.join(zm, "x68k", "zrmt.sys"), os.path.join(t, "SYS", "ZRMT.SYS"))
     sh("cp", os.path.join(zm, "x68k", "zmux.x"), os.path.join(t, "ZMUX.X"))
     sh("cp", os.path.join(serial, "rx.x"), os.path.join(t, "RX.X"))
+    open(os.path.join(t, "SYS", "CONTEE.OLD"), "wb").write(os.urandom(3000))
     if REAL:
         # 実機の XVI の構成: contee78 (78125bps)、npd.sys、tis.x -p、npd.x -m、rx -K2、フロッピーの空きは 19KB
         net = os.path.join(top, "net")
@@ -66,7 +68,7 @@ def mkfloppy():
             b"FILES     = 30\r\nBUFFERS   = 20 1024\r\nPROCESS   = 8 10 20\r\n"
             b"DEVICE    = \\SYS\\RSDRV.SYS\r\nDEVICE    = \\SYS\\ZMUX.SYS\r\nDEVICE    = \\SYS\\ZRMT.SYS\r\n")
         open(os.path.join(t, "AUTOEXEC.BAT"), "wb").write(
-            b"ECHO OFF\r\nPATH A:\\\r\nRX -B19200\r\nZMUX\r\nCTTY AUX\r\n")
+            b"ECHO OFF\r\nPATH A:\\\r\nRX -B19200\r\nZMUX\r\n" + (b"" if CON else b"CTTY AUX\r\n"))
     out = os.path.join(run, "zmuxrd.xdf")
     free = subprocess.run([sys.executable, os.path.join(serial, "floppy", "mkxdf.py"), out, xdf, t],
                           capture_output=True, text=True, check=True).stdout.strip()
@@ -159,6 +161,15 @@ try:
         if status().startswith("line up"):
             break
     check("line up", status().startswith("line up"), status())
+    if CON:
+        # 画面が CON で、誰も AUX を読んでいない。常駐スレッドは線が UP になるまで何もしないので、COMMAND.X のキー待ち (_B_KEYSNS) が線を回さないと UP にならない
+        for _ in range(150):
+            time.sleep(0.2)
+            if status().startswith("line up"):
+                break
+        check("line comes up with the console on CON", status().startswith("line up"), status())
+        print("ZMUX RDRIVE E2E %s (%d failures)" % ("PASS" if not fails else "FAIL", len(fails)))
+        raise SystemExit(1 if fails else 0)
     a = Attach()
     time.sleep(0.5)
     a.send("\r")
