@@ -823,11 +823,14 @@ static void cursor_xor(int col, int row)
  * 下方向 (dst>src) は重なるので後ろのラスタから: d3 の bit15 を立てると 1 ラスタごとに src/dst を 1 ずつ減らす
  * (IPLROM の _TXRASCPY = $FF781A を逆アセンブルして確認: tst.w d3 / bpl で増分 $0101 と $FEFF を切り替える)。
  * このとき d1 は最後 (いちばん下) のラスタ番号を渡す。それ以外は 32bit 転送 (画面の COLS バイトだけ)。 */
+/* 1: スクロールで IOCS の TXRASCOPY (ハードのラスタコピー) を使わず、CPU の 32bit 転送で VRAM を動かす (実機の Z で、ラスタコピーが
+ * 重なって全行が同じ行になった疑いの切り分け用。遅い: 1 画面で 70ms ほど)。zos.x の ZOS_NORAS=1 / -N */
+int vt_noras;
 static void vram_move_lines(int dst_line, int src_line, int nlines)
 {
   int p, y, k, nl = (COLS + 3) / 4;   /* 1 ラインのうち画面の COLS バイトだけ (128 のうち 96) 動かす */
 #if !defined(VT_HOSTTEST) || defined(VT_SIM_TXRAS)
-  if (!vt_pane && (dst_line & 3) == 0 && (src_line & 3) == 0 && (nlines & 3) == 0 && dst_line != src_line) {
+  if (!vt_pane && !vt_noras && (dst_line & 3) == 0 && (src_line & 3) == 0 && (nlines & 3) == 0 && dst_line != src_line) {
     if (dst_line < src_line)
       _iocs_txrascpy(((src_line / 4) << 8) | (dst_line / 4), nlines / 4, 0x000f);
     else
