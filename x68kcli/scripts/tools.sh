@@ -34,7 +34,8 @@ tools/rb-cli --version
 if [ ! -f tools/xeij/XEiJ.jar ]; then
   echo "fetch  XEiJ ($XEIJ_ZIP)"
   mkdir -p tools/xeij
-  curl -fsSL -o "tools/xeij/$XEIJ_ZIP" "https://stdkmd.net/xeij/$XEIJ_ZIP"
+  if [ -f "${CI_ARTIFACTS:-/nonexistent}/$XEIJ_ZIP" ]; then cp "$CI_ARTIFACTS/$XEIJ_ZIP" "tools/xeij/$XEIJ_ZIP"   # S3 のミラー (CI)
+  else curl -fsSL -o "tools/xeij/$XEIJ_ZIP" "https://stdkmd.net/xeij/$XEIJ_ZIP"; fi
   unzip -oq "tools/xeij/$XEIJ_ZIP" -d tools/xeij
 fi
 

@@ -3,6 +3,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p dl
+# CI_ARTIFACTS=ディレクトリ: 非公開の S3 から落としたミラー (x68kcli-dl-*.tar.gz) があれば、dl/ にまだ無いものだけ先に展開する。
+# 外のサイトへは行かない。sha256 の検証は下でこれまでどおり
+if [ -n "${CI_ARTIFACTS:-}" ]; then
+  for t in "$CI_ARTIFACTS"/x68kcli-dl-*.tar.gz; do [ -f "$t" ] && tar xzkf "$t" -C . 2>/dev/null || true; done
+fi
 fail=0
 while read -r dest url sha; do
   case "$dest" in ''|'#'*) continue;; esac
