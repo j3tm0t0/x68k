@@ -38,5 +38,6 @@ for m in "$@"; do
   sleep "${SHOTWAIT:-5}"
   shot "$OUT/shots/mode$m.png" && echo "mode $m shot"
 done
+for k in ${KEYS:-}; do ctl "typekey $k" 5; done; [ -n "${KEYS:-}" ] && shot "$OUT/shots/keys.png"   # KEYS="a left up": 最後のモードのあとにキーを打つ
 sleep 1; ctl "typekey q"; sleep 4; shot "$OUT/shots/after.png"
 echo done
