@@ -830,7 +830,10 @@ static void vram_move_lines(int dst_line, int src_line, int nlines)
 {
   int p, y, k, nl = (COLS + 3) / 4;   /* 1 ラインのうち画面の COLS バイトだけ (128 のうち 96) 動かす */
 #if !defined(VT_HOSTTEST) || defined(VT_SIM_TXRAS)
-  if (!vt_pane && !vt_noras && (dst_line & 3) == 0 && (src_line & 3) == 0 && (nlines & 3) == 0 && dst_line != src_line) {
+  /* 全幅の枠 (zos.x の全幅のペイン) も、ラスタ単位の転送なので TXRASCOPY が使える (枠の上端 pane_py ぶん足す) */
+  if ((!vt_pane || (pane_x == 0 && pane_w >= SCRCOLS)) && !vt_noras && (dst_line & 3) == 0 && (src_line & 3) == 0 && (nlines & 3) == 0 && dst_line != src_line) {
+    int o = vt_pane ? pane_py : 0;
+    dst_line += o; src_line += o;
     if (dst_line < src_line)
       _iocs_txrascpy(((src_line / 4) << 8) | (dst_line / 4), nlines / 4, 0x000f);
     else
