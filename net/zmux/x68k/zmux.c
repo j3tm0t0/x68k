@@ -121,7 +121,14 @@ long key_peek(void)
 {
   /* 画面が CON のときの COMMAND.X は、キーを待つあいだ _B_KEYSNS だけを繰り返す (_B_KEYINP は押されてから)。ここで線を回さないと、
      常駐スレッドは線が UP になるまで何もしないので、zmuxd をつないでも UP にならない */
-  zl_poll();
+  if (!up) {
+    /* 線が UP になった後は常駐スレッドが回す。割り込みの中 (IPL が 0 でない) から呼ばれたときは回さない: AUX の書き込み (con_out) と読み出しは
+       lock なしで txr / rxr を触るので、そこへ割り込みから zl_poll が入ると送るバイトが壊れる (実機 XVI で ver が化けた) */
+    uint16_t sr;
+    __asm__ volatile ("move.w %%sr,%0" : "=d"(sr));
+    if (!(sr & 0x0700))
+      zl_poll();
+  }
   return kh != kt ? keyq[kt] : 0;
 }
 

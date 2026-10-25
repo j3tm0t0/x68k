@@ -178,6 +178,13 @@ try:
     check("dir %s: lists the Pi directory" % dl, out is not None and "HELLO" in out and "BIG" in out, repr(out)[-200:])
     out, _ = a.cmd("type %s:\\HELLO.TXT" % dl)
     check("type reads a file", out is not None and "hello from the Pi" in out, repr(out)[-120:])
+    # CTTY AUX のコンソールに打った文字が化けずに届く (実機 XVI で ver が 0x9D と BS になった退行の守り)
+    for i in range(3):
+        word = "".join(chr(97 + (i * 7 + k * 5) % 26) for k in range(120))
+        out, _ = a.cmd("echo " + word, 30)
+        check("console echo %d: %d chars arrive intact" % (i, len(word)), out is not None and out.count(word) >= 2, repr(out)[-80:])
+    out, _ = a.cmd("ver", 30)
+    check("ver over the console", out is not None and "Human68k version 3.02" in out, repr(out)[-80:])
     # C: にある .x を実行する (zrmt.sys の読み込み・seek・属性の要求が Human68k の _EXEC に通じるか)
     for xn in ("idlebench.x", "tcset.x"):
         sh("cp", os.path.join(zm, "x68k", xn), os.path.join(drive, xn.upper()))
@@ -200,7 +207,7 @@ try:
             s = screen()
             check("copy " + name, out is not None and "コピーしました" in out and "無効" not in out and "コピーはされませんでした" not in out and "無効なコマンド" not in s,
                   repr(out)[-100:] + " | " + s.replace("\n", " ")[-120:])
-        if "contee" not in os.environ.get("REAL_NO", "").split(","):
+        if REAL and "contee" not in os.environ.get("REAL_NO", "").split(","):
             out, _ = a.cmd("zmux -r", 30)
             print("e2e: zmux -r:\n" + (out or "").replace("\r", ""))
             check("zmux -r lists the SCC records of contee78", out is not None and "fffd" in out and "fffe" in out and "0001" in out, repr(out)[-200:])
