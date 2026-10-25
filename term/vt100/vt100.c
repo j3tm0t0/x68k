@@ -913,6 +913,8 @@ static void vs_apply(void)
 {
   int n = vs_pend, h = vs_bot - vs_top + 1;
   vs_pend = 0;
+  /* XOR のカーソルが残っていると、VRAM と一緒に動いて別の行に残り、後で消すとき元の位置の別の字を反転してしまう */
+  if (csr_shown && !VT_HIDDEN) { cursor_xor(csr_x, csr_y); csr_shown = 0; }
   if (n > 0 && n < h) vram_move_lines(vs_top * vch, (vs_top + n) * vch, (h - n) * vch);
 }
 
@@ -1937,6 +1939,7 @@ void vt_write(const unsigned char *p, int n)
   if (vs_pend > 0 && !VT_HIDDEN) {   /* ためたスクロール (上へ) の VRAM の移動も 64 ラインずつ譲りながら (1 ペインで 70ms ほどかかる) */
     int k = vs_pend, h = vs_bot - vs_top + 1, y, nl;
     vs_pend = 0;
+    if (csr_shown) { int s = sup_enter(); cursor_xor(csr_x, csr_y); csr_shown = 0; sup_leave(s); }
     if (k < h) {
       nl = (h - k) * vch;
       for (y = 0; y < nl; y += 64) {
