@@ -40,6 +40,7 @@ struct req_header {
 #define fcb_size(fcb)  (*(uint32_t *)(&((uint8_t *)(fcb))[64]))
 
 /* ---- x68kremote.h の形 (packed、ネットワークバイトオーダー = 68000 のまま) */
+#define FILBUF_ATR 21                   /* dos_filbuf の atr の位置 (searchatr 1, driveno 1, dirsec 4, dirlft 2, dirpos 2, filename 8, ext 3) */
 #define NAMEBUF 88                      /* dos_namebuf: flag 1, drive 1, path 65, name1 8, ext 3, name2 10 */
 struct filesinfo { uint8_t dummy, atr; uint16_t time, date; uint32_t filelen; char name[23]; } __attribute__((packed));
 
@@ -286,7 +287,7 @@ long rd_interrupt(struct req_header *req)
     memcpy_(c.cmd_files.path, req->addr, NAMEBUF);
     cmdres(&c.cmd_files, sizeof c.cmd_files, &r.res_files, sizeof r.res_files);
     if (!failed && r.res_files.res == 0)
-      memcpy_((uint8_t *)req->status + 1, &r.res_files.file.atr, sizeof r.res_files.file - 1);   /* FILBUF の atr から */
+      memcpy_((uint8_t *)req->status + FILBUF_ATR, &r.res_files.file.atr, sizeof r.res_files.file - 1);   /* FILBUF の atr から */
     req->status = r.res_files.res;
     break;
   case 0x48:                            /* nfiles */
@@ -294,7 +295,7 @@ long rd_interrupt(struct req_header *req)
     c.cmd_nfiles.filep = req->status;
     cmdres(&c.cmd_nfiles, sizeof c.cmd_nfiles, &r.res_files, sizeof r.res_files);
     if (!failed && r.res_files.res == 0)
-      memcpy_((uint8_t *)req->status + 1, &r.res_files.file.atr, sizeof r.res_files.file - 1);
+      memcpy_((uint8_t *)req->status + FILBUF_ATR, &r.res_files.file.atr, sizeof r.res_files.file - 1);
     req->status = r.res_files.res;
     break;
   case 0x49:                            /* create */
