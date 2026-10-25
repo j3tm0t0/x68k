@@ -1115,6 +1115,7 @@ static NOINLINE int flush_n(int maxrows)
     }
   }
   sa_off();
+  _iocs_b_curoff();   /* DOS の出力 (ssh.x のログなど) が Human68k のカーソルを戻すことがあるので、描くたびに消す */
   if (cur_vis && csr_ok) { cursor_xor(cx, cy); csr_shown = 1; csr_x = cx; csr_y = cy; }
   sup_leave(s);
   return more;
