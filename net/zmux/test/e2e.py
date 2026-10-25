@@ -8,7 +8,7 @@
   5. バイトを壊す中継を挟んで、大きな出力 (dir を繰り返す) が欠けずに届く
   6. zmuxd を止める: 10 秒で X68000 が素の文字に戻り、sx.py probe が答える
 usage: e2e.py RUNDIR"""
-import os, socket, subprocess, sys, threading, time, random
+import os, re, socket, subprocess, sys, threading, time, random
 
 here = os.path.dirname(os.path.abspath(__file__))
 zm = os.path.dirname(here)
@@ -38,6 +38,9 @@ def mkfloppy():
     sh("cp", os.path.join(zm, "x68k", "zmux.sys"), os.path.join(t, "SYS", "ZMUX.SYS"))
     sh("cp", os.path.join(zm, "x68k", "zmux.x"), os.path.join(t, "ZMUX.X"))
     sh("cp", os.path.join(serial, "rx.x"), os.path.join(t, "RX.X"))
+    ib = os.path.join(zm, "x68k", "idlebench.x")
+    if os.path.exists(ib):
+        sh("cp", ib, os.path.join(t, "IDLEBENCH.X"))
     open(os.path.join(t, "CONFIG.SYS"), "wb").write(
         b"FILES     = 30\r\nBUFFERS   = 20 1024\r\nPROCESS   = 8 10 20\r\n"
         b"DEVICE    = \\SYS\\RSDRV.SYS\r\nDEVICE    = \\SYS\\ZMUX.SYS\r\n")
@@ -169,6 +172,22 @@ try:
     if b"Human68k version 3.02" not in out:
         sys.exit("e2e: ver: %r" % out)
     print("e2e: ver over zmux ok")
+    # 線が UP で何も流れていない間に、常駐スレッドがどれだけ CPU を食うか (MHz 換算。小さいほど食っている)
+    if os.path.exists(os.path.join(zm, "x68k", "idlebench.x")):
+        a.send("zmux -s\r")
+        p0 = a.wait("A>", 30)
+        a.send("idlebench\r")
+        out = a.wait("A>", 30)
+        a.send("zmux -s\r")
+        p1 = a.wait("A>", 30)
+        def polls(b):
+            m = re.search(rb"polls (\d+)", b)
+            return int(m.group(1)) if m else -1
+        def tcalls(b):
+            m = re.search(rb"thread calls (\d+)", b)
+            return int(m.group(1)) if m else -1
+        print("e2e: polls during idlebench (3s): %d, zmux.x thread wake-ups: %d" % (polls(p1) - polls(p0), tcalls(p1) - tcalls(p0)))
+        print("e2e: " + out.decode("ascii", "replace").strip().splitlines()[-2].strip() if b"IDLEBENCH" in out else "e2e: idlebench: %r" % out)
     # 壊す中継を有効にして、大きな出力を受ける
     st["on"] = True
     t1 = time.time()

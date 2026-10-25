@@ -15,6 +15,9 @@ extern long call_entry(void *entry, long cmd, void *arg);
 extern char *mem_ptr;
 extern unsigned char *cmd_line;
 
+#define IDLE_SLEEP 1                    /* 1/100 秒単位 */
+#define IDLE_SLEEP_MAX 3
+#define IDLE_BACKOFF 100                /* 何も無い回がこれだけ続いたら長い方 */
 static void *entry;
 static struct dos_prcctrl prc;
 static unsigned char mbox[4];
@@ -65,9 +68,19 @@ static void stop_contee(void)
 
 static void thread(void)
 {
+  int idle = 0;
   for (;;) {
-    call_entry(entry, 0, 0);
-    _dos_change_pr();
+    long r = call_entry(entry, 0, 0);
+    /* 仕事が無かった (線が UP でない / 何も来ず何も出ず) なら眠る。譲るだけだと毎回自分の番が回ってきて、
+       待ちの間も CPU を食う。眠るのは 10ms、約 1 秒続けて何も無ければ 30ms まで延ばす。仕事があれば元に戻す。
+       眠っても AUX を読む側 (COMMAND.X) は自分で線を回すので、対話の遅れには響かない */
+    if (r & 2) {
+      idle = 0;
+      _dos_change_pr();
+    } else {
+      if (idle < 1000) idle++;
+      _dos_sleep_pr(idle >= IDLE_BACKOFF ? IDLE_SLEEP_MAX : IDLE_SLEEP);
+    }
   }
 }
 
@@ -92,18 +105,21 @@ int zmux_main(void)
   }
   while (*a == ' ') a++;
   if (a[0] == '-' && (a[1] | 0x20) == 's') {
-    static const char *nm[] = { "rx frames", "tx frames", "bad", "resend", "raw in", "raw out", "up", "down" };
+    static const char *nm[] = { "rx frames", "tx frames", "bad", "resend", "raw in", "raw out", "up", "down", "polls" };
     uint32_t *s;
     int i;
     ssp = _dos_super(0);
     s = (uint32_t *)(call_entry(entry, 1, 0) + 8);
-    for (i = 0; i < 8; i++) {
+    for (i = 0; i < 9; i++) {
       uint32_t v = s[i];
       if (ssp > 0) _dos_super(ssp);
       _dos_print(nm[i]); _dos_print(" "); putnum(v); _dos_print("\r\n");
       ssp = _dos_super(0);
     }
+    ssp = _dos_super(0);
+    i = s[22];
     if (ssp > 0) _dos_super(ssp);
+    _dos_print("thread calls "); putnum(i); _dos_print("\r\n");
     return 0;
   }
   prc.length = sizeof mbox;

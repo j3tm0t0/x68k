@@ -138,7 +138,7 @@ long key_get(void)
 static uint8_t rxbuf[RXBUF];
 
 /* 動作確認用 (メモリダンプで "ZMUXSTAT" の後ろ) */
-static struct { char tag[8]; uint32_t rxf, txf, bad, resend, rawin, rawout, ups, downs, polls, maxgap, lastpoll, gapat, outbytes, outq, refused, win, lockfail, downat, lastrx_at_down, lockat, rxbytes, rxbytes_at_lastrx; } st = { "ZMUXSTAT" };
+static struct { char tag[8]; uint32_t rxf, txf, bad, resend, rawin, rawout, ups, downs, polls, maxgap, lastpoll, gapat, outbytes, outq, refused, win, lockfail, downat, lastrx_at_down, lockat, rxbytes, rxbytes_at_lastrx, tcalls; } st = { "ZMUXSTAT" };
 
 /* 線の処理の排他。Human68k はスーパーバイザの間はスレッドを切り替えないが、Z-OS (zos.x) は自前の横取りで
    スーパーバイザの途中でも切り替えるので、zmux.x のスレッドと npd.x のスレッドと AUX の読み書きが重なりうる
@@ -506,8 +506,16 @@ long zmux_call(long cmd, long *a)
   if (cmd == 1)
     return (long)&st;
   if (cmd == 0) {
-    if (up) zl_poll();
-    return up;
+    /* 戻り値: bit0 = UP、bit1 = この回に仕事があった (受信・送信・送り直しのどれか)。常駐スレッドは仕事が無ければ眠る。
+       これまでの呼び出し側は 0 / 1 しか見ないので、bit1 は無視される */
+    uint32_t w0, w1;
+    st.tcalls++;
+    if (!up)
+      return 0;
+    w0 = st.rxbytes + st.outbytes + st.resend + st.txf + st.rxf;
+    zl_poll();
+    w1 = st.rxbytes + st.outbytes + st.resend + st.txf + st.rxf;
+    return up | (w1 != w0 ? 2 : 0);
   }
   if (cmd == 6) {
     /* リモートドライブの交換 (zrmt.sys から): a[0] = 要求, a[1] = 長さ, a[2] = 応答を書く先, a[3] = その最大, a[4] = 待つ時間 (1/100 秒)。

@@ -427,7 +427,7 @@ static void zthread(void)
     now = ticks();
     /* -m: 線を空回りさせない。送るものも急ぎも無ければ、Pi の KICK か 2 秒に 1 回だけ交換する */
     if (mux && n == 0 && hot == 0 && !turg && !zurg && !call_etd(mux, 4, 0) && (unsigned)(now - last) < 200) {
-      _dos_change_pr();
+      _dos_sleep_pr(1);                  /* 10ms 眠る (譲るだけだと空回りして CPU の大半を使う) */
       continue;
     }
     if (!mux && n == 0 && hot == 0 && !turg && !zurg && (unsigned)(now - last) < ((unsigned)(now - act) < 200 ? zidle : ZIDLE2)) {
