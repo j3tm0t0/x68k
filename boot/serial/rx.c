@@ -40,6 +40,7 @@
 static unsigned short crctab[256];
 static unsigned char rbuf[MAXLEN + 8];          /* 受けた要求 */
 static unsigned char sbuf[MAXLEN + 8] __attribute__((aligned(4)));          /* 最後に送った応答 (再送用) */
+static unsigned char gbuf[3 * 1024] __attribute__((aligned(4)));            /* 'G' でセクタを読む場所 */
 static int slen;
 static int last_seq = -1, last_type = -1;
 static int wfd = -1, rfd = -1;
@@ -51,6 +52,36 @@ static char execbuf[300];
 static struct dos_comline comline;
 
 static void put(const char *s) { _iocs_b_print(s); }
+/* SCC の時定数を読む (RR12/RR13)。IOCS の設定より速い (tc < 2) かを見るのに使う */
+static int scc_rdtc(void)
+{
+  long ssp = _dos_super(0);
+  volatile unsigned char *c = (volatile unsigned char *)0xe98005;
+  unsigned short sr;
+  int lo, hi;
+  __asm__ volatile ("move.w %%sr,%0\n\tori.w #0x0700,%%sr" : "=d"(sr));
+  *c = 12; lo = *c;
+  *c = 13; hi = *c;
+  __asm__ volatile ("move.w %0,%%sr" : : "d"(sr));
+  if (ssp > 0) _dos_super(ssp);
+  return (hi << 8) | lo;
+}
+
+/* SCC の A チャネル (RS-232C) の時定数を直接書く。速さ = 5MHz / (32 * (tc + 2))。tc=0 で 78125bps。
+   autoen が 1 なら WR3 の Auto Enables を立て、CTS が下がっている間は送信を止める */
+static void scc_tc(int tc, int autoen)
+{
+  long ssp = _dos_super(0);
+  volatile unsigned char *c = (volatile unsigned char *)0xe98005;
+  unsigned short sr;
+  __asm__ volatile ("move.w %%sr,%0\n\tori.w #0x0700,%%sr" : "=d"(sr));
+  *c = 12; *c = tc & 0xff;
+  *c = 13; *c = (tc >> 8) & 0xff;
+  *c = 3;  *c = autoen ? 0xe1 : 0xc1;
+  __asm__ volatile ("move.w %0,%%sr" : : "d"(sr));
+  if (ssp > 0) _dos_super(ssp);
+}
+
 
 /* DOS _DISKRED / _DISKWRT (ブロックデバイスのセクタを直接読み書きする)。drive は 1 = A:。戻り値は d0 */
 static long diskio(int call, void *buf, int drive, int sect, int n)
@@ -373,6 +404,15 @@ static int serve(void)
         }
         break;
       }
+      case 'G': { /* セクタを読んで中身を返す: ドライブ (1)、セクタ番号 (2)、セクタ数 (1、1〜3) */
+        int drv = d[0], sec = (d[1] << 8) | d[2], n = d[3];
+        long r;
+        if (n < 1 || n > 3) { put32(tmp, -1); send('E', seq, tmp, 4); break; }
+        r = diskio(0, gbuf, drv, sec, n);
+        if (r < 0) { put32(tmp, r); send('E', seq, tmp, 4); }
+        else send('K', seq, gbuf, n * 1024);
+        break;
+      }
       case 'S':   /* 統計: 受信バッファの最大の溜まり (4)、壊れた枠の数 (4) */
         put32(tmp, maxlof);
         put32(tmp + 4, nbad);
@@ -384,6 +424,12 @@ static int serve(void)
         n = now();
         while (since(n) < 20) ;   /* 応答を送り終えるまで待つ */
         _iocs_set232c((d[0] << 8) | d[1]);
+        break;
+      case 'T':   /* SCC の時定数を直接設定: tc (2)、autoen (1) */
+        send('K', seq, 0, 0);
+        n = now();
+        while (since(n) < 20) ;
+        scc_tc((d[0] << 8) | d[1], len > 2 ? d[2] : 0);
         break;
       case 'Q':
         send('K', seq, 0, 0);
@@ -408,6 +454,8 @@ static int speed_code(long bps)
   return -1;
 }
 
+static int custom_tc = -1;
+
 int rx_main(const unsigned char *cmd)
 {
   int len = cmd[0], i = 1, server = 1, setspeed = 0, code = 0, keywait = -1;
@@ -431,7 +479,12 @@ int rx_main(const unsigned char *cmd)
       else if (o == 'b') {
         long v = 0;
         while (i <= len && cmd[i] >= '0' && cmd[i] <= '9') v = v * 10 + cmd[i++] - '0';
-        if ((code = speed_code(v)) < 0) { put("rx: bad speed\r\n"); return 1; }
+        custom_tc = -1;
+        if ((code = speed_code(v)) < 0) {
+          if (v <= 38400 || v > 78125) { put("rx: bad speed\r\n"); return 1; }
+          custom_tc = (int)((5000000L + 16 * v) / (32 * v)) - 2;   /* 78125 なら 0 */
+          code = 9;
+        }
         setspeed = 1;
         if (server == 1) server = 0;
       } else {
@@ -441,12 +494,16 @@ int rx_main(const unsigned char *cmd)
     } else
       i++;
   }
-  if (setspeed)
+  if (setspeed) {
     _iocs_set232c(0x4c00 | code);   /* 1 stop, parity なし, 8bit, フロー制御なし */
+    if (custom_tc >= 0) scc_tc(custom_tc, 0);   /* 38400 を超える速さは SCC に直接 */
+  }
   else if (server) {
     /* 2 進のデータを通すため、速さはそのままで XON/XOFF をやめる (SRAM の既定 4E07 は XON/XOFF あり) */
+    int tc0 = scc_rdtc();                     /* 38400 を超える速さ (SCC を直接設定) なら後で戻す */
     int m = _iocs_set232c(0x4c07) & 0xffff;   /* 戻り値は前のモード。その速さに戻す */
     _iocs_set232c(0x4c00 | (m & 0x0f));
+    if ((m & 0x0f) == 9 && tc0 < 2) scc_tc(tc0, 0);
   }
   if (keywait >= 0) {
     long t = now();
