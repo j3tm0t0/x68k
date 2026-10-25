@@ -125,6 +125,9 @@ target/release/zmux
   zosh のタブはそのまま使える。Z-OS の側で、AUX の COMMAND.X を見えないペインの 1 つとして持つ (または zos.x を常駐させて COMMAND.X に戻る) 形にすれば、
   タブ 0 が使い続けられる (Bravo への提案、HANDOFF.md)。
 
+端末のタイトル (OSC 0) は `XVI · zmux 19200 · [0] COMMAND.X` の形で、タブの切り替えと線の状態で更新する (線が上がっていなければ `XVI · 切断中`)。
+終わるときは空にして、保存しておいた元のタイトルに戻す (CSI 22;0t / 23;0t)。tmux の中では `set-titles on` のときに外へ出る。
+
 ## リモートドライブ (チャネル 2)
 
 X68000 の `zrmt.sys` が Human68k のリモートドライブ (ファイル単位の要求: CHDIR, FILES, OPEN, READ, WRITE …) を受け、要求 1 つをチャネル 2 の

@@ -266,6 +266,12 @@ fn encode_sjis(s: &str, out: &mut Vec<u8>) {
 
 // ---------------------------------------------------------------- 状態の行
 
+/// 端末のタイトル (OSC 0): 線が上がっていれば "XVI · zmux 19200 · [0] COMMAND.X"、そうでなければ "XVI · 切断中"
+pub fn title_text(up: bool, ok: bool, baud: &str, tab: usize, name: &str) -> String {
+    if !ok || !up { return "XVI · 切断中".to_string(); }
+    format!("XVI · zmux {} · [{}] {}", baud, tab, name)
+}
+
 #[derive(Default, Clone)]
 pub struct LinkStatus {
     pub up: bool,
@@ -369,6 +375,21 @@ impl App {
             areas: Vec::new(), tab_x: Vec::new(), tx,
             term: std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".into()), quit: false,
         }
+    }
+
+    /// タブ i の名前 (下の行のタブ一覧と同じ)
+    fn tab_name(&self, i: usize) -> String {
+        let mut l = Vec::new();
+        self.tabs[i].root.leaves(&mut l);
+        match self.panes.get(&l[0]).map(|p| p.sess).unwrap_or(0) {
+            0 => "COMMAND.X".to_string(),
+            n => if l.len() > 1 { format!("zosh {}+{}", n, l.len() - 1) } else { format!("zosh {}", n) },
+        }
+    }
+
+    fn title(&self) -> String {
+        let name = if self.cur < self.tabs.len() { self.tab_name(self.cur) } else { String::new() };
+        title_text(self.status.up, self.status.ok, &self.status.baud, self.cur, &name)
     }
 
     fn say(&mut self, m: impl Into<String>) { self.msg = Some((m.into(), Instant::now())); }
@@ -657,13 +678,9 @@ impl App {
         // 状態の行
         let mut x = area.x;
         self.tab_x.clear();
-        for (i, t) in self.tabs.iter().enumerate() {
-            let mut l = Vec::new();
-            t.root.leaves(&mut l);
-            let name = match self.panes.get(&l[0]).map(|p| p.sess).unwrap_or(0) {
-                0 => "COMMAND.X".to_string(),
-                n => if l.len() > 1 { format!("zosh {}+{}", n, l.len() - 1) } else { format!("zosh {}", n) },
-            };
+        let names: Vec<String> = (0..self.tabs.len()).map(|i| self.tab_name(i)).collect();
+        for (i, _t) in self.tabs.iter().enumerate() {
+            let name = names[i].clone();
             let label = format!(" {}:{} ", i, name);
             let st = if i == self.cur { Style::default().fg(Color::Black).bg(Color::Green) } else { Style::default().fg(Color::White).bg(Color::DarkGray) };
             let w = label.chars().count() as u16;
@@ -802,10 +819,12 @@ pub fn run() {
     let _ = crossterm::terminal::enable_raw_mode();
     let mut so = std::io::stdout();
     let _ = crossterm::execute!(so, crossterm::terminal::EnterAlternateScreen);
+    let _ = so.write_all(b"\x1b[22;0t"); // 今の端末のタイトルを保存 (終わりに CSI 23;0t で戻す)
     let _ = so.write_all(b"\x1b[?1000h\x1b[?1006h"); // マウス: ボタンだけ、SGR の並び
     let _ = so.flush();
     let mut term = Terminal::new(CrosstermBackend::new(std::io::stdout())).unwrap_or_else(|e| crate::die(&e.to_string()));
     let _ = term.clear();
+    let mut last_title = String::new();
     let mut dirty = true;
     let mut last_draw = Instant::now();
     while !app.quit {
@@ -829,9 +848,17 @@ pub fn run() {
             let _ = term.draw(|f| app.draw(f));
             last_draw = Instant::now();
             dirty = false;
+            // 端末のタイトル (OSC 0)。変わったときだけ出す。tmux の中でも set-titles が on なら通る
+            let t = app.title();
+            if t != last_title {
+                let _ = so.write_all(format!("\x1b]0;{}\x07", t).as_bytes());
+                let _ = so.flush();
+                last_title = t;
+            }
         }
     }
     let _ = so.write_all(b"\x1b[?1006l\x1b[?1000l");
+    let _ = so.write_all(b"\x1b]0;\x07\x1b[23;0t"); // タイトルを空にしてから、保存したタイトルに戻す (戻せない端末は空のまま)
     let _ = crossterm::execute!(so, crossterm::terminal::LeaveAlternateScreen);
     let _ = crossterm::terminal::disable_raw_mode();
     eprintln!("[zmux: 切り離した。zmux でつなぎ直せる]");
@@ -925,6 +952,14 @@ mod tests {
         assert_eq!(all, b"dir \x93\xfa\x96\x7b\x8c\xea\r".to_vec());
         assert_eq!(utf8_to_sjis_stream("😀".as_bytes(), &mut hold), b"?".to_vec());
         assert_eq!(utf8_to_sjis_stream(b"\xff\x03", &mut hold), b"\xff\x03".to_vec());
+    }
+
+    #[test]
+    fn title_string() {
+        assert_eq!(title_text(true, true, "19200", 0, "COMMAND.X"), "XVI · zmux 19200 · [0] COMMAND.X");
+        assert_eq!(title_text(true, true, "78125", 2, "zosh 3"), "XVI · zmux 78125 · [2] zosh 3");
+        assert_eq!(title_text(false, true, "19200", 0, "COMMAND.X"), "XVI · 切断中");
+        assert_eq!(title_text(true, false, "19200", 0, "COMMAND.X"), "XVI · 切断中");
     }
 
     #[test]
