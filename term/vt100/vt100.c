@@ -21,6 +21,7 @@
  * 描画は実機と同じ blit を通るので、vt_host_vram を PNG にすれば実機の画面と同じ絵になる。 */
 static int _dos_super(int x) { (void)x; return 0; }
 static void _dos_breakck(int x) { (void)x; }
+static void _dos_change_pr(void) {}
 static void _iocs_b_curon(void) {}
 static void _iocs_b_curoff(void) {}
 #ifdef VT_HOSTKEYS   /* キーは試験が渡す (net/ssh/dropbear/tests/vcshim.c) */
@@ -905,10 +906,15 @@ static void rotate_rows(cell_t **t, unsigned char *lo, unsigned char *hi, int a,
  * 行数をためておき (vs_pend)、次に VRAM に描く前 (flush の頭など) にまとめて 1 回だけ写す。論理画面と drawn は
  * その場で回し、空いた行の drawn は「分からない」にする (まとめて写した後のそこの絵は 1 行ずつ写した場合と違うので)。 */
 static int vs_pend, vs_top, vs_bot;
+#ifdef VT_ZOS
+extern int vt_defer, vt_nomove;
+#endif
 static void vs_apply(void)
 {
   int n = vs_pend, h = vs_bot - vs_top + 1;
   vs_pend = 0;
+  /* XOR のカーソルが残っていると、VRAM と一緒に動いて別の行に残り、後で消すとき元の位置の別の字を反転してしまう */
+  if (csr_shown && !VT_HIDDEN) { cursor_xor(csr_x, csr_y); csr_shown = 0; }
   if (n > 0 && n < h) vram_move_lines(vs_top * vch, (vs_top + n) * vch, (h - n) * vch);
 }
 
@@ -946,6 +952,21 @@ static void scroll(int n)
     }
     return;
   }
+#ifdef VT_ZOS
+  if (vt_defer && vt_nomove) {   /* zos.x が後で描く: VRAM は動かさず論理画面だけ回し、領域の全部の行を描き直しにする。
+                                  * flush は前の絵 (drawn = VRAM) と違うセルだけ描くので、流れ続ける出力は最後の画面だけ、
+                                  * 少しずつ (vt_flush_some) 描ける。VRAM を写す (1 ペインで 70ms ほど、途中で譲れない) より軽い */
+    if (vs_pend) vs_apply();
+    rotate_rows(cur, rlo, rhi, top, bot, n);
+    for (r = 0; r < m; r++) {
+      int rr = n > 0 ? bot - m + 1 + r : top + r;
+      cell_u32 *l = (cell_u32 *)cur[rr];
+      for (col = 0; col < COLS; col++) l[col] = clr_cell;
+    }
+    for (r = top; r <= bot; r++) TOUCH(r);
+    return;
+  }
+#endif
   if (vs_pend && (n < 0 || vs_top != top || vs_bot != bot)) vs_apply();
   if (vt_pane && n > 0 && keep > 0) {   /* 枠の中の上スクロール: VRAM は後でまとめて (vs_apply) */
     cell_t z;
@@ -1016,13 +1037,15 @@ static void row_fill(int row, int bg)
 
 /* vt_write に展開させない (巨大な関数でレジスタが足りず、描画の内側のループで変数がスタックに溢れる) */
 #define NOINLINE __attribute__((noinline))
-static NOINLINE void flush(void)
+/* 描き直しの要る行を、多くて maxrows 行だけ描く。まだ残っていれば 1 (zos.x は描くのを本体のスレッドに回し、
+ * 少しずつ描いては譲る: ペインの出力の IOCS の中 (スーパーバイザ、DOS の CON の中) で描くと、その間ほかのスレッドが回らない) */
+static NOINLINE int flush_n(int maxrows)
 {
-  int r, c, s, i;
+  int r, c, s, i, rows = 0, more = 0;
   static unsigned char diff[MAXCOLS];
-  if (VT_HIDDEN) return;   /* 裏の端末は描かない (表に出すとき vt_con_visible が全面を描く) */
+  if (VT_HIDDEN) return 0;   /* 裏の端末は描かない (表に出すとき vt_con_visible が全面を描く) */
 #ifdef VT_VCONS
-  if (view_off) return;   /* さかのぼって見ている間は描かない (書き換え範囲は残す。戻ったときに描く) */
+  if (view_off) return 0;   /* さかのぼって見ている間は描かない (書き換え範囲は残す。戻ったときに描く) */
 #endif
   PROF(4, 1);
   s = sup_enter();
@@ -1032,6 +1055,8 @@ static NOINLINE void flush(void)
     cell_t *lrow, *drow;
     int nd = 0, lo = rlo[r], hi = rhi[r];
     if (lo > hi) continue;
+    if (rows >= maxrows) { more = 1; break; }
+    rows++;
     rlo[r] = MAXCOLS; rhi[r] = 0;
     if (hi >= COLS) hi = COLS - 1;
     lrow = cur[r]; drow = drawn[r];
@@ -1092,7 +1117,14 @@ static NOINLINE void flush(void)
   sa_off();
   if (cur_vis && csr_ok) { cursor_xor(cx, cy); csr_shown = 1; csr_x = cx; csr_y = cy; }
   sup_leave(s);
+  return more;
 }
+static void flush(void) { flush_n(MAXROWS); }
+#ifdef VT_ZOS
+int vt_nomove = 1;   /* vt_defer のとき、スクロールで VRAM を動かさない (0: 動かす。ssh.x の _B_DOWN_S は自分の絵を動かしてほしい) */
+int vt_defer;   /* 1: vt_write は描かない (論理画面と書き換え範囲だけ。描くのは vt_flush_some) */
+int vt_flush_some(int maxrows) { return flush_n(maxrows); }
+#endif
 
 /* ================= 文字の書き込み ================= */
 /* 属性 (c_fg/c_bg/bold/reverse/underline) が変わったら呼ぶ: 字を置く属性語 cur_at と消去セル clr_cell を作り直す */
@@ -1817,7 +1849,7 @@ void vt_follow(void)
   sup_leave(s);
 }
 #endif
-void vt_write(const unsigned char *p, int n)
+static void vt_write1(const unsigned char *p, int n, int draw)
 {
   int i, sup;
   PROF(5, 1);
@@ -1887,8 +1919,41 @@ void vt_write(const unsigned char *p, int n)
       default: state = S_GROUND; break;
     }
   }
-  flush();
+  if (draw) flush();
   sup_leave(sup);
+}
+void vt_write(const unsigned char *p, int n)
+{
+#ifdef VT_ZOS
+  vt_write1(p, n, !vt_defer);
+#elif defined(VT_VCONS)
+  /* Z-OS のペインの中 (ssh.x など): 大きな出力は 512 バイトずつ解析し、その間に譲る (_CHANGE_PR)。
+   * 全部をスーパーバイザで一気に処理すると、その間ほかのスレッド (npd.x のネットワークなど) が回らない。描くのは最後に 1 回 */
+  if (!vt_pane) { vt_write1(p, n, 1); return; }
+  while (n > 512) {
+    vt_write1(p, 512, 0);
+    p += 512; n -= 512;
+    _dos_change_pr();
+  }
+  vt_write1(p, n, 0);
+  if (vs_pend > 0 && !VT_HIDDEN) {   /* ためたスクロール (上へ) の VRAM の移動も 64 ラインずつ譲りながら (1 ペインで 70ms ほどかかる) */
+    int k = vs_pend, h = vs_bot - vs_top + 1, y, nl;
+    vs_pend = 0;
+    if (csr_shown) { int s = sup_enter(); cursor_xor(csr_x, csr_y); csr_shown = 0; sup_leave(s); }
+    if (k < h) {
+      nl = (h - k) * vch;
+      for (y = 0; y < nl; y += 64) {
+        int s = sup_enter();
+        vram_move_lines(vs_top * vch + y, (vs_top + k) * vch + y, nl - y < 64 ? nl - y : 64);
+        sup_leave(s);
+        _dos_change_pr();
+      }
+    }
+  }
+  while (flush_n(8)) _dos_change_pr();   /* 描くのも 8 行ずつ譲りながら */
+#else
+  vt_write1(p, n, 1);
+#endif
 }
 
 /* ================= 初期化・終了 ================= */
