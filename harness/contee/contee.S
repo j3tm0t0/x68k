@@ -32,6 +32,22 @@ out1:
     bne.s   0f
     rts
 0:  move.l  %d0,%sp@-
+#ifdef TC0
+    /* RSDRV.SYS は起動の途中で SCC を設定し直す (38400 に戻る)。送るたびに時定数を見て、0 でなければ 0 に戻す */
+    move.l  %a0,%sp@-
+    move.w  %sr,%sp@-
+    ori.w   #0x0700,%sr
+    lea     0xe98005,%a0
+    move.b  #12,%a0@
+    tst.b   %a0@
+    beq.s   1f
+    move.b  #12,%a0@
+    clr.b   %a0@
+    move.b  #13,%a0@
+    clr.b   %a0@
+1:  move.w  %sp@+,%sr
+    move.l  %sp@+,%a0
+#endif
     moveq   #0x35,%d0           /* _OUT232C */
     trap    #15
     move.l  %sp@+,%d0
@@ -45,9 +61,9 @@ new_putc:
     beq.s   1f
     move.l  %d1,%sp@-
     move.b  %d0,%d1
-    bsr.s   out1
+    bsr.w   out1
     move.l  %sp@+,%d1
-1:  bsr.s   out1
+1:  bsr.w   out1
     movem.l %sp@+,%d0-%d1
     move.l  old_putc,%sp@-
     rts
@@ -57,7 +73,7 @@ new_print:
     movem.l %d0-%d1/%a1,%sp@-
 1:  move.b  %a1@+,%d1
     beq.s   2f
-    bsr.s   out1
+    bsr.w   out1
     bra.s   1b
 2:  movem.l %sp@+,%d0-%d1/%a1
     move.l  old_print,%sp@-
@@ -68,12 +84,12 @@ new_putmes:
     movem.l %d0-%d1/%d4/%a1,%sp@-
 1:  move.b  %a1@+,%d1
     beq.s   2f
-    bsr.s   out1
+    bsr.w   out1
     dbra    %d4,1b
 2:  moveq   #13,%d1
-    bsr.s   out1
+    bsr.w   out1
     moveq   #10,%d1
-    bsr.s   out1
+    bsr.w   out1
     movem.l %sp@+,%d0-%d1/%d4/%a1
     move.l  old_putmes,%sp@-
     rts
