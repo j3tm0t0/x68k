@@ -508,19 +508,7 @@ static void show_mode(int mode, int lo, int hi)
 static u8 *saved;
 static int saved_ok;
 static u16 saved_pal[4];
-static int saved_cx, saved_cy, saved_cw, saved_ch, saved_con;
-
-/* IOCS _B_CONSOL: D1.L=-1 で現在のコンソール範囲を D1 (x,y) と D2 (幅,高さ) に返す。
-   _CRTMOD はこれを全画面に戻すので、終了時に元に戻す (ファンクションキー行を避けた行数) */
-static int consol_get(void)
-{
-  register int d1 __asm__("d1") = -1;
-  register int d2 __asm__("d2") = 0;
-  register int d0 __asm__("d0") = 0x2E;
-  __asm__ __volatile__ ("trap #15" : "+d"(d0), "+d"(d1), "+d"(d2) : : "d3", "d4", "d5", "d6", "d7", "a0", "a1", "a2", "a3", "a4", "a5", "cc", "memory");
-  saved_cx = (d1 >> 16) & 0xFFFF; saved_cy = d1 & 0xFFFF; saved_cw = (d2 >> 16) & 0xFFFF; saved_ch = d2 & 0xFFFF;
-  return saved_cw > 0 && saved_ch > 0 && saved_cw < 200 && saved_ch < 100;
-}
+static int saved_fnk;
 
 static int saved_cur;
 
@@ -529,7 +517,7 @@ static void save_text(void)
   int p, y, s;
   saved = malloc((size_t)4 * SAVE_LINES * SAVE_BYTES);
   saved_cur = _iocs_b_locate(-1, -1);
-  saved_con = consol_get();
+  saved_fnk = _dos_c_fnkmod(-1);   /* ファンクションキー行の表示モード */
   for (p = 0; p < 4; p++) saved_pal[p] = (u16)_iocs_tpalet(p, -1);
   if (!saved) return;
   s = sup_enter();
@@ -540,7 +528,7 @@ static void save_text(void)
   saved_ok = 1;
 }
 
-static void restore_text(void)
+static void restore_text(int orig)
 {
   int p, y, s;
   set_text_palette();
@@ -552,7 +540,17 @@ static void restore_text(void)
         memcpy((void *)(TVRAM + (long)p * 0x20000 + (long)y * 128), saved + ((long)p * SAVE_LINES + y) * SAVE_BYTES, SAVE_BYTES);
     sup_leave(s);
   }
-  if (saved_con) _iocs_b_consol(saved_cx, saved_cy, saved_cw, saved_ch);
+  /* _CRTMOD はコンソールを全画面に戻す。ファンクションキー行の表示モードを設定し直すと、
+     その行の再描画とスクロール範囲 (最下行を除く) の設定もされる */
+  {
+    int fm = saved_fnk >= 0 && saved_fnk <= 3 ? saved_fnk : 0;
+    const struct group *g = orig >= 0 && orig <= MAXMODE ? info[orig].g : 0;
+    if (!g) g = info[16].g;
+    /* コンソール範囲は、元のモードの桁数と行数 (ファンクションキー行を出すときは最下行を除く) にする。
+       起動時に読んだ値は、前に動かしたものが残っていると狂っているので使わない */
+    _dos_c_fnkmod(fm);
+    _iocs_b_consol(0, 0, g->w / 8 - 1, g->h / 16 - 1 - (fm == 2 ? 0 : 1));   /* 終わりの桁・行 */
+  }
   _iocs_b_locate((saved_cur >> 16) & 0xFFFF, saved_cur & 0xFFFF);
   _iocs_b_curon();
 }
@@ -605,7 +603,7 @@ int main(int argc, char **argv)
     }
   }
   crtmod(orig < 0 ? 16 : orig);
-  restore_text();
+  restore_text(orig);
   if (orig_color >= 0) _iocs_b_color(orig_color);
   return 0;
 }
