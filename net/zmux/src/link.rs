@@ -173,7 +173,8 @@ pub struct Link {
     t_last_tx: Instant,
     t_last_rx: Instant,
     t_ack_due: Instant,
-    busy_until: Instant, // 線に書いたバイトを送り終える見込みの時刻 (送り直しの時計はここから数える)
+    busy_until: Instant, // 線に書いたバイトを送り終える見込みの時刻
+    t_done: Instant,     // 確認待ちのデータのフレームを送り終える見込みの時刻 (送り直しの時計はここから数える。KICK などでは動かさない)
     pub byte_time: Duration, // 1 バイトの時間 (10 ビット / 速さ)
     pub stats: Stats,
 }
@@ -213,6 +214,7 @@ impl Link {
             t_last_rx: now,
             t_ack_due: now,
             busy_until: now,
+            t_done: now,
             byte_time: Duration::from_micros(10_000_000 / 19200),
             stats: Stats::default(),
         }
@@ -249,7 +251,11 @@ impl Link {
 
     fn ctl(&mut self, op: u8, out: &mut Vec<u8>, now: Instant) {
         let d = [op, 1, (MAXLEN >> 8) as u8, MAXLEN as u8];
+        let keep = self.t_last_tx;
         self.frame(CH_CTL, 0, F_UNSEQ, &d, out, now);
+        if op == OP_KICK {
+            self.t_last_tx = keep; // KICK は生存確認の代わりにしない (確認の番号を運ばないので)
+        }
     }
 
     /// チャネルに送るデータを積む (RAW のチャネル 0 は呼ぶ側が直接線に書く)
@@ -267,6 +273,13 @@ impl Link {
     /// 番号を使わない制御のフレーム (KICK など) をすぐ線に出す
     pub fn ctl_now(&mut self, op: u8, out: &mut Vec<u8>, now: Instant) {
         self.ctl(op, out, now);
+    }
+
+    pub fn debug(&self) -> String {
+        let now = Instant::now();
+        format!("win {} base {} seq {} expect {} busy {} t_sent {:?} ago, t_done {:?} q {:?}", self.win.len(), self.tx_base, self.tx_seq, self.rx_expect, self.peer_busy,
+                now.saturating_duration_since(self.t_sent), self.t_done.saturating_duration_since(now),
+                self.queue.iter().map(|q| q.iter().map(|c| c.0.len()).sum::<usize>()).collect::<Vec<_>>())
     }
 
     pub fn pending(&self) -> usize {
@@ -307,6 +320,9 @@ impl Link {
 
     fn got(&mut self, f: Frame, out: &mut Vec<u8>, ev: &mut Vec<Event>, now: Instant) {
         self.stats.rx_frames += 1;
+        if self.up {
+            self.t_last_rx = now; // 番号の無いフレームも生きている印
+        }
         if f.flags & F_UNSEQ != 0 {
             if f.chan == CH_CTL && !f.data.is_empty() {
                 match f.data[0] {
@@ -376,7 +392,7 @@ impl Link {
             self.go_down(ev);
             return;
         }
-        let since_sent = if self.busy_until > self.t_sent { self.busy_until } else { self.t_sent };
+        let since_sent = if self.t_done > self.t_sent { self.t_done } else { self.t_sent };
         if !self.win.is_empty() && now > since_sent && now.duration_since(since_sent) >= T_RESEND {
             let frames: Vec<(u8, u8, Vec<u8>)> = self.win.iter().cloned().collect();
             let mut s = self.tx_base;
@@ -386,6 +402,7 @@ impl Link {
                 s = s.wrapping_add(1);
             }
             self.t_sent = now;
+            self.t_done = self.busy_until;
         }
         if !self.peer_busy {
             for ch in 0..16u8 {
@@ -415,6 +432,7 @@ impl Link {
                     }
                     let seq = self.tx_seq;
                     self.frame(ch, seq, fl, &d, out, now);
+                    self.t_done = self.busy_until;
                     self.win.push_back((ch, fl, d));
                     self.tx_seq = self.tx_seq.wrapping_add(1);
                 }

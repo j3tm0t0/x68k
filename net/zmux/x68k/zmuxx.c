@@ -93,7 +93,8 @@ int zmux_main(void)
   prc.buf_ptr = mbox;
   prc.your_id = 0xffff;
   {
-    int tid = _dos_open_pr("zmux", 2, (int)(ustack + sizeof ustack), (int)(sstack + sizeof sstack),
+    /* 回数 (2 番目) は Z-OS のペインのスレッドと同じ 10。2 だと Z-OS が動いている間に回ってくる間隔が 2 秒を超えた */
+    int tid = _dos_open_pr("zmux", 10, (int)(ustack + sizeof ustack), (int)(sstack + sizeof sstack),
                            0x2000, (int)thread, &prc, 0);
     static char msg[4];
     static struct dos_prcptr me;

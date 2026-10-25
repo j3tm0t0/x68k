@@ -127,6 +127,7 @@ pub struct Tsp {
     done_rx: mpsc::Receiver<Done>,
     pub log: bool,
     pub self_addr: u32, // この番地への接続は Pi 自身 (127.0.0.1) へ
+    pub res_max: usize, // 応答の上限 (0xA7 と分け合うときは小さくする)
 }
 
 fn g16(b: &[u8]) -> u16 { ((b[0] as u16) << 8) | b[1] as u16 }
@@ -155,7 +156,7 @@ impl Tsp {
         let pepoch = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u32).unwrap_or(1) | 1;
         Tsp {
             ps: Vec::new(), z2p: [None; NSLOT], q: [(0, 0, 0, 0); NQUERY], zepoch: None, pepoch, last_zseq: None,
-            last: Vec::new(), serial: 0, done_tx, done_rx, log: false, self_addr: u32::from(Ipv4Addr::new(192, 168, 68, 1)),
+            last: Vec::new(), serial: 0, done_tx, done_rx, log: false, self_addr: u32::from(Ipv4Addr::new(192, 168, 68, 1)), res_max: RES_MAX,
         }
     }
 
@@ -543,12 +544,13 @@ impl Tsp {
     }
 
     fn build(&mut self, zseq: u16) -> Vec<u8> {
+        let lim = self.res_max.min(RES_MAX);
         let mut r = vec![MARK, 1, 0, 0, (zseq >> 8) as u8, zseq as u8, 0, 0];
         r.extend_from_slice(&self.pepoch.to_be_bytes());
         let mut more = false;
-        fn put(r: &mut Vec<u8>, t: u8, slot: u8, gen: u8, body: &[u8]) -> bool {
+        fn put(r: &mut Vec<u8>, lim: usize, t: u8, slot: u8, gen: u8, body: &[u8]) -> bool {
             let sz = MHDR + ((body.len() + 1) & !1);
-            if r.len() + sz > RES_MAX { return false; }
+            if r.len() + sz > lim { return false; }
             r.extend_from_slice(&[t, slot, gen, 0, (body.len() >> 8) as u8, body.len() as u8]);
             r.extend_from_slice(body);
             if body.len() & 1 == 1 { r.push(0); }
@@ -568,7 +570,7 @@ impl Tsp {
                     b.extend_from_slice(&lp.to_be_bytes());
                     b.extend_from_slice(&ra.to_be_bytes());
                     b.extend_from_slice(&rp.to_be_bytes());
-                    if put(&mut r, E_ACCEPT, lz, lg, &b) {
+                    if put(&mut r, lim, E_ACCEPT, lz, lg, &b) {
                         self.ps[i].as_mut().unwrap().announce = false;
                     } else {
                         more = true;
@@ -586,18 +588,18 @@ impl Tsp {
                     b.extend_from_slice(&lp.to_be_bytes());
                     b.extend_from_slice(&ra.to_be_bytes());
                     b.extend_from_slice(&rp.to_be_bytes());
-                    if put(&mut r, E_CONNECTED, z, p.zgen, &b) { p.connected_ev = false; } else { more = true; }
+                    if put(&mut r, lim, E_CONNECTED, z, p.zgen, &b) { p.connected_ev = false; } else { more = true; }
                 }
             }
             if p.bound_ev {
-                if put(&mut r, E_BOUND, z, p.zgen, &p.lport.to_be_bytes()) { p.bound_ev = false; } else { more = true; }
+                if put(&mut r, lim, E_BOUND, z, p.zgen, &p.lport.to_be_bytes()) { p.bound_ev = false; } else { more = true; }
             }
         }
         for k in 0..NQUERY {
             if self.q[k].0 == 2 {
                 let mut b = vec![self.q[k].1, 0];
                 b.extend_from_slice(&self.q[k].2.to_be_bytes());
-                if put(&mut r, E_RESOLVED, k as u8, 0, &b) { self.q[k].0 = 0; } else { more = true; }
+                if put(&mut r, lim, E_RESOLVED, k as u8, 0, &b) { self.q[k].0 = 0; } else { more = true; }
             }
         }
         // 2. CREDIT
@@ -606,13 +608,13 @@ impl Tsp {
             if p.st != St::Est { continue; }
             let c = credit_of(p);
             if c != p.zcred {
-                if put(&mut r, E_CREDIT, z, p.zgen, &c.to_be_bytes()) { p.zcred = c; } else { more = true; }
+                if put(&mut r, lim, E_CREDIT, z, p.zgen, &c.to_be_bytes()) { p.zcred = c; } else { more = true; }
             }
         }
         // 3. データ (Z の窓の分)。ソケットで等分してから余りを詰める
         let ready = self.ps.iter().flatten().filter(|p| p.zslot.is_some() && p.zwin > 0 && (!p.rxq.is_empty() || !p.uq.is_empty())).count();
         if ready > 0 {
-            let share = ((RES_MAX - r.len()) / ready).max(512);
+            let share = ((lim - r.len()) / ready).max(512);
             for pass in 0..2 {
                 for p in self.ps.iter_mut().flatten() {
                     let Some(z) = p.zslot else { continue };
@@ -622,17 +624,17 @@ impl Tsp {
                         let mut b = u32::from(*a).to_be_bytes().to_vec();
                         b.extend_from_slice(&port.to_be_bytes());
                         b.extend_from_slice(d);
-                        if !put(&mut r, E_DGRAM, z, p.zgen, &b) { more = true; break; }
+                        if !put(&mut r, lim, E_DGRAM, z, p.zgen, &b) { more = true; break; }
                         p.zwin -= d.len() as u32 + 8;
                         p.uq.pop_front();
                     }
-                    if p.rxq.is_empty() || r.len() + MHDR + 1 >= RES_MAX { continue; }
-                    let mut n = p.rxq.len().min(p.zwin as usize).min(RES_MAX - r.len() - MHDR);
+                    if p.rxq.is_empty() || r.len() + MHDR + 1 >= lim { continue; }
+                    let mut n = p.rxq.len().min(p.zwin as usize).min(lim - r.len() - MHDR);
                     if pass == 0 { n = n.min(share); }
                     if n > 1 { n &= !1; }
                     if n == 0 { continue; }
                     let b: Vec<u8> = p.rxq.drain(..n).collect();
-                    put(&mut r, E_DATA, z, p.zgen, &b);
+                    put(&mut r, lim, E_DATA, z, p.zgen, &b);
                     p.zwin -= n as u32;
                 }
             }
@@ -644,10 +646,10 @@ impl Tsp {
             let Some(z) = p.zslot else { continue };
             if !p.rxq.is_empty() { if p.zwin > 0 { more = true; } continue; }
             if p.eof && !p.eof_sent && p.err.is_none() {
-                if put(&mut r, E_EOF, z, p.zgen, &[]) { p.eof_sent = true; } else { more = true; }
+                if put(&mut r, lim, E_EOF, z, p.zgen, &[]) { p.eof_sent = true; } else { more = true; }
             }
             if let Some(code) = p.err {
-                if put(&mut r, E_ERROR, z, p.zgen, &[code]) { gone.push(i); } else { more = true; }
+                if put(&mut r, lim, E_ERROR, z, p.zgen, &[code]) { gone.push(i); } else { more = true; }
             }
         }
         for i in gone { self.free(i); }

@@ -55,6 +55,7 @@
 #define T_ACK    5
 #define T_HELLO  500
 #define T_DEAD   1000
+#define T_KEEP   200            /* 送るものが無くても 2 秒に 1 回は確認だけのフレームを出す (Pi が 10 秒で切らないように) */
 
 #define VERSION  1
 
@@ -77,7 +78,7 @@ static uint8_t tx_seq;          /* 次に送るデータのフレームの番号
 static uint8_t tx_base;         /* 確認の来ていない最初の番号 */
 static uint8_t rx_expect;       /* 次に受けるはずの番号 */
 static int need_ack, nak_pending;
-static long t_sent, t_ack_due, t_last_rx, t_hello;
+static long t_sent, t_ack_due, t_last_rx, t_hello, t_last_tx;
 static int started;             /* zl_poll が一度でも呼ばれた */
 
 /* 確認の来ていないフレームの写し (送り直し用) */
@@ -97,7 +98,25 @@ static uint16_t crctab[256];
 static uint8_t rxbuf[RXBUF];
 
 /* 動作確認用 (メモリダンプで "ZMUXSTAT" の後ろ) */
-static struct { char tag[8]; uint32_t rxf, txf, bad, resend, rawin, rawout, ups, downs; } st = { "ZMUXSTAT" };
+static struct { char tag[8]; uint32_t rxf, txf, bad, resend, rawin, rawout, ups, downs, polls, maxgap, lastpoll, gapat, outbytes, outq, refused, win, lockfail, downat, lastrx_at_down, lockat, rxbytes, rxbytes_at_lastrx; } st = { "ZMUXSTAT" };
+
+/* 線の処理の排他。Human68k はスーパーバイザの間はスレッドを切り替えないが、Z-OS (zos.x) は自前の横取りで
+   スーパーバイザの途中でも切り替えるので、zmux.x のスレッドと npd.x のスレッドと AUX の読み書きが重なりうる
+   (重なると受信のバイトが二つに分かれてフレームが壊れた)。取れなければ呼んだ側は何もせずに戻る */
+static volatile uint8_t busy;
+static int lock(void)
+{
+  uint16_t sr;
+  int ok;
+  __asm__ volatile ("move.w %%sr,%0; ori.w #0x0700,%%sr" : "=d"(sr) :: "memory");
+  ok = !busy;
+  busy = 1;
+  if (!ok) st.lockfail++;
+  else st.lockat = _iocs_ontime().sec;
+  __asm__ volatile ("move.w %0,%%sr" :: "d"(sr) : "memory");
+  return ok;
+}
+static void unlock(void) { busy = 0; }
 
 static long now(void) { return _iocs_ontime().sec; }
 static long since(long t) { long d = now() - t; if (d < 0) d += 8640000; return d; }
@@ -154,8 +173,10 @@ static int emit(int chan, int seq, int flags, const uint8_t *d, int len)
   uint8_t h[6];
   uint16_t c;
   int i;
-  if (out_free() < 2 * (len + 8) + 4)
+  if (out_free() < 2 * (len + 8) + 4) {
+    st.refused++;
     return 0;
+  }
   h[0] = chan; h[1] = seq; h[2] = rx_expect - 1; h[3] = flags; h[4] = len >> 8; h[5] = len;
   c = crc(0xffff, h, 6);
   c = crc(c, d, len);
@@ -167,6 +188,7 @@ static int emit(int chan, int seq, int flags, const uint8_t *d, int len)
   out_put(DLE); out_put(ETX);
   st.txf++;
   need_ack = 0;
+  t_last_tx = now();
   return 1;
 }
 
@@ -194,8 +216,11 @@ static void go_up(void)
 
 static void go_raw(void)
 {
-  if (up)
+  if (up) {
     st.downs++;
+    st.downat = now();
+    st.lastrx_at_down = t_last_rx;
+  }
   up = 0;
   t_hello = now() - T_HELLO;    /* すぐ HELLO を送る */
 }
@@ -207,6 +232,8 @@ static void got_frame(void)
   uint8_t *d = fr + 6;
   int i;
   st.rxf++;
+  if (up)
+    t_last_rx = now();                  /* 番号の無いフレーム (KICK など) も生きている印にする */
   if (flags & F_UNSEQ) {
     if (chan == CH_CTL && len >= 1) {
       if (d[0] == OP_HELLO) {           /* Pi が始めた (または Pi が作り直した) */
@@ -226,6 +253,7 @@ static void got_frame(void)
   if (!up)
     return;
   t_last_rx = now();
+  st.rxbytes_at_lastrx = st.rxbytes;
   /* 確認: ack までを窓から外す */
   {
     uint8_t n = ack - tx_base + 1;      /* 外せる数 */
@@ -310,13 +338,23 @@ static void rx_byte(int c)
     pstate = 0;
 }
 
-/* 線を回す: 受けたものを処理し、送るものを作り、待ち行列を線に出す */
-static void zl_poll(void)
+/* 線を回す: 受けたものを処理し、送るものを作り、待ち行列を線に出す (lock を取ってから) */
+static void zl_poll_locked(void)
 {
   int n;
+  long t = now();
   started = 1;
-  for (n = 0; n < 512 && _iocs_isns232c(); n++)
+  if (st.polls && up) {                 /* 線を回す間隔の最大 (1/100 秒)。スレッドが回ってこない時間を調べる */
+    long g = t - (long)st.lastpoll;
+    if (g < 0) g += 8640000;
+    if ((uint32_t)g > st.maxgap) { st.maxgap = g; st.gapat = t; }
+  }
+  st.polls++;
+  st.lastpoll = t;
+  for (n = 0; n < 512 && _iocs_isns232c(); n++) {
     rx_byte(_iocs_inp232c() & 0xff);
+    st.rxbytes++;
+  }
   if (up) {
     if (since(t_last_rx) > T_DEAD) {
       go_raw();
@@ -356,8 +394,8 @@ static void zl_poll(void)
         emit(win[k].chan, tx_seq, win[k].flags, win[k].d, len);
         tx_seq++;
       }
-      /* 確認だけのフレーム */
-      if ((need_ack && since(t_ack_due) >= 1) || nak_pending) {
+      /* 確認だけのフレーム (生存の知らせも兼ねる) */
+      if ((need_ack && since(t_ack_due) >= 1) || nak_pending || since(t_last_tx) > T_KEEP) {
         emit(CH_CON, 0, (nak_pending ? F_NAK : 0) | (ring_free(&rxr) < MAXLEN ? F_BUSY : 0), 0, 0);
         nak_pending = 0;
       }
@@ -373,16 +411,43 @@ static void zl_poll(void)
   for (n = 0; n < 128 && oh != ot; n++) {
     _iocs_out232c(outq[ot]);
     ot = (ot + 1) & (OUTSZ - 1);
+    st.outbytes++;
   }
+  st.outq = (oh - ot) & (OUTSZ - 1);
+  st.win = (uint8_t)(tx_seq - tx_base) | (need_ack << 8) | (nak_pending << 9) | (up << 10) | (btx_len - btx_pos) << 16;
 }
+
+static void zl_poll(void)
+{
+  if (!lock())
+    return;
+  zl_poll_locked();
+  unlock();
+}
+
+static long zmux_call_locked(long cmd, long *a);
 
 long zmux_call(long cmd, long *a)
 {
+  long r;
+  if (cmd == 1)
+    return (long)&st;
+  if (cmd == 0) {
+    if (up) zl_poll();
+    return up;
+  }
+  if (!lock())                          /* ほかが線を回している: 呼んだ側はあとで呼び直す */
+    return cmd == 3 ? 0 : -1;
+  r = zmux_call_locked(cmd, a);
+  unlock();
+  return r;
+}
+
+static long zmux_call_locked(long cmd, long *a)
+{
   int i;
-  /* スレッドから: 素の文字の間は何もしない (rx.x などが IOCS で直接読み書きしているかもしれないので、横取りしない)。
-     素の文字の間の HELLO と受信は、COMMAND.X が AUX を読み書きするとき (dev_interrupt) に回す */
-  if (cmd == 0) { if (up) zl_poll(); return up; }
-  if (cmd == 1) return (long)&st;
+  /* (命令 0 = スレッドから線を回す、1 = 統計の場所 は zmux_call で。素の文字の間はスレッドは何もしない:
+     rx.x などが IOCS で直接読み書きしているかもしれないので、横取りしない) */
   if (cmd == 2) {                       /* 交換の要求を送る: a[0] = ブロック, a[1] = 長さ。0 = 受け付けた、-1 = 線が UP でない / 送りかけ */
     const uint8_t *b = (const uint8_t *)a[0];
     int n = a[1];
@@ -411,7 +476,7 @@ long zmux_call(long cmd, long *a)
     brx_len = 0;
     return n;
   }
-  if (cmd == 4) {                       /* KICK が来ていたか (読むと消える) */
+  if (cmd == 4) {                       /* KICK が来ていたか (読むと消える)。取れなかったら 0 (次に見る) */
     i = kick;
     kick = 0;
     return i;
