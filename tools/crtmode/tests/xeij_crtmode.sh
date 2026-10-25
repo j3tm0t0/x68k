@@ -21,6 +21,7 @@ LONG=012345678901234567890123456789012345678901234567890123456789012345678901234
   for i in $(seq 1 ${NLINES:-45}); do printf 'ECHO line %s\r\n' "$i"; done   # スクロール
   printf 'DIR A:\\\r\n'
   [ -n "${RESTORE:-}" ] && printf 'A:\\CRTMODE.X 16\r\nECHO back to 16\r\nDIR A:\\\r\n'   # RESTORE=1: crtmode 16 で戻す
+  [ -n "${EXTRA:-}" ] && printf '%s' "$EXTRA"   # EXTRA=$'A:\\CRTMODE.X -k off\r\n' など、最後に足す行 (CR LF 入り)
   printf 'COPY CONFIG.SYS DONE.TXT\r\n'
 } > "$B/AUTOEXEC.BAT"
 cd "$OUT"
