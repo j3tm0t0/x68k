@@ -150,7 +150,7 @@ Z-OS (x68k-zos) の sshd 用の見えないペイン (0xA7、net/npd/zss.h、x68
    XEiJ (RS-232C を TCP に) で、素の文字 → zmux → 素の文字の切り替え、バイトの破損で再送、COMMAND.X が `CTTY AUX` で動くこと。**済み** (`test/e2e.py`)。
 2. **チャネル 1 (TSP と 0xA5)**: npd.x の交換を差し替えた zmux.x、zmuxd の TSP / 暗号。rcmd.x / ssh.x が tis.x -p でつながること。**TSP は済み** (`npd.x -m`、`test/e2e_tsp.py`)。0xA5 はまだ。
 3. **セッション (0xA7)**: `zmux attach` で zosh。herdr の中で複数。**済み** (`test/e2e_zss.py`)。
-4. **キーの注入 (チャネル 3)** と keys.toml。
+4. **キーの注入 (チャネル 3)** と keys.toml。**済み** (`zmux key` / `zmux kbd`、`test/e2e_key.py`)。
 5. **リモートドライブ (チャネル 2)**: x68kserremote の要求の形を参考に。
 6. 実機 (Compact XVI) で 19200 / 38400 を測る。
 

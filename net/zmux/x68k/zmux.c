@@ -44,6 +44,7 @@
 
 #define CH_CON   0
 #define CH_NP    1              /* netpipe の交換 (npd.x -m) */
+#define CH_KEY   3              /* キー入力の注入 (Pi → X68000、2 バイトずつ: スキャンコード << 8 | 文字コード) */
 #define CH_CTL   15
 #define OP_HELLO     1
 #define OP_HELLO_ACK 2
@@ -95,6 +96,35 @@ static uint8_t fr[8 + MAXLEN];
 static int fpos, pstate;        /* pstate: 0 = 外, 1 = 外で DLE, 2 = 中, 3 = 中で DLE */
 
 static uint16_t crctab[256];
+
+/* 注入のキー (_B_KEYINP の戻り値と同じ形) */
+#define KEYQ 64
+static uint16_t keyq[KEYQ];
+static volatile uint8_t kh, kt;
+extern void *old_keysns, *old_keyinp;
+extern void hk_keysns(void), hk_keyinp(void);
+extern long call_orig(void *entry, long num);
+static void zl_poll(void);
+
+long key_peek(void)
+{
+  return kh != kt ? keyq[kt] : 0;
+}
+
+/* _B_KEYINP: 注入のキーがあれば返す。無ければ本物のキーが押されるか注入が来るまで待つ (待つ間も線を回す) */
+long key_get(void)
+{
+  for (;;) {
+    if (kh != kt) {
+      long c = keyq[kt];
+      kt = (kt + 1) % KEYQ;
+      return c;
+    }
+    if (call_orig(old_keysns, 1))
+      return call_orig(old_keyinp, 0);
+    zl_poll();
+  }
+}
 static uint8_t rxbuf[RXBUF];
 
 /* 動作確認用 (メモリダンプで "ZMUXSTAT" の後ろ) */
@@ -279,6 +309,13 @@ static void got_frame(void)
     }
     for (i = 0; i < len; i++)
       ring_put(&rxr, d[i]);
+  } else if (chan == CH_KEY) {
+    int room = (kt - kh - 1 + KEYQ) % KEYQ;
+    if (room < len / 2) { need_ack = 1; return; }   /* 一杯: 受け取らない (Pi は送り直す) */
+    for (i = 0; i + 1 < len; i += 2) {
+      keyq[kh] = (d[i] << 8) | d[i + 1];
+      kh = (kh + 1) % KEYQ;
+    }
   } else if (chan == CH_NP) {
     if (brx_done)                       /* 前の応答を npd.x がまだ取っていない: 受け取らない */
       { need_ack = 1; return; }
@@ -514,6 +551,8 @@ long dev_interrupt(struct req_header *req)
     st.tag[4] = 'S'; st.tag[5] = 'T'; st.tag[6] = 'A'; st.tag[7] = 'T';
     crcinit();
     grow_rsdrv();
+    old_keysns = (void *)_iocs_b_intvcs(0x101, hk_keysns);   /* IOCS _B_KEYSNS */
+    old_keyinp = (void *)_iocs_b_intvcs(0x100, hk_keyinp);   /* IOCS _B_KEYINP */
     t_hello = now() - T_HELLO;
     dos_print("zmux.sys 0.1: AUX (CTTY AUX) is multiplexed on RS-232C by zmux\r\n");
     req->addr = (uint8_t *)&_end;

@@ -38,6 +38,32 @@ interrupt_asm:
     movem.l %sp@+,%d0-%d7/%a0-%a6
     rts
 
+/* キー入力の注入 (チャネル 3): IOCS _B_KEYSNS ($01) / _B_KEYINP ($00) のフック。trap #15 の振り分けは
+ * d0 = 番号で jsr してくる (d0 以外は呼んだ側のまま)。注入のキーがあればそれを返し、無ければ元の処理へ */
+    .global hk_keysns, hk_keyinp, old_keysns, old_keyinp, call_orig
+hk_keysns:
+    movem.l %d1-%d7/%a0-%a6,%sp@-
+    jsr     key_peek            /* d0 = 注入のキー (無ければ 0) */
+    movem.l %sp@+,%d1-%d7/%a0-%a6
+    tst.l   %d0
+    bne.s   1f
+    moveq   #1,%d0
+    move.l  old_keysns,%sp@-
+1:  rts
+hk_keyinp:
+    movem.l %d1-%d7/%a0-%a6,%sp@-
+    jsr     key_get             /* 注入のキーか、本物のキーが来るまで待つ */
+    movem.l %sp@+,%d1-%d7/%a0-%a6
+    rts
+/* long call_orig(void *entry, long num): 元の IOCS の処理を d0 = 番号で呼ぶ */
+call_orig:
+    movem.l %d2-%d7/%a2-%a6,%sp@-
+    movea.l %sp@(48),%a0
+    move.l  %sp@(52),%d0
+    jsr     %a0@
+    movem.l %sp@+,%d2-%d7/%a2-%a6
+    rts
+
     .global dos_print
 dos_print:
     move.l  %sp@(4),%sp@-
@@ -48,4 +74,8 @@ dos_print:
     .data           /* .bss は初期化で 0 にするので、初期化中に使う reqheader は .data に置く */
     .even
 reqheader:
+    .long   0
+old_keysns:
+    .long   0
+old_keyinp:
     .long   0

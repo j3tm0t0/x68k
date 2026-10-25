@@ -12,6 +12,7 @@
 //! 切り離しやタブは herdr / tmux の役目。デーモンとはソケット ($ZMUX_SOCK、無ければ $XDG_RUNTIME_DIR/zmux.sock、
 //! それも無ければ /tmp/zmux-<uid>.sock) でつながる。
 
+mod keys;
 mod link;
 mod netpipe;
 mod tsp;
@@ -110,6 +111,7 @@ enum Msg {
     Client(u64, UnixStream, String),
     ClientIn(u64, Vec<u8>),
     ClientWinch(u64, u16, u16),
+    ClientKeys(u64, Vec<u8>),     // キー入力の注入 (2 バイトずつ)
     ClientGone(u64),
 }
 
@@ -204,12 +206,11 @@ fn daemon(args: &[String]) {
     let mut last_kick = Instant::now();
     let mut loop_t = Instant::now();
     let mut linelog = std::env::var("ZMUX_LINELOG").ok().and_then(|p| std::fs::File::create(p).ok());   // 試験用: 線に書いたバイト
-    let mut loop_what = "";
     loop {
         let m = rx.recv_timeout(Duration::from_millis(10));
         let now = Instant::now();
         if log && now.duration_since(loop_t) > Duration::from_millis(500) {
-            eprintln!("zmuxd: main loop stalled {:?} (last: {})", now.duration_since(loop_t), loop_what);
+            eprintln!("zmuxd: main loop stalled {:?}", now.duration_since(loop_t));
         }
         let mut out = Vec::new();
         let mut ev = Vec::new();
@@ -228,6 +229,7 @@ fn daemon(args: &[String]) {
                                 let _ = s.write_all(&v);
                                 clients.insert(id, (s, Att::Console));
                             }
+                            "kbd" => { /* キーの注入だけ (ClientKeys)。出力は流さない */ }
                             "new" => {
                                 if !np.zss.seen {
                                     let _ = s.write_all(b"zmux: Z-OS (zos.x) is not running on the X68000 (no 0xA7 records yet)\r\n");
@@ -247,6 +249,16 @@ fn daemon(args: &[String]) {
                                 }
                                 _ => { let _ = s.write_all(format!("zmux: no session {}\r\n", n).as_bytes()); }
                             },
+                        }
+                    }
+                    Some("key") => {
+                        // key XXXX XXXX ... (16 進の _B_KEYINP の値) を本体のキー入力に注入する
+                        let codes: Vec<u8> = words[1..].iter().filter_map(|w| u16::from_str_radix(w, 16).ok()).flat_map(|v| v.to_be_bytes()).collect();
+                        if link.up {
+                            link.send(link::CH_KEY, &codes);
+                            let _ = writeln!(s, "ok {}", codes.len() / 2);
+                        } else {
+                            let _ = writeln!(s, "zmux: line is not up (raw); key injection needs zmux.sys");
                         }
                     }
                     Some("kill") => {
@@ -280,6 +292,9 @@ fn daemon(args: &[String]) {
                     Some(Att::Sess(i)) => np.zss.input(i, &d),
                     None => {}
                 }
+            }
+            Ok(Msg::ClientKeys(_id, d)) => {
+                if link.up { link.send(link::CH_KEY, &d); }
             }
             Ok(Msg::ClientWinch(id, c, r)) => {
                 if let Some((_, Att::Sess(i))) = clients.get(&id) {
@@ -352,7 +367,6 @@ fn daemon(args: &[String]) {
                 clients.retain(|_, (s, a)| *a != Att::Console || s.write_all(&data).is_ok());
             }
         }
-        loop_what = "write line";
         let tw = Instant::now();
         if !out.is_empty() {
             if let Some(f) = linelog.as_mut() { let _ = f.write_all(&out); }
@@ -364,7 +378,6 @@ fn daemon(args: &[String]) {
             eprintln!("zmuxd: writing {} bytes to the line took {:?}", out.len(), tw.elapsed());
         }
         loop_t = Instant::now();
-        loop_what = "idle";
     }
 }
 
@@ -390,6 +403,7 @@ fn client_reader(id: u64, s: UnixStream, tx: mpsc::Sender<Msg>) {
         let m = match h[0] {
             0 => Msg::ClientIn(id, d),
             1 if n >= 4 => Msg::ClientWinch(id, ((d[0] as u16) << 8) | d[1] as u16, ((d[2] as u16) << 8) | d[3] as u16),
+            2 => Msg::ClientKeys(id, d),
             _ => continue,
         };
         if tx.send(m).is_err() { return; }
@@ -478,17 +492,84 @@ fn attach(args: &[String]) {
             }
         });
     }
+    // X68000 にしか無いキー: keys.toml の並びだけをキー入力の注入に変える (コンソールのとき。セッションはバイト列のまま)
+    let map = if what == "0" { keys::Map::load() } else { keys::Map(Vec::new()) };
     thread::spawn(move || {
         let mut b = [0u8; 4096];
         let mut si = std::io::stdin();
         loop {
             match si.read(&mut b) {
                 Ok(0) | Err(_) => { let _ = s.shutdown(std::net::Shutdown::Write); return; }
-                Ok(n) => { if send_frame(&mut s, 0, &b[..n]).is_err() { return; } }
+                Ok(n) => {
+                    for part in map.split(&b[..n]) {
+                        let r = match part {
+                            Ok(bytes) => send_frame(&mut s, 0, &bytes),
+                            Err(code) => send_frame(&mut s, 2, &code.to_be_bytes()),
+                        };
+                        if r.is_err() { return; }
+                    }
+                }
             }
         }
     });
     let _ = out.join();
+    drop(raw);
+}
+
+/// zmux key TEXT... / zmux key -n NAME... : 本体のキー入力に注入する (X68000 の画面で動いているプログラム向け。タブ 0 の COMMAND.X とは別)
+fn key_cmd(args: &[String]) {
+    let mut codes: Vec<u16> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "-n" {
+            for n in &args[i + 1..] {
+                match keys::by_name(n) {
+                    Some(sc) => codes.push((sc as u16) << 8),
+                    None => die(&format!("unknown key name {} (zmux keys)", n)),
+                }
+            }
+            break;
+        }
+        let t = args[i].replace("\\r", "\r").replace("\\n", "\r").replace("\\e", "\x1b");
+        codes.extend(keys::text_codes(t.as_bytes()));
+        i += 1;
+    }
+    let mut s = connect();
+    let words: Vec<String> = codes.iter().map(|c| format!("{:04x}", c)).collect();
+    s.write_all(format!("key {}\n", words.join(" ")).as_bytes()).unwrap();
+    let mut out = String::new();
+    let _ = std::io::BufRead::read_line(&mut std::io::BufReader::new(s), &mut out);
+    print!("{}", out);
+}
+
+/// zmux kbd : 打ったキーを全部、本体のキー入力に注入する (x68key と同じ使い方。画面は本体のモニタで見る)
+fn kbd() {
+    let map = keys::Map::load();
+    let mut s = connect();
+    s.write_all(b"attach kbd\n").unwrap();
+    let raw = RawMode::new(0);
+    eprint!("zmux kbd: keys go to the X68000 keyboard input (close the pane / Ctrl+\\ x3 to quit)\r\n");
+    let mut b = [0u8; 256];
+    let mut si = std::io::stdin();
+    let mut quit = 0;
+    loop {
+        let n = match si.read(&mut b) { Ok(0) | Err(_) => break, Ok(n) => n };
+        let mut codes = Vec::new();
+        for part in map.split(&b[..n]) {
+            match part {
+                Ok(bytes) => {
+                    for &c in &bytes {
+                        if c == 0x1c { quit += 1; } else { quit = 0; }
+                        codes.extend(keys::text_codes(&[c]));
+                    }
+                }
+                Err(code) => codes.push(code),
+            }
+        }
+        if quit >= 3 { break; }
+        let d: Vec<u8> = codes.iter().flat_map(|c| c.to_be_bytes()).collect();
+        if !d.is_empty() && send_frame(&mut s, 2, &d).is_err() { break; }
+    }
     drop(raw);
 }
 
@@ -520,8 +601,14 @@ fn main() {
         Some("attach") => attach(&argv[2..]),
         Some("status") => status(),
         Some("kill") => kill(&argv[2..]),
+        Some("key") => key_cmd(&argv[2..]),
+        Some("kbd") => kbd(),
+        Some("keys") => {
+            println!("X68000 key names: {}", keys::NAMES.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(" "));
+            println!("\ndefault ~/.config/zmux/keys.toml:\n{}", keys::DEFAULT_TOML);
+        }
         _ => {
-            eprintln!("usage: zmux daemon (--port DEV [--baud N] | --tcp HOST:PORT) [-v]\n       zmux attach [0 | N]   (0 = X68000 のコンソール、番号なし = 新しい zosh のセッション、N = セッション N につなぎ直す)\n       zmux kill N\n       zmux status");
+            eprintln!("usage: zmux daemon (--port DEV [--baud N] | --tcp HOST:PORT) [-v]\n       zmux attach [0 | N]   (0 = X68000 のコンソール、番号なし = 新しい zosh のセッション、N = セッション N につなぎ直す)\n       zmux kill N\n       zmux key TEXT | zmux key -n NAME...   (本体のキー入力に注入)\n       zmux kbd   (打ったキーを全部注入)\n       zmux keys  (キーの名前と keys.toml の既定)\n       zmux status");
             std::process::exit(2);
         }
     }

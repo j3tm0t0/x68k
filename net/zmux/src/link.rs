@@ -17,6 +17,7 @@ pub const F_END: u8 = 0x08; // チャネル 1: 交換のブロックの最後の
 
 pub const CH_CON: u8 = 0;
 pub const CH_NP: u8 = 1;
+pub const CH_KEY: u8 = 3;
 pub const CH_CTL: u8 = 15;
 pub const OP_HELLO: u8 = 1;
 pub const OP_HELLO_ACK: u8 = 2;
