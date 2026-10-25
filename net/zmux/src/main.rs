@@ -12,6 +12,7 @@
 //! 切り離しやタブは herdr / tmux の役目。デーモンとはソケット ($ZMUX_SOCK、無ければ $XDG_RUNTIME_DIR/zmux.sock、
 //! それも無ければ /tmp/zmux-<uid>.sock) でつながる。
 
+mod accel;
 mod keys;
 mod link;
 mod netpipe;
@@ -271,10 +272,10 @@ fn daemon(args: &[String]) {
                         let st = &link.stats;
                         let sess: Vec<String> = (0..zss::NSESS).filter(|&i| np.zss.s[i].used)
                             .map(|i| format!("{}:{}x{}{}", i + 1, np.zss.s[i].cols, np.zss.s[i].rows, if np.zss.s[i].accepted { "" } else { "(opening)" })).collect();
-                        let _ = writeln!(s, "line {} rx {} tx {} resent {} bad {} ups {} downs {} pending {} clients {} xchg {} tsp {} zos {} sessions [{}]",
+                        let _ = writeln!(s, "line {} rx {} tx {} resent {} bad {} ups {} downs {} pending {} clients {} xchg {} tsp {} accel {} zos {} sessions [{}]",
                                          if link.up { "up" } else { "raw" }, st.rx_frames, st.tx_frames, st.resent,
                                          link.parser.bad, st.ups, st.downs, link.pending(), clients.len(),
-                                         np.stats.xchg, np.stats.tsp, if np.zss.seen { "yes" } else { "no" }, sess.join(" "));
+                                         np.stats.xchg, np.stats.tsp, np.accel.count, if np.zss.seen { "yes" } else { "no" }, sess.join(" "));
                         if words.get(1) == Some(&"-v") { let _ = writeln!(s, "{}", link.debug()); }
                     }
                     _ => { let _ = writeln!(s, "unknown command"); }

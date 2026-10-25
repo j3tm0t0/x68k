@@ -16,6 +16,7 @@ PEER = int(os.environ.get("PEER", "26990"))
 RCMDPORT = int(os.environ.get("RCMDPORT", "2323"))
 ZBIN = os.environ.get("ZMUX", os.path.join(zm, "target", "release", "zmux"))
 RCMD_X = os.environ.get("RCMD_X", os.path.join(serial, "files-net", "RCMD.X"))
+SSH_X = os.environ.get("SSH_X", "/private/tmp/claude-501/-Users-moto-Dropbox-src-github-com-j3tm0t0-x68kcli/62eb2a4a-02b9-4915-890f-ce59a34745bb/scratchpad/release-v2026.10.23.1/dl/ssh.x")
 os.makedirs(run, exist_ok=True)
 sock = "/tmp/zmux-e2e-%d.sock" % os.getpid()
 env = dict(os.environ, ZMUX_SOCK=sock, XPORT=str(XPORT))
@@ -42,6 +43,8 @@ def mkfloppy():
         sh("cp", src, os.path.join(t, dst))
     if os.path.exists(RCMD_X):
         sh("cp", RCMD_X, os.path.join(t, "RCMD.X"))
+    if os.path.exists(SSH_X):
+        sh("cp", SSH_X, os.path.join(t, "SSH.X"))
     os.makedirs(os.path.join(t, "TMP"))
     open(os.path.join(t, "CONFIG.SYS"), "wb").write(
         b"FILES     = 30\r\nBUFFERS   = 20 1024\r\nPROCESS   = 16 10 19\r\n"
@@ -138,6 +141,29 @@ try:
         fails += not ok
         print("e2e: %-40s %s (%.1fs)\n    %s" % (line, "ok" if ok else "NG", time.time() - t1,
               "\n    ".join(l for l in out.replace("\r", "").splitlines()[1:] if l.strip() and l.strip() != "A>")))
+    if os.path.exists(SSH_X) and os.environ.get("SSHTEST", "1") == "1":
+        # ssh.x の鍵交換とホスト鍵の検証を Pi で計算させる (-oAccel=all、0xA5)。相手は Pi (Mac) の sshd (192.168.68.1 = 127.0.0.1:22)。
+        # ユーザ名は存在しないものにして、認証の手前 (鍵交換が済んだところ) まで見る
+        t1 = time.time()
+        a.send("ssh -y -y -oAccel=all zmuxnouser@192.168.68.1 true\r")
+        end = time.time() + 240
+        while time.time() < end and not any(k in a.buf for k in (b"assword", b"denied", b"No auth", b"A>", b"rror")):
+            time.sleep(0.2)
+        out = bytes(a.buf).decode("cp932", "replace")
+        acc = status().split(" accel ")[1].split()[0] if " accel " in status() else "?"
+        ok = any(k in out for k in ("assword", "denied", "No auth")) and acc not in ("0", "?")
+        fails += not ok
+        print("e2e: ssh.x -oAccel=all key exchange via zmux: %s (%.1fs, accel requests %s)\n    %s" % ("ok" if ok else "NG", time.time() - t1, acc, repr(out[-500:])))
+        for _ in range(3):
+            a.send("\x03")
+            time.sleep(1)
+            a.send("\r")
+            time.sleep(1)
+            if b"A>" in a.buf:
+                break
+        a.buf.clear() if hasattr(a.buf, "clear") else None
+        a.send("\r")
+        a.wait("A>", 30)
     if os.path.exists(RCMD_X):
         # rcmd.x を X68000 で待ち受けさせ、Pi (Mac) の 127.0.0.1:2323 からつなぐ (zmuxd が Pi で listen する)
         a.send("rcmd -s A:\\COMMAND.X\r")
