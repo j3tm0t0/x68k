@@ -502,74 +502,29 @@ static void show_mode(int mode, int lo, int hi)
   draw_label();
 }
 
-/* ---- 元の画面を取っておく ---- */
-#define SAVE_BYTES 96            /* 768 ドット */
-#define SAVE_LINES 512
-static u8 *saved;
-static int saved_ok;
+/* ---- 終了時にテキスト画面を戻す ----
+   元の文字は戻さず、画面を消してカーソルを左上に置く (カーソル位置は機種によって読めず、
+   0,0 に戻ると残った文字に重なった)。コンソール範囲とファンクションキー行は元のモードに合わせる */
 static u16 saved_pal[4];
 static int saved_fnk;
 
-static int saved_cur;
-
-/* 現在のカーソル位置。IOCS の作業領域 ($974 = 桁、$976 = 行) を読む。_B_LOCATE の問い合わせは
-   機種によって返り値が違うことがあったので、これを優先する */
-static int cursor_pos(void)
-{
-  int s = sup_enter(), c, r;
-  { volatile u16 *wa = (volatile u16 *)(long)0x974; c = wa[0]; r = wa[1]; }
-  sup_leave(s);
-  if (c < 200 && r < 100) return (c << 16) | r;
-  return _iocs_b_locate(-1, -1);
-}
-
 static void save_text(void)
 {
-  int p, y, s;
-  saved = malloc((size_t)4 * SAVE_LINES * SAVE_BYTES);
-  saved_cur = cursor_pos();
-  saved_fnk = _dos_c_fnkmod(-1);   /* ファンクションキー行の表示モード */
+  int p;
   for (p = 0; p < 4; p++) saved_pal[p] = (u16)_iocs_tpalet(p, -1);
-  if (!saved) return;
-  s = sup_enter();
-  for (p = 0; p < 4; p++)
-    for (y = 0; y < SAVE_LINES; y++)
-      memcpy(saved + ((long)p * SAVE_LINES + y) * SAVE_BYTES, (const void *)(TVRAM + (long)p * 0x20000 + (long)y * 128), SAVE_BYTES);
-  sup_leave(s);
-  saved_ok = 1;
+  saved_fnk = _dos_c_fnkmod(-1);   /* ファンクションキー行の表示モード */
 }
 
 static void restore_text(int orig)
 {
-  int p, y, s;
-  set_text_palette();
+  int p, fm = saved_fnk >= 0 && saved_fnk <= 3 ? saved_fnk : 0;
+  const struct group *g = orig >= 0 && orig <= MAXMODE ? info[orig].g : 0;
+  if (!g) g = info[16].g;
   for (p = 1; p < 4; p++) _iocs_tpalet(p, saved_pal[p]);
-  if (saved_ok) {
-    s = sup_enter();
-    for (p = 0; p < 4; p++)
-      for (y = 0; y < SAVE_LINES; y++)
-        memcpy((void *)(TVRAM + (long)p * 0x20000 + (long)y * 128), saved + ((long)p * SAVE_LINES + y) * SAVE_BYTES, SAVE_BYTES);
-    sup_leave(s);
-  }
-  /* _CRTMOD はコンソールを全画面に戻す。ファンクションキー行の表示モードを設定し直すと、
-     その行の再描画とスクロール範囲 (最下行を除く) の設定もされる */
-  {
-    int fm = saved_fnk >= 0 && saved_fnk <= 3 ? saved_fnk : 0;
-    const struct group *g = orig >= 0 && orig <= MAXMODE ? info[orig].g : 0;
-    if (!g) g = info[16].g;
-    /* コンソール範囲は、元のモードの桁数と行数 (ファンクションキー行を出すときは最下行を除く) にする。
-       起動時に読んだ値は、前に動かしたものが残っていると狂っているので使わない */
-    _dos_c_fnkmod(fm);
-    _iocs_b_consol(0, 0, g->w / 8 - 1, g->h / 16 - 1 - (fm == 2 ? 0 : 1));   /* 終わりの桁・行 */
-  }
-  {
-    /* 最初に 0,0 だった (前に動かしたものが残っていた) ときは、最下行 (ファンクションキー行の 1 行上) に置く。
-       画面を 0 行目から使い直すと、残っている文字に重なる */
-    const struct group *g = orig >= 0 && orig <= MAXMODE ? info[orig].g : 0;
-    int rows = (g ? g->h : 512) / 16 - (saved_fnk == 2 ? 0 : 1);
-    if (saved_cur == 0) _iocs_b_locate(0, rows - 1);
-    else _iocs_b_locate((saved_cur >> 16) & 0xFFFF, saved_cur & 0xFFFF);
-  }
+  _dos_c_fnkmod(fm);
+  _iocs_b_consol(0, 0, g->w / 8 - 1, g->h / 16 - 1 - (fm == 2 ? 0 : 1));   /* 終わりの桁・行 */
+  _iocs_b_clr_al();
+  _iocs_b_locate(0, 0);
   _iocs_b_curon();
 }
 
@@ -579,7 +534,6 @@ int main(int argc, char **argv)
   build_table();
   for (i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "-l")) { list_modes(); return 0; }
-    else if (!strcmp(argv[i], "-c")) { int p = cursor_pos(), q = _iocs_b_locate(-1, -1); printf("work area col %d row %d, B_LOCATE col %d row %d\n", p >> 16, p & 0xFFFF, (q >> 16) & 0xFFFF, q & 0xFFFF); return 0; }
     else if (!strcmp(argv[i], "-x")) ext = 1;
     else if (argv[i][0] >= '0' && argv[i][0] <= '9') mode = atoi(argv[i]);
     else { fprintf(stderr, "usage: modetest [-x] [-l] [mode]\n"); return 1; }
