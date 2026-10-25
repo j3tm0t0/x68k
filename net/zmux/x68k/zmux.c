@@ -40,12 +40,14 @@
 #define F_NAK    0x01
 #define F_BUSY   0x02
 #define F_UNSEQ  0x04           /* 番号を使わないフレーム (HELLO / HELLO_ACK / KICK) */
-#define F_END    0x08           /* チャネル 1: 交換のブロックの最後のフレーム */
+#define F_END    0x08           /* チャネル 3: 交換のブロックの最後のフレーム */
 
 #define CH_CON   0
-#define CH_NP    1              /* netpipe の交換 (npd.x -m) */
+#define CH_NP    3              /* netpipe の交換 (npd.x -m) */
 #define CH_RD    2              /* リモートドライブ (zrmt.sys の要求と応答、1 つずつ) */
-#define CH_KEY   3              /* キー入力の注入 (Pi → X68000、2 バイトずつ: スキャンコード << 8 | 文字コード) */
+#define CH_KEY   1              /* 入力の注入 (Pi → X68000)。メッセージ = 種類 1 バイト + 中身 (下の IN_*) */
+#define IN_KEY   1              /* キー: 2 バイト (スキャンコード, 文字コード) = _B_KEYINP の値の上位・下位 */
+#define IN_MOUSE 2              /* マウス (予定、まだ処理しない): dx(int8) dy(int8) buttons(bit0 左 bit1 右) の 3 バイト */
 #define CH_CTL   15
 #define OP_HELLO     1
 #define OP_HELLO_ACK 2
@@ -86,7 +88,7 @@ static int started;             /* zl_poll が一度でも呼ばれた */
 /* 確認の来ていないフレームの写し (送り直し用) */
 static struct { uint16_t len; uint8_t chan, flags; uint8_t d[MAXLEN]; } win[WIN];
 
-/* チャネル 1: npd.x の交換。要求のブロックを分けて送り、応答のブロックを組み立てる (同時に 1 つ) */
+/* チャネル 3: npd.x の交換。要求のブロックを分けて送り、応答のブロックを組み立てる (同時に 1 つ) */
 static uint8_t btx[BLK], brx[BLK];
 static int btx_len, btx_pos;            /* btx_pos < btx_len の間は送りかけ */
 static int brx_len, brx_done;
@@ -107,6 +109,7 @@ static uint16_t crctab[256];
 /* 注入のキー (_B_KEYINP の戻り値と同じ形) */
 #define KEYQ 64
 static uint16_t keyq[KEYQ];
+static uint8_t in_need, in_n, in_buf[4];   /* チャネル 1 のメッセージの途中経過 */
 static volatile uint8_t kh, kt;
 extern void *old_keysns, *old_keyinp;
 extern void hk_keysns(void), hk_keyinp(void);
@@ -319,12 +322,24 @@ static void got_frame(void)
     for (i = 0; i < len; i++)
       ring_put(&rxr, d[i]);
   } else if (chan == CH_KEY) {
+    /* メッセージの列 (フレームの切れ目とメッセージの切れ目は一致しなくてよい)。
+       種類の知らないメッセージは長さが分からないので、そのフレームの残りを捨てて次のフレームの頭から読み直す */
     int room = (kt - kh - 1 + KEYQ) % KEYQ;
-    if (room < len / 2) { need_ack = 1; return; }   /* 一杯: 受け取らない (Pi は送り直す) */
-    for (i = 0; i + 1 < len; i += 2) {
-      keyq[kh] = (d[i] << 8) | d[i + 1];
-      kh = (kh + 1) % KEYQ;
+    if (room < len / 3 + 1) { need_ack = 1; return; }   /* 一杯: 受け取らない (Pi は送り直す) */
+    for (i = 0; i < len; i++) {
+      if (in_need == 0) {               /* 種類のバイト */
+        if (d[i] == IN_KEY) in_need = 2;
+        else break;
+        in_n = 0;
+      } else {
+        in_buf[in_n++] = d[i];
+        if (--in_need == 0) {
+          keyq[kh] = (in_buf[0] << 8) | in_buf[1];
+          kh = (kh + 1) % KEYQ;
+        }
+      }
     }
+    if (i < len) { in_need = 0; in_n = 0; }
   } else if (chan == CH_NP) {
     if (brx_done)                       /* 前の応答を npd.x がまだ取っていない: 受け取らない */
       { need_ack = 1; return; }
@@ -426,7 +441,7 @@ static void zl_poll_locked(void)
         }
         t_sent = now();
       }
-      /* 新しいデータ: チャネル 0 (コンソール) を先に、次にチャネル 1 (交換のブロック)、次にチャネル 2 (リモートドライブ) */
+      /* 新しいデータ: チャネル 0 (コンソール) を先に、次にチャネル 3 (交換のブロック)、次にチャネル 2 (リモートドライブ) */
       while ((uint8_t)(tx_seq - tx_base) < WIN && out_free() > 2 * (MAXLEN + 8) + 4 &&
              (ring_count(&txr) > 0 || btx_pos < btx_len || rtx_pos < rtx_len)) {
         int k = tx_seq % WIN, len = 0;

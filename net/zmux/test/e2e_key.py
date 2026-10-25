@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""zmux のキー入力の注入 (チャネル 3) を XEiJ で試す。
+"""zmux のキー入力の注入 (チャネル 1) を XEiJ で試す。
   タブ 0 (zmux attach 0) で CTTY CON にして COMMAND.X を本体のキーボードに戻し、Pi から `zmux key 'ver\\r'` を注入して
   本体の画面 (テキスト VRAM) に ver の結果が出るか、`zmux key -n XF1` で落ちないか、`zmux key 'ctty aux\\r'` でタブ 0 に戻るかを見る
 usage: e2e_key.py RUNDIR"""
@@ -18,7 +18,7 @@ os.makedirs(run, exist_ok=True)
 
 def sh(*a, **k): return subprocess.run(a, check=True, **k)
 t = os.path.join(run, "tree"); sh("rm", "-rf", t); os.makedirs(os.path.join(t, "SYS"))
-xdf = "/Users/moto/Dropbox/src/github.com/j3tm0t0/x68kcli/tools/xeij/HUMAN302.XDF"
+xdf = os.environ.get("HUMAN_XDF", "/Users/moto/Dropbox/src/github.com/j3tm0t0/x68kcli/tools/xeij/HUMAN302.XDF")
 for src, dst in (("/HUMAN.SYS", "HUMAN.SYS"), ("/COMMAND.X", "COMMAND.X"), ("/SYS/RSDRV.SYS", "SYS/RSDRV.SYS")):
     sh(sys.executable, os.path.join(serial, "floppy", "xdfget.py"), xdf, src, os.path.join(t, dst))
 sh("cp", os.path.join(zm, "x68k", "zmux.sys"), os.path.join(t, "SYS", "ZMUX.SYS"))

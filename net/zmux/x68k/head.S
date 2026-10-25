@@ -38,7 +38,7 @@ interrupt_asm:
     movem.l %sp@+,%d0-%d7/%a0-%a6
     rts
 
-/* キー入力の注入 (チャネル 3): IOCS _B_KEYSNS ($01) / _B_KEYINP ($00) のフック。trap #15 の振り分けは
+/* キー入力の注入 (チャネル 1): IOCS _B_KEYSNS ($01) / _B_KEYINP ($00) のフック。trap #15 の振り分けは
  * d0 = 番号で jsr してくる (d0 以外は呼んだ側のまま)。注入のキーがあればそれを返し、無ければ元の処理へ */
     .global hk_keysns, hk_keyinp, old_keysns, old_keyinp, call_orig
 hk_keysns:

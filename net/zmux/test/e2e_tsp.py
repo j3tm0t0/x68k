@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""zmux の段階 2 (チャネル 1: tis.x -p のソケット要求を zmuxd が Pi のソケットで答える) を XEiJ で試す。
+"""zmux の段階 2 (チャネル 3: tis.x -p のソケット要求を zmuxd が Pi のソケットで答える) を XEiJ で試す。
   X68000: zmux.sys + npd.sys + zmux.x + tis.x -p + npd.x -m、コンソールは CTTY AUX (チャネル 0)
   Pi (Mac): zmuxd、tisnet_peer.py (127.0.0.1:PEER)
   チャネル 0 で tisnet.x を打ち、名前引き・往復・put・get (中身の照合) が PASS になるか。rcmd.x の待ち受けにも Pi からつなぐ

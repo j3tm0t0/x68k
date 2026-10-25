@@ -3,9 +3,9 @@
 zmux.sys / zmux.x / npd.x -m / zos.x / zrmt.sys の代わりに:
   - チャネル 15: 5 秒ごとに HELLO、HELLO_ACK で UP。KICK で 0xA7 の交換をする
   - チャネル 0: COMMAND.X の CTTY AUX のふり (プロンプト "A>"、ver / dir / echo、打った字をそのまま返す、Shift_JIS)
-  - チャネル 1: zos.x の 0xA7 (見えないペインの zosh) のふり: OPEN → ACCEPT、INPUT → そのまま OUTPUT に返す、"exit N" → EXIT
+  - チャネル 3: zos.x の 0xA7 (見えないペインの zosh) のふり: OPEN → ACCEPT、INPUT → そのまま OUTPUT に返す、"exit N" → EXIT
   - チャネル 2: zrmt.sys のふり。rd_xchg(要求) で 1 つ送って応答を待つ
-  - チャネル 3: 注入されたキーを記録する (keys)
+  - チャネル 1: 注入されたキーを記録する (keys)
 線の速さの真似: baud を与えると、1 バイト 10 ビット分の時間をかけて送る (受けも同じ時間で遅らせる)。
 e2e_fake.py から import して使う。単体でも動く: fakex68k.py [PORT] [BAUD]"""
 import socket, struct, sys, threading, time, collections
@@ -13,7 +13,7 @@ import socket, struct, sys, threading, time, collections
 DLE, STX, ETX = 0x10, 0x02, 0x03
 MAXLEN, WIN = 1024, 4
 F_NAK, F_BUSY, F_UNSEQ, F_END = 1, 2, 4, 8
-CH_CON, CH_NP, CH_RD, CH_KEY, CH_CTL = 0, 1, 2, 3, 15
+CH_CON, CH_KEY, CH_RD, CH_NP, CH_CTL = 0, 1, 2, 3, 15
 OP_HELLO, OP_HELLO_ACK, OP_BYE, OP_KICK = 1, 2, 3, 4
 
 
@@ -59,7 +59,8 @@ class Fake:
         self.nak = False
         self.con_in = bytearray()               # チャネル 0 で届いた字 (全部)
         self.con_line = bytearray()
-        self.keys = []                          # チャネル 3 で届いたキー
+        self.inbuf = bytearray()                # チャネル 1 の組み立て中のメッセージ
+        self.keys = []                          # チャネル 1 で届いたキー
         self.kick = False
         self.rd_res = None
         self.rd_buf = bytearray()
@@ -249,8 +250,17 @@ class Fake:
             for b in data:
                 self._con_key(b)
         elif chan == CH_KEY:
-            for i in range(0, len(data) - 1, 2):
-                self.keys.append((data[i] << 8) | data[i + 1])
+            # メッセージ: 種類 1 バイト (1 = キー: 2 バイト、2 = マウス: dx dy buttons の 3 バイト、予定)
+            self.inbuf += data
+            while self.inbuf:
+                t = self.inbuf[0]
+                n = {1: 3, 2: 4}.get(t)
+                if n is None:
+                    self.inbuf.clear(); break
+                if len(self.inbuf) < n: break
+                if t == 1:
+                    self.keys.append((self.inbuf[1] << 8) | self.inbuf[2])
+                del self.inbuf[:n]
         elif chan == CH_RD:
             self.rd_buf += data
             if flags & F_END:

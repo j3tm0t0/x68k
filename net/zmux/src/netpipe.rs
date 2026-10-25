@@ -1,4 +1,4 @@
-//! チャネル 1: npd.x -m の交換を受けて答える (Pico W の netpipe と同じ形、harness/picosim/netpipe.c)。
+//! チャネル 3: npd.x -m の交換を受けて答える (Pico W の netpipe と同じ形、harness/picosim/netpipe.c)。
 //!
 //!   要求: [magic "X6NR" 4][seq 4][len 2][rxmax 2][zip 4] + レコード [長さ 2][中身][偶数詰め物] の列
 //!   応答: [magic 4][seq 4][len 2][more 2][stat 4] + レコード [長さ 2][空き 14][中身][偶数詰め物] の列

@@ -13,7 +13,7 @@
  *   中身の先頭が ZSS_MARK (0xA7) のレコードは Pico の zsshd と zos.x (x68k-zos) の間の端末のセッション (zss.h)。
  *   TSP と同じ形で、zos.x が預けた入口 (ETD 命令 28) を ZSS_NP_OUT / ZSS_NP_IN で呼ぶ。
  *
- *   npd.x -m a.b.c.d    : SCSI ID 6 の代わりに zmux (net/zmux) の線のチャネル 1 で交換する (実機 X68000 と Raspberry Pi の
+ *   npd.x -m a.b.c.d    : SCSI ID 6 の代わりに zmux (net/zmux) の線のチャネル 3 で交換する (実機 X68000 と Raspberry Pi の
  *                         RS-232C)。zmux.sys と zmux.x が要る。送るものが無いときは交換せず、Pi の KICK で交換する
  *   npd.x [-iN] a.b.c.d : 常駐してスレッド "npd" を作る (2 回目以降は受信の受け入れを再開するだけ)。a.b.c.d は Z の
  *                         IP アドレス。xip.x の設定 (ifconfig / inetdconf) が済んでから起動する
@@ -350,7 +350,7 @@ static int ticks(void)
 
 static int ticks(void);
 
-/* -m: zmux の線のチャネル 1 で 1 回交換する。要求のブロック (見出し 16 + レコード) をそのまま送り、応答のブロックを待つ。
+/* -m: zmux の線のチャネル 3 で 1 回交換する。要求のブロック (見出し 16 + レコード) をそのまま送り、応答のブロックを待つ。
    戻り値は zxchg と同じ (受信データ長、失敗なら -1) */
 static int mxchg(int txlen, int *more)
 {
@@ -610,7 +610,7 @@ int npd_main(void)
     if (r < 0)
       _dos_print("npd: スレッドを起こせません\r\n");
   }
-  _dos_print(mux ? "npd: netpipe thread started (zmux line, channel 1)\r\n" : "npd: netpipe thread started (Pico W, SCSI ID 6, bridge)\r\n");
+  _dos_print(mux ? "npd: netpipe thread started (zmux line, channel 3)\r\n" : "npd: netpipe thread started (Pico W, SCSI ID 6, bridge)\r\n");
   {
     /* 常駐する大きさは BSS (スレッドのスタック) まで含める */
     extern char _end;

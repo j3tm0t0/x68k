@@ -185,7 +185,7 @@ try:
     n0 = len(fake.con_in)
     t.send("\x1b[97;5u")
     check("tui: CSI u sequence passes through verbatim", wait_until(lambda: fake.con_in[n0:] == b"\x1b[97;5u"), repr(bytes(fake.con_in[n0:])))
-    # keys.toml: F13 → XF1 の注入 (チャネル 3)
+    # keys.toml: F13 → XF1 の注入 (チャネル 1)
     t.send("\x1b[25~")
     check("tui: F13 on tab 0 becomes an XF1 key injection", wait_until(lambda: 0x5500 in fake.keys), repr(fake.keys))
     # Ctrl+X ? の説明。次のキーは閉じるだけで X68000 へは行かない

@@ -3,8 +3,8 @@
 X68000 (Compact XVI) と Raspberry Pi の間の RS-232C 1 本で、コンソール、TCP 通信 (TSP: TCP の処理を相手側に任せる tis.x -p の要求)、
 暗号アクセラレータ、Z-OS のシェル zosh のセッションを多重化する (#23)。設計は [DESIGN.md](DESIGN.md)。
 
-実装済みなのは、段階 1 (シリアル回線とコンソール)、段階 2 (チャネル 1 で `tis.x -p` のソケット要求と暗号の要求を Pi 側で処理)、
-段階 3 (Z-OS の画面に出ないペインで動く zosh に `zmux attach` でつなぐ)、キー入力の注入 (チャネル 3)、
+実装済みなのは、段階 1 (シリアル回線とコンソール)、段階 2 (チャネル 3 で `tis.x -p` のソケット要求と暗号の要求を Pi 側で処理)、
+段階 3 (Z-OS の画面に出ないペインで動く zosh に `zmux attach` でつなぐ)、キー入力の注入 (チャネル 1)、
 tmux のような画面 (`zmux`、下の「zmux の画面」)、リモートドライブ (チャネル 2、`zrmt.sys`、下の「リモートドライブ」)。
 画面とリモートドライブは、XEiJ の代わりに線の約束を話す「にせの X68000」(`test/fakex68k.py`) で端から端まで通した。XEiJ と実機ではまだ (下の「XEiJ での確認」)。
 
@@ -20,7 +20,7 @@ tmux のような画面 (`zmux`、下の「zmux の画面」)、リモートド�
 | `test/e2e_key.py` | XEiJ で、Pi から注入したキー (`zmux key`) が本体のキーボード入力として COMMAND.X に届くかを試す |
 | `test/e2e_zss.py` | XEiJ (主記憶 12MB) で、zos.x を起動して `zmux attach` で zosh のセッションを開き、echo、2 つ同時、exit の終了コードを試す |
 | `test/e2e_tsp.py` | XEiJ で、tis.x -p + npd.x -m のソケット (名前引き、往復、put / get の照合、rcmd.x の待ち受けと x68put) を試す |
-| `../npd/npd.c` | `npd.x -m`: SCSI ID 6 の代わりに zmux のチャネル 1 で交換する |
+| `../npd/npd.c` | `npd.x -m`: SCSI ID 6 の代わりに zmux のチャネル 3 で交換する |
 
 ## 使い方 (段階 1)
 
@@ -51,7 +51,7 @@ target/release/zmux attach 0                                    # herdr / tmux �
 
 ## 段階 2: TCP (TSP)
 
-X68000 で tis.x -p (TCP / UDP / DNS を相手に任せる xip.x の代わり) と `npd.x -m` を動かすと、ソケット操作の要求がチャネル 1 で zmuxd に届き、
+X68000 で tis.x -p (TCP / UDP / DNS を相手に任せる xip.x の代わり) と `npd.x -m` を動かすと、ソケット操作の要求がチャネル 3 で zmuxd に届き、
 zmuxd が Pi のソケットを使って処理する。シリアル回線には IP パケットも TCP の ACK も流れない。
 
 ```
@@ -119,7 +119,7 @@ target/release/zmux
 - マウス: クリックでペインとタブ (下の行) を選ぶ。ホイールでそのペインのスクロールバック (2000 行)。マウスの並びは X68000 へは送らない。
 - 下の 1 行: タブの一覧 (`1:zosh 1+1` は zosh のセッション 1 のタブにペインが 2 つ)、線の状態 (up / raw)、速さ、受けた・送ったフレームの数、送り直しの数。
   知らせ (「zosh 2 が終わった: ...」など) もここに 4 秒出る。
-- X68000 にしか無いキーは `~/.config/zmux/keys.toml` の対応表で (下の「キー」)。タブ 0 でだけキー入力の注入 (チャネル 3) になる。
+- X68000 にしか無いキーは `~/.config/zmux/keys.toml` の対応表で (下の「キー」)。タブ 0 でだけキー入力の注入 (チャネル 1) になる。
 - zosh が `exit` するとそのペインは消える。zos.x が居ないと (0xA7 の要求がまだ無いと) 新しいタブやペインは開けず、下の行に理由が出る。
 - **注意**: タブ 0 の COMMAND.X で zos.x を起動するので、zos.x が動いている間はタブ 0 が zos.x の終わりを待ちになる (本体の画面とキーボードは Z-OS のペインになる)。
   zosh のタブはそのまま使える。Z-OS の側で、AUX の COMMAND.X を見えないペインの 1 つとして持つ (または zos.x を常駐させて COMMAND.X に戻る) 形にすれば、
@@ -157,7 +157,7 @@ Pi            zmux daemon --port /dev/ttyUSB0 --drive ~/x68k-drive
 |---|---|
 | `zmux` のタブ 0 / `zmux attach 0` (COMMAND.X の CTTY AUX) | バイト列のまま COMMAND.X の AUX の入力へ。Ctrl+C なども 1 バイトとして届く (`zmux` では UTF-8 の字を Shift_JIS にする) |
 | `zmux attach` / `zmux attach N` (zosh のセッション) | バイト列のまま。zos.x がカーソルキーなどの並び (ESC [ A …) を X68000 のキーに直す |
-| `zmux kbd` / `zmux key` (本体のキーボード) | X68000 のキー入力 (IOCS _B_KEYINP / _B_KEYSNS) に注入する (チャネル 3)。本体の画面で動いているもの (CTTY CON の COMMAND.X、Z-OS の前面のペイン、X-BASIC など) に届く |
+| `zmux kbd` / `zmux key` (本体のキーボード) | X68000 のキー入力 (IOCS _B_KEYINP / _B_KEYSNS) に注入する (チャネル 1)。本体の画面で動いているもの (CTTY CON の COMMAND.X、Z-OS の前面のペイン、X-BASIC など) に届く |
 
 - 端末に無い X68000 のキー (XF1〜XF5、HELP、UNDO、かな、ローマ字、コード入力、記号入力、登録、OPT.1/2、BREAK、COPY、CLR、テンキーの ENTER) は、
   `~/.config/zmux/keys.toml` の対応表で、端末から来る並びに割り当てる。既定は普段使われない F13〜F20 と Shift+F1〜F9

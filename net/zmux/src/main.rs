@@ -222,7 +222,7 @@ fn daemon(args: &[String]) {
     let mut np = netpipe::Netpipe::new();
     np.tsp.log = log;
     np.zss.log = log;
-    let mut npblk: Vec<u8> = Vec::new();      // チャネル 1 で組み立て中の要求のブロック
+    let mut npblk: Vec<u8> = Vec::new();      // チャネル 3 で組み立て中の要求のブロック
     let mut rd = rdrive::Drive::new(drives);  // チャネル 2 のリモートドライブ (--drive が無ければ中身なし: 要求には「ドライブが無い」と答える)
     rd.log = log;
     let mut rdblk: Vec<u8> = Vec::new();      // チャネル 2 で組み立て中の要求
@@ -282,7 +282,7 @@ fn daemon(args: &[String]) {
                         // key XXXX XXXX ... (16 進の _B_KEYINP の値) を本体のキー入力に注入する
                         let codes: Vec<u8> = words[1..].iter().filter_map(|w| u16::from_str_radix(w, 16).ok()).flat_map(|v| v.to_be_bytes()).collect();
                         if link.up {
-                            link.send(link::CH_KEY, &codes);
+                            link.send(link::CH_KEY, &link::key_msgs(&codes));
                             let _ = writeln!(s, "ok {}", codes.len() / 2);
                         } else {
                             let _ = writeln!(s, "zmux: line is not up (raw); key injection needs zmux.sys");
@@ -354,7 +354,7 @@ fn daemon(args: &[String]) {
                 }
             }
             Ok(Msg::ClientKeys(_id, d)) => {
-                if link.up { link.send(link::CH_KEY, &d); }
+                if link.up { link.send(link::CH_KEY, &link::key_msgs(&d)); }
             }
             Ok(Msg::ClientWinch(id, c, r)) => {
                 if let Some((_, Att::Sess(i))) = clients.get(&id) {

@@ -5,9 +5,9 @@ RS-232C 1 本で、X68000 (Compact XVI) と Raspberry Pi の間に次を同時�
 | チャネル | 中身 | X68000 側 | Pi 側 (zmuxd) |
 |---|---|---|---|
 | 0 | コンソール (COMMAND.X の CTTY AUX の入出力) | zmux.sys の文字デバイス `AUX` (RSDRV.SYS の AUX の代わり) | Pi の zmux のタブ 0 (`zmux attach 0`) |
-| 1 | netpipe の交換 (X6NR レコード: TSP 0xA6、暗号 0xA5、端末のセッション 0xA7) | zmux.x (npd.x と同じ交換を、SCSI ID6 の代わりにこの線で) | TSP は普通のソケット、0xA5 は Rust の暗号ライブラリ、0xA7 は `zmux attach 1..4` |
+| 1 | 入力の注入 (キー。マウスは予定、下の「チャネル 1 のメッセージ」) | zmux.sys が IOCS _B_KEYINP / _B_KEYSNS を横取り | `zmux key`、`zmux attach` の対応表 |
 | 2 | リモートドライブ (x68kserremote の要求と応答の形) | zrmt.sys (Human68k のリモートドライブ、zmux.sys の入口で交換) | `--drive DIR` のディレクトリ (rdrive.rs) |
-| 3 | キー入力の注入 | zmux.sys が IOCS _B_KEYINP / _B_KEYSNS を横取り | `zmux key`、`zmux attach` の対応表 |
+| 3 | ネットワーク: netpipe の交換 (X6NR レコード: TSP 0xA6、暗号 0xA5、端末のセッション 0xA7) | zmux.x (npd.x と同じ交換を、SCSI ID6 の代わりにこの線で) | TSP は普通のソケット、0xA5 は Rust の暗号ライブラリ、0xA7 は `zmux attach 1..4` |
 | 15 | 線の管理 (あいさつ、速さの切り替え、統計、時刻) | zmux.x | zmuxd |
 
 画面のレイアウトは X68000 では持たない。X68000 は独立したバイト列 (コンソール 1 本と zosh のセッション N 本) を出すだけ。
@@ -59,11 +59,23 @@ flags bit1 は、X68000 側でチャネルの受け皿 (コンソールのリン
 
 ### 各チャネルの流量
 
-チャネル 0 と 3 はリング (各 2KB) の空きを、チャネル 1 は交換の単位 (下) で調整する。
+チャネル 0 と 1 はリング (各 2KB) の空きを、チャネル 3 は交換の単位 (下) で調整する。
 相手のリングが一杯のときは送らずに持っておき (線の窓とは別)、空いたら送る。チャネル 0 の X68000 から Pi への向きは、
 Pi に誰も attach していなくても zmuxd が読み捨てる (直近 64KB をスクロールバックとして持つ) ので、COMMAND.X が止まることはない。
 
-## 2. チャネル 1: netpipe の交換を線に載せる
+### チャネル 1 のメッセージ (入力の注入)
+
+Pi から X68000 への向きだけ。データは次のメッセージの列で、フレームの切れ目とメッセージの切れ目は一致しなくてよい。
+メッセージの先頭 1 バイトが種類で、種類ごとに中身の長さが決まっている。
+
+| 種類 | 中身 | 状態 |
+|---|---|---|
+| 1 (IN_KEY) | 2 バイト: スキャンコード、文字コード (IOCS _B_KEYINP の値の上位・下位) | 実装済み |
+| 2 (IN_MOUSE) | 3 バイト: dx (int8)、dy (int8)、buttons (bit0 = 左、bit1 = 右) | 予定。X68000 側はまだ処理しない |
+
+知らない種類のメッセージは長さが分からないので、X68000 はそのフレームの残りを捨てる。種類を足すときは Pi と X68000 の両方を同時に入れ替える。
+
+## 2. チャネル 3: netpipe の交換を線に載せる
 
 今の npd.x は SCSI ID6 の空き LBA に要求 (最大 4080 バイト) を書き、応答を読む「交換」を繰り返す。中身は長さ付きのレコードの列 (X6NR) で、
 先頭の 1 バイトで IPv4 (4x)、暗号 0xA5、TSP 0xA6、端末のセッション 0xA7 を分ける。tis.x -p と zos.x は npd.sys に入口を預け (ETD 25〜28)、
@@ -71,8 +83,8 @@ npd.x が交換のたびに呼ぶ。
 
 zmux.x はこの npd.x の交換の部分 (`zxchg`) だけを線に置き換えたものにする。
 
-- 要求: チャネル 1 のフレームの列で、X6NR の要求ブロックをそのまま送る (1024 バイトずつに分け、最後のフレームの flags に F_END)。
-- 応答: zmuxd が Pico と同じ規則で作った応答ブロックを、同じようにチャネル 1 で返す。
+- 要求: チャネル 3 のフレームの列で、X6NR の要求ブロックをそのまま送る (1024 バイトずつに分け、最後のフレームの flags に F_END)。
+- 応答: zmuxd が Pico と同じ規則で作った応答ブロックを、同じようにチャネル 3 で返す。
 - tis.x / zos.x / accel 側の記録形式 (tsp.h、zss.h、accel_proto.h) と、それぞれの止まって待つ確認 (zseq / zack) は変えない。
   線の再送とは二重になるが、どちらも安い。
 - 交換を始めるのは X68000 だけ (今と同じ)。ただし SCSI と違って線は空回りさせたくないので、送るものが無いときは交換しない。
@@ -98,7 +110,7 @@ TSP の CONNECT / LISTEN / DATA / RESOLVE は `std::net` と `TcpStream` / `UdpS
 - AUX の書き込みはチャネル 0 の送信リングへ、読み込みは受信リングから。zmux.x のスレッドと AUX の読み書きの両方が線を回す
   (どちらもスーパーバイザで動き、Human68k はその間スレッドを切り替えないので、同時には走らない)。
 - zmux の前 (素の文字) と後 (チャネル 0) で、Pi の `zmux attach 0` に見えるものは同じ (上の「素の文字とフレームの共存」)。
-- rx.x / sx.py は zmux の前の段階 (bootstrap) で使う。zmux が動いている間にファイルを送るのは、チャネル 1 の TSP (rcmd.x、x68put) か、
+- rx.x / sx.py は zmux の前の段階 (bootstrap) で使う。zmux が動いている間にファイルを送るのは、チャネル 3 の TSP (rcmd.x、x68put) か、
   後のリモートドライブ。
 
 コンソールの写し (contee.sys のように画面の出力を写す、段 1) は優先度を下げる (moto: リモートの画面は本体の画面と同じでなくてよい)。
@@ -145,7 +157,7 @@ Pi に ssh で入るか iTerm2 のペインで `zmux` を実行すると、tmux 
   つなぎ直しは `attach N`。配置は `layout set TEXT` で zmuxd に置き、起動時に `layout get` と `sessions` で残っているセッションにつなぎ直す。
   TEXT はタブごとに `;` 区切り、ペインの木は `(v A B)` (左右) / `(h A B)` (上下)、葉はセッションの番号 (0 = コンソール)。例: `0;(v 1 2)`。
 - **文字コード**: タブ 0 は Shift_JIS ⇔ UTF-8 (encoding_rs。途中で切れた字は次の読みまで持つ)。zosh のセッションは UTF-8 のまま。
-- **X68000 にしか無いキー**: `~/.config/zmux/keys.toml` の対応表 (端末から来る並び → X68000 のキー) で、チャネル 3 のキー入力の注入に変える
+- **X68000 にしか無いキー**: `~/.config/zmux/keys.toml` の対応表 (端末から来る並び → X68000 のキー) で、チャネル 1 のキー入力の注入に変える
   (実装済みの `keys.rs`)。既定は F13〜F20 と Shift+F1〜F9。
 - 今ある `zmux attach 0 / N`、`zmux key`、`zmux kbd` は試験と道具として残す。
 
@@ -163,10 +175,10 @@ Pi に ssh で入るか iTerm2 のペインで `zmux` を実行すると、tmux 
 
 1. **線 (チャネル 0 と 15)**: zmux.x (IOCS ポーリング、フレーム、Go-Back-N) + zmux.sys (AUX) と、zmuxd の線の部分 + `zmux attach 0`。
    XEiJ (RS-232C を TCP に) で、素の文字 → zmux → 素の文字の切り替え、バイトの破損で再送、COMMAND.X が `CTTY AUX` で動くこと。**済み** (`test/e2e.py`)。
-2. **チャネル 1 (TSP と 0xA5)**: npd.x の交換を差し替えた zmux.x、zmuxd の TSP / 暗号。rcmd.x / ssh.x が tis.x -p でつながること。**済み** (`npd.x -m`、TSP と 0xA5、`test/e2e_tsp.py`)。
+2. **チャネル 3 (TSP と 0xA5)**: npd.x の交換を差し替えた zmux.x、zmuxd の TSP / 暗号。rcmd.x / ssh.x が tis.x -p でつながること。**済み** (`npd.x -m`、TSP と 0xA5、`test/e2e_tsp.py`)。
 3. **セッション (0xA7)**: `zmux attach` で zosh。**済み** (`test/e2e_zss.py`)。
 3b. **tmux のような TUI** (§5)。**済み** (にせの X68000 `test/fakex68k.py` で `test/e2e_fake.py`。XEiJ の `test/e2e_tui.py` はまだ流していない)。
-4. **キーの注入 (チャネル 3)** と keys.toml。**済み** (`zmux key` / `zmux kbd`、`test/e2e_key.py`)。
+4. **キーの注入 (チャネル 1)** と keys.toml。**済み** (`zmux key` / `zmux kbd`、`test/e2e_key.py`)。
 5. **リモートドライブ (チャネル 2)**: x68kserremote の要求の形のまま (§4b)。**済み** (にせの X68000 で全命令と速さ。XEiJ の `test/e2e_rdrive.py` と実機はまだ)。
 6. 実機 (Compact XVI) で 19200 / 38400 を測る。
 

@@ -57,7 +57,7 @@ pub struct Map(pub Vec<(Vec<u8>, u16)>);
 
 /// 既定: 普段使われない F13〜F24 (xterm の並び) に、端末に無い X68000 のキーを割り当てる
 pub const DEFAULT_TOML: &str = r#"# ~/.config/zmux/keys.toml -- 端末から来る並び = X68000 のキー
-# zmux attach / zmux kbd は、この表にある並びだけを X68000 のキー入力の注入 (チャネル 3) に変える。ほかは全部そのまま送る。
+# zmux attach / zmux kbd は、この表にある並びだけを X68000 のキー入力の注入 (チャネル 1) に変える。ほかは全部そのまま送る。
 # 前置キー・ホットキーは無い。並びは "\e" (ESC) と "\xNN" が書ける。キーの名前は zmux keys で一覧
 [keys]
 "\e[25~" = "XF1"       # F13

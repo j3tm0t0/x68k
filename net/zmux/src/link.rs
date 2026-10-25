@@ -13,13 +13,25 @@ pub const WIN: u8 = 4;
 pub const F_NAK: u8 = 0x01;
 pub const F_BUSY: u8 = 0x02;
 pub const F_UNSEQ: u8 = 0x04;
-pub const F_END: u8 = 0x08; // チャネル 1: 交換のブロックの最後のフレーム
+pub const F_END: u8 = 0x08; // チャネル 3: 交換のブロックの最後のフレーム
 
 pub const CH_CON: u8 = 0;
-pub const CH_NP: u8 = 1;
+pub const CH_NP: u8 = 3;
 pub const CH_RD: u8 = 2;
-pub const CH_KEY: u8 = 3;
+pub const CH_KEY: u8 = 1;
 pub const CH_CTL: u8 = 15;
+
+/// チャネル 1 (入力の注入) のメッセージ = 種類 1 バイト + 中身。
+/// IN_KEY: 2 バイト (スキャンコード, 文字コード)。
+/// IN_MOUSE (予定、X68000 側はまだ処理しない): dx(i8) dy(i8) buttons(bit0 左, bit1 右) の 3 バイト。
+pub const IN_KEY: u8 = 1;
+#[allow(dead_code)]
+pub const IN_MOUSE: u8 = 2;
+
+/// 2 バイトずつのキー (_B_KEYINP の値の上位・下位) の列を、IN_KEY のメッセージの列にする
+pub fn key_msgs(codes: &[u8]) -> Vec<u8> {
+    codes.chunks_exact(2).flat_map(|c| [IN_KEY, c[0], c[1]]).collect()
+}
 pub const OP_HELLO: u8 = 1;
 pub const OP_HELLO_ACK: u8 = 2;
 pub const OP_BYE: u8 = 3;
@@ -227,7 +239,7 @@ impl Link {
         self.tx_base = 0;
         self.rx_expect = 0;
         // 送りかけのコンソールの文字はチャネルの待ち行列の先頭に戻す (作り直した線で送る)。
-        // チャネル 1 の交換は捨てる (X68000 の npd.x は時間切れで送り直す)
+        // チャネル 3 の交換は捨てる (X68000 の npd.x は時間切れで送り直す)
         while let Some((ch, fl, d)) = self.win.pop_back() {
             if ch == CH_CON {
                 self.queue[ch as usize].push_front((d, fl & F_END != 0));
@@ -268,7 +280,7 @@ impl Link {
         }
     }
 
-    /// ひとまとまりのブロック (チャネル 1 の交換の応答) を積む。最後のフレームに F_END が付く
+    /// ひとまとまりのブロック (チャネル 3 の交換の応答) を積む。最後のフレームに F_END が付く
     pub fn send_block(&mut self, chan: u8, data: &[u8]) {
         self.queue[chan as usize].push_back((data.to_vec(), true));
     }
