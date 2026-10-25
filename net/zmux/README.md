@@ -4,12 +4,18 @@ X68000 (Compact XVI) と Raspberry Pi の間の RS-232C 1 本で、コンソー�
 暗号アクセラレータ、Z-OS のシェル zosh のセッションを多重化する (#23)。設計は [DESIGN.md](DESIGN.md)。
 
 実装済みなのは、段階 1 (シリアル回線とコンソール)、段階 2 (チャネル 1 で `tis.x -p` のソケット要求と暗号の要求を Pi 側で処理)、
-段階 3 (Z-OS の画面に出ないペインで動く zosh に `zmux attach` でつなぐ)、キー入力の注入 (チャネル 3)。
+段階 3 (Z-OS の画面に出ないペインで動く zosh に `zmux attach` でつなぐ)、キー入力の注入 (チャネル 3)、
+tmux のような画面 (`zmux`、下の「zmux の画面」)、リモートドライブ (チャネル 2、`zrmt.sys`、下の「リモートドライブ」)。
+画面とリモートドライブは、XEiJ の代わりに線の約束を話す「にせの X68000」(`test/fakex68k.py`) で端から端まで通した。XEiJ と実機ではまだ (下の「XEiJ での確認」)。
 
 | 置き場所 | 中身 |
 |---|---|
-| `src/` | Pi 側 (Rust): `zmux daemon` (zmuxd)、`zmux attach 0`、`zmux status`。`link.rs` (シリアル回線のフレームと再送)、`netpipe.rs` (npd.x の要求・応答の転送)、`tsp.rs` (TSP の要求を Pi のソケットで処理)、`zss.rs` (zosh のセッション)、`accel.rs` (暗号)、`keys.rs` (キー) |
-| `x68k/` | X68000 側 (elf2x68k): `zmux.sys` (線の処理と、CTTY AUX をチャネル 0 にする AUX デバイス)、`zmux.x` (線を回すスレッド) |
+| `src/` | Pi 側 (Rust): `zmux daemon` (zmuxd)、`zmux` (画面)、`zmux attach 0`、`zmux status`。`link.rs` (シリアル回線のフレームと再送)、`netpipe.rs` (npd.x の要求・応答の転送)、`tsp.rs` (TSP の要求を Pi のソケットで処理)、`zss.rs` (zosh のセッション)、`accel.rs` (暗号)、`keys.rs` (キー)、`tui.rs` (tmux のような画面)、`rdrive.rs` (リモートドライブ) |
+| `x68k/` | X68000 側 (elf2x68k): `zmux.sys` (線の処理と、CTTY AUX をチャネル 0 にする AUX デバイス)、`zmux.x` (線を回すスレッド)、`zrmt.sys` (リモートドライブ) |
+| `test/fakex68k.py` | XEiJ の代わりの「にせの X68000」: 線の約束を TCP で話し、COMMAND.X・zos.x の 0xA7・zrmt.sys・キーの受け口のふりをする。19200bps の速さの真似もする |
+| `test/e2e_fake.py` | にせの X68000 で、線、`zmux attach 0`、リモートドライブの全命令と速さ、画面 (pty で `zmux` を動かし pyte で読む) を試す。XEiJ も elf2x68k も要らない |
+| `test/e2e_tui.py` | XEiJ で画面を試す (ZOS_X / ZOSH_X があれば zosh のタブも)。**まだ通していない** |
+| `test/e2e_rdrive.py` | XEiJ で zrmt.sys を試す (dir / type / copy の往復と照合 / md / del / rd / ren、copy の速さ)。**まだ通していない** |
 | `test/e2e.py` | XEiJ で、素の文字 → zmux → 素の文字の切り替えと、バイトを壊す線での再送を試す |
 | `test/e2e_key.py` | XEiJ で、Pi から注入したキー (`zmux key`) が本体のキーボード入力として COMMAND.X に届くかを試す |
 | `test/e2e_zss.py` | XEiJ (主記憶 12MB) で、zos.x を起動して `zmux attach` で zosh のセッションを開き、echo、2 つ同時、exit の終了コードを試す |
@@ -40,7 +46,7 @@ target/release/zmux attach 0                                    # herdr / tmux �
 - zmuxd が居ない間、X68000 の AUX は今までの CTTY AUX と同じ素の文字で、sx.py や普通の端末で使える。
   5 秒ごとに HELLO のフレーム (DLE STX で始まる 16 バイト) が混じる。
 - zmuxd を起動すると、X68000 からの HELLO に応答し、フレーム形式の通信に切り替わる。zmuxd を止めると、X68000 は 10 秒後にフレームを使わない文字のやり取りに戻る。
-- `zmux attach 0` にはホットキーも前置キーも無い。切り離しやタブは herdr / tmux で行う。
+- `zmux attach 0` にはホットキーも前置キーも無い (tmux の中で使うときの形)。タブとペインを zmux 自身で持つのが `zmux` (下の「zmux の画面」)。
   zmuxd はチャネル 0 の直近 64KB を持っていて、つないだときに流す。
 
 ## 段階 2: TCP (TSP)
@@ -83,21 +89,80 @@ zmux status            # 線、交換の数、セッションの一覧
   (本体の画面とキーボードは Z-OS のペインになる)。
 - 試験には、x68k-zos (非公開) の `sshz` ブランチの zos.x を使った (x68k-zos PR #45)。主記憶 2MB では zos.x が動かない (起動フロッピーの README)。
 
+## zmux の画面 (tmux のような使い方)
+
+Pi に ssh で入って `zmux` を打つと、tmux のような画面になる。zmuxd (サーバー) がシリアル回線とセッションを持ち、`zmux` (クライアント) は
+unix ソケットでつなぐだけなので、ssh が切れても zosh のセッションは残り、もう一度 `zmux` を打てばタブとペインの配置ごと戻る
+(配置は zmuxd に置いてある。`zmux attach 0` や `zmux attach N` も今までどおり使える)。
+
+```
+target/release/zmux daemon --port /dev/ttyUSB0 --baud 19200 --drive ~/x68k-drive &
+target/release/zmux
+```
+
+- タブ 0 はいつも COMMAND.X (CTTY AUX、チャネル 0)。ほかのタブとペインは zosh のセッション (0xA7)。
+  COMMAND.X の出力は Shift_JIS なので UTF-8 に変えて表示し、打った字は Shift_JIS にして送る。zosh は UTF-8 のまま (zos.x が変える)。
+- 前置キーは Ctrl+X。前置キーのあとに打つ 1 文字で動く。**ほかのホットキーは無い**。前置キーの組とマウスの並び以外のバイトは全部そのまま X68000 へ
+  (カーソルキー、Ctrl+C、CSI u などの拡張キーの並びも素通し)。
+
+| 前置キーのあと | 動き |
+|---|---|
+| `\|` | ペインを左右に割る (右が新しい zosh) |
+| `-` | ペインを上下に割る (下が新しい zosh) |
+| `c` | 新しいタブ (新しい zosh) |
+| `n` / `p` / `0`〜`9` | 次のタブ / 前のタブ / その番号のタブ |
+| `k` | 今のペインを閉じる (その zosh を終わらせる。タブ 0 は閉じられない) |
+| `d` | 切り離す (zosh のセッションと配置は zmuxd に残る) |
+| `?` | この一覧 (何かキーを押すと閉じる。そのキーは X68000 へ送らない) |
+| `Ctrl+X` | Ctrl+X そのものを X68000 へ送る |
+
+- マウス: クリックでペインとタブ (下の行) を選ぶ。ホイールでそのペインのスクロールバック (2000 行)。マウスの並びは X68000 へは送らない。
+- 下の 1 行: タブの一覧 (`1:zosh 1+1` は zosh のセッション 1 のタブにペインが 2 つ)、線の状態 (up / raw)、速さ、受けた・送ったフレームの数、送り直しの数。
+  知らせ (「zosh 2 が終わった: ...」など) もここに 4 秒出る。
+- X68000 にしか無いキーは `~/.config/zmux/keys.toml` の対応表で (下の「キー」)。タブ 0 でだけキー入力の注入 (チャネル 3) になる。
+- zosh が `exit` するとそのペインは消える。zos.x が居ないと (0xA7 の要求がまだ無いと) 新しいタブやペインは開けず、下の行に理由が出る。
+- **注意**: タブ 0 の COMMAND.X で zos.x を起動するので、zos.x が動いている間はタブ 0 が zos.x の終わりを待ちになる (本体の画面とキーボードは Z-OS のペインになる)。
+  zosh のタブはそのまま使える。Z-OS の側で、AUX の COMMAND.X を見えないペインの 1 つとして持つ (または zos.x を常駐させて COMMAND.X に戻る) 形にすれば、
+  タブ 0 が使い続けられる (Bravo への提案、HANDOFF.md)。
+
+## リモートドライブ (チャネル 2)
+
+X68000 の `zrmt.sys` が Human68k のリモートドライブ (ファイル単位の要求: CHDIR, FILES, OPEN, READ, WRITE …) を受け、要求 1 つをチャネル 2 の
+1 ブロックとして Pi に送り、zmuxd (`src/rdrive.rs`) が `--drive DIR` のディレクトリで答える。要求と応答の形は yunkya2 氏の
+[x68kserremote](https://github.com/yunkya2/x68kserremote) (MIT) の `x68kremote.h` のまま (この repo の x68kzremotedrv の B: も同じ形)。
+`zrmt.sys` は同じ作者の `driver/remotedrv.c` を、Pi 側は `service/remoteserv.c` を元にしている。
+
+```
+CONFIG.SYS    DEVICE = \SYS\RSDRV.SYS
+              DEVICE = \SYS\ZMUX.SYS
+              DEVICE = \SYS\ZRMT.SYS          (ZMUX.SYS の後ろ。/u2 でドライブ 2 つ、--drive を 2 つ)
+Pi            zmux daemon --port /dev/ttyUSB0 --drive ~/x68k-drive
+```
+
+- ドライブの文字は組み込んだ順 (フロッピー 2 台の次なら C:)。`zrmt.sys` が起動時に出す。
+- できること: dir、type、copy (両方向)、md / rd、del、ren、属性、日付、空き容量。ファイル名は Shift_JIS で 18 + 3 文字まで (Human68k の制限)。
+  Pi の名前が Shift_JIS にできないもの (絵文字など) や `/ \ , ; < = > [ ] |` を含むものは見えない。
+- READ / WRITE は 1 回 4084 バイト (フレーム 4 つ = 窓 1 つ分)。小さな読み書きは `zrmt.sys` の中の 4084 バイトのキャッシュ (2 つ) でまとめる。
+- zmuxd が居ない・線が UP でない・5 秒応答が無いときは「ドライブの準備ができていません」(0x1002) で失敗する (止まらない)。
+  時間切れのあとで遅れて来た応答は捨てる。要求は同時に 1 つ。
+- 速さ: にせの X68000 (19200bps の速さの真似、下) で READ 1.82 KB/s、WRITE 1.82 KB/s (40000 バイト)。線の見出し込みで 19200bps の上限は約 1.9 KB/s。
+  XEiJ / 実機では 68000 の処理とフロッピーの読み書きが乗るので、`test/e2e_rdrive.py` で測り直す。
+
 ## キー
 
 `zmux attach` にはホットキーも前置キーも自前のエスケープも無い。端末を raw にして、打ったバイトをそのまま送る。
-タブやペインの切り替え・切り離しは herdr / tmux の役目 (moto の設定では前置キー Ctrl+X)。
+タブやペインの切り替え・切り離しは `zmux` (上の画面) か herdr / tmux の役目 (前置キー Ctrl+X)。
 
 | 何に打つか | 届き方 |
 |---|---|
-| `zmux attach 0` (タブ 0、COMMAND.X の CTTY AUX) | バイト列のまま COMMAND.X の AUX の入力へ。Ctrl+C なども 1 バイトとして届く |
-| `zmux attach` / `zmux attach N` (zosh のセッション) | バイト列のまま。zos.x が矢印などの並び (ESC [ A …) を X68000 のキーに直す |
+| `zmux` のタブ 0 / `zmux attach 0` (COMMAND.X の CTTY AUX) | バイト列のまま COMMAND.X の AUX の入力へ。Ctrl+C なども 1 バイトとして届く (`zmux` では UTF-8 の字を Shift_JIS にする) |
+| `zmux attach` / `zmux attach N` (zosh のセッション) | バイト列のまま。zos.x がカーソルキーなどの並び (ESC [ A …) を X68000 のキーに直す |
 | `zmux kbd` / `zmux key` (本体のキーボード) | X68000 のキー入力 (IOCS _B_KEYINP / _B_KEYSNS) に注入する (チャネル 3)。本体の画面で動いているもの (CTTY CON の COMMAND.X、Z-OS の前面のペイン、X-BASIC など) に届く |
 
 - 端末に無い X68000 のキー (XF1〜XF5、HELP、UNDO、かな、ローマ字、コード入力、記号入力、登録、OPT.1/2、BREAK、COPY、CLR、テンキーの ENTER) は、
   `~/.config/zmux/keys.toml` の対応表で、端末から来る並びに割り当てる。既定は普段使われない F13〜F20 と Shift+F1〜F9
   (`zmux keys` で一覧と既定の表)。対応表にある並びだけがキー入力の注入になり、ほかは全部そのまま送る。
-  対応表を使うのは `zmux attach 0` と `zmux kbd`。zosh のセッションではバイト列のまま。
+  対応表を使うのは `zmux` のタブ 0、`zmux attach 0`、`zmux kbd`。zosh のセッションではバイト列のまま。
 - `zmux key 'dir\r'` は文字を X68000 のキー (スキャンコードと文字コード) にして注入する。`zmux key -n XF1 OPT1` はキーの名前で。
 - 注入はキーボードの行列を直接読むプログラム (ゲームなど) には届かない。zmux.sys が横取りするのは IOCS の _B_KEYINP / _B_KEYSNS だけ
   (DOS のキー入力もここを通る)。
@@ -143,6 +208,33 @@ X68000 の送信は _OSNS232C を見て出すと 1 回に 1 バイトしか出�
 - **再送タイマー**: Pi は再送タイマーの起点を「回線の送信が終わる見込みの時刻」にしていたので、KICK を送るたびに期限が延び、
   確認応答の来ないフレームを再送しなくなっていた。確認待ちのデータのフレームを送り終える時刻を起点にした。
 - zmux.x のスレッドの回数を 2 から 10 に (Z-OS が動いている間、回ってくる間隔が 2.6 秒になっていた)。
+
+### にせの X68000 での確認 (`test/e2e_fake.py`、XEiJ なし)
+
+`test/fakex68k.py` は XEiJ の RS-232C と同じ TCP の口で zmux の線の約束 (HELLO、フレーム、CRC、Go-Back-N) を話し、COMMAND.X (ver / dir / echo)、
+zos.x の 0xA7 (OPEN → ACCEPT、打った字をそのまま返す、exit)、zrmt.sys (要求を送って応答を待つ)、キーの受け口のふりをする。
+1 バイト 10 ビット分の時間をかけて、19200bps の速さも真似る。`python3 test/e2e_fake.py` (pyte が要る: `python3 -m pip install pyte`)。
+この機械 (クラウドの Linux) で 36 項目すべて通った:
+
+| 項目 | 結果 |
+|---|---|
+| HELLO → UP、`zmux attach 0` で ver | 通る |
+| リモートドライブ: init / mkdir / create + write / open + read の照合 / files + nfiles / rename / delete / rmdir / dskfre | 全部通る |
+| リモートドライブの速さ (40000 バイト、19200bps の真似) | WRITE 1.82 KB/s、READ 1.82 KB/s |
+| `zmux`: 下の行にタブ 0、ver が届いて描かれる、CSI u の並びがそのまま届く、F13 → XF1 の注入 | 通る |
+| `zmux`: Ctrl+X ? (次のキーは送らない)、Ctrl+X Ctrl+X で Ctrl+X そのもの | 通る |
+| `zmux`: Ctrl+X c / \| / - で zosh のタブとペイン、Ctrl+X k で閉じてセッションも消える、マウスでタブを選ぶ | 通る |
+| `zmux`: Ctrl+X d で切り離し → 配置 `0;(v 1 2)` が zmuxd に残る → つなぎ直すとタブとスクロールバックが戻る | 通る |
+| `zmux`: zosh の exit でペインが消え、下の行に知らせ。40x10 の端末でも動く | 通る |
+
+見つけて直したこと: 描く回数を抑える判定でイベントの待ち行列を 1 つ読み捨てていて、つなぎ直したペインの直前の出力がときどき消えた。
+
+### XEiJ での確認はまだ (`test/e2e_tui.py`、`test/e2e_rdrive.py`)
+
+この回の作業環境 (クラウド) からは XEiJ (stdkmd.net)、Human68k (retropc.net)、elf2x68k のリリース、JDK 26 が取れず、XEiJ での試験ができなかった。
+`zmux.sys` / `zrmt.sys` のコンパイルは、Ubuntu の `gcc-m68k-linux-gnu` に elf2x68k のヘッダとリンカスクリプトと `elf2x68k.py` を合わせたもので確かめただけ
+(HANDOFF.md)。**`x68k/` の `zmux.sys` / `zmux.x` は前の版のまま**なので、XEiJ や実機で使う前に elf2x68k で `make -C x68k` する (`zrmt.sys` もそこでできる)。
+2 つの試験は raspi5 か Mac で流す: `XEIJ_TOOLS=… HUMAN_XDF=… python3 test/e2e_rdrive.py RUN`、`ZOS_X=… ZOSH_X=… python3 test/e2e_tui.py RUN`。
 
 ### キーの注入 (`test/e2e_key.py`)
 

@@ -44,6 +44,7 @@
 
 #define CH_CON   0
 #define CH_NP    1              /* netpipe の交換 (npd.x -m) */
+#define CH_RD    2              /* リモートドライブ (zrmt.sys の要求と応答、1 つずつ) */
 #define CH_KEY   3              /* キー入力の注入 (Pi → X68000、2 バイトずつ: スキャンコード << 8 | 文字コード) */
 #define CH_CTL   15
 #define OP_HELLO     1
@@ -90,6 +91,12 @@ static uint8_t btx[BLK], brx[BLK];
 static int btx_len, btx_pos;            /* btx_pos < btx_len の間は送りかけ */
 static int brx_len, brx_done;
 static int kick;
+
+/* チャネル 2: zrmt.sys の要求 1 つを送り、応答 1 つを zrmt.sys の場所 (rd_buf) に組み立てる (同時に 1 つ) */
+static uint8_t rtx[BLK];
+static int rtx_len, rtx_pos;
+static uint8_t *rd_buf;
+static int rd_max, rd_len, rd_done;
 
 /* 受けているフレーム */
 static uint8_t fr[8 + MAXLEN];
@@ -234,6 +241,8 @@ static void reset_link(void)
   need_ack = nak_pending = 0;
   btx_len = btx_pos = 0;                /* 送りかけの交換は捨てる (npd.x は時間切れで送り直す) */
   brx_len = brx_done = 0;
+  rtx_len = rtx_pos = 0;                /* リモートドライブの要求も (zrmt.sys は時間切れで失敗を返す) */
+  rd_done = 0;
 }
 
 static void go_up(void)
@@ -263,7 +272,7 @@ static void got_frame(void)
   int i;
   st.rxf++;
   if (up)
-    t_last_rx = now();                  /* 番号の無いフレーム (KICK など) も生きている印にする */
+    t_last_rx = now();                  /* 番号の無いフレーム (KICK など) も、相手が生きていることの知らせにする */
   if (flags & F_UNSEQ) {
     if (chan == CH_CTL && len >= 1) {
       if (d[0] == OP_HELLO) {           /* Pi が始めた (または Pi が作り直した) */
@@ -326,6 +335,13 @@ static void got_frame(void)
     }
     if (flags & F_END)
       brx_done = 1;
+  } else if (chan == CH_RD) {
+    if (rd_buf && !rd_done) {           /* 待っている応答。待っていなければ (時間切れの後の遅い応答) 捨てる */
+      for (i = 0; i < len && rd_len < rd_max; i++)
+        rd_buf[rd_len++] = d[i];
+      if (flags & F_END)
+        rd_done = 1;
+    }
   }
   rx_expect++;
   need_ack = 1;
@@ -410,20 +426,25 @@ static void zl_poll_locked(void)
         }
         t_sent = now();
       }
-      /* 新しいデータ: チャネル 0 (コンソール) を先に、次にチャネル 1 (交換のブロック) */
+      /* 新しいデータ: チャネル 0 (コンソール) を先に、次にチャネル 1 (交換のブロック)、次にチャネル 2 (リモートドライブ) */
       while ((uint8_t)(tx_seq - tx_base) < WIN && out_free() > 2 * (MAXLEN + 8) + 4 &&
-             (ring_count(&txr) > 0 || btx_pos < btx_len)) {
+             (ring_count(&txr) > 0 || btx_pos < btx_len || rtx_pos < rtx_len)) {
         int k = tx_seq % WIN, len = 0;
         if (ring_count(&txr) > 0) {
           while (len < MAXLEN && ring_count(&txr) > 0)
             win[k].d[len++] = ring_get(&txr);
           win[k].chan = CH_CON;
           win[k].flags = 0;
-        } else {
+        } else if (btx_pos < btx_len) {
           while (len < MAXLEN && btx_pos < btx_len)
             win[k].d[len++] = btx[btx_pos++];
           win[k].chan = CH_NP;
           win[k].flags = btx_pos == btx_len ? F_END : 0;
+        } else {
+          while (len < MAXLEN && rtx_pos < rtx_len)
+            win[k].d[len++] = rtx[rtx_pos++];
+          win[k].chan = CH_RD;
+          win[k].flags = rtx_pos == rtx_len ? F_END : 0;
         }
         win[k].len = len;
         if (tx_base == tx_seq)
@@ -472,6 +493,37 @@ long zmux_call(long cmd, long *a)
   if (cmd == 0) {
     if (up) zl_poll();
     return up;
+  }
+  if (cmd == 6) {
+    /* リモートドライブの交換 (zrmt.sys から): a[0] = 要求, a[1] = 長さ, a[2] = 応答を書く先, a[3] = その最大, a[4] = 待つ時間 (1/100 秒)。
+       戻り値 = 応答の長さ。-1 = 線が UP でない、-2 = ほかの要求を送りかけ、-3 = 時間切れ (応答は捨てる)。
+       応答が来るまでここで線を回す (AUX の読み込みと同じ。lock は回すたびに取って放すので、ほかのスレッドも線を回せる) */
+    const uint8_t *b = (const uint8_t *)a[0];
+    long t0;
+    int n = a[1], i, r;
+    while (!lock())
+      ;
+    if (!up) { unlock(); return -1; }
+    if (rtx_pos < rtx_len || n > BLK || n <= 0) { unlock(); return -2; }
+    for (i = 0; i < n; i++)
+      rtx[i] = b[i];
+    rtx_len = n;
+    rtx_pos = 0;
+    rd_buf = (uint8_t *)a[2];
+    rd_max = a[3];
+    rd_len = 0;
+    rd_done = 0;
+    unlock();
+    t0 = now();
+    for (;;) {
+      if (lock()) {
+        zl_poll_locked();
+        if (rd_done) { r = rd_len; rd_buf = 0; unlock(); return r; }
+        if (!up) { rd_buf = 0; unlock(); return -1; }
+        if (since(t0) > a[4]) { rd_buf = 0; rtx_len = rtx_pos = 0; unlock(); return -3; }
+        unlock();
+      }
+    }
   }
   if (!lock())                          /* ほかが線を回している: 呼んだ側はあとで呼び直す */
     return cmd == 3 ? 0 : -1;
@@ -554,7 +606,7 @@ long dev_interrupt(struct req_header *req)
     old_keysns = (void *)_iocs_b_intvcs(0x101, hk_keysns);   /* IOCS _B_KEYSNS */
     old_keyinp = (void *)_iocs_b_intvcs(0x100, hk_keyinp);   /* IOCS _B_KEYINP */
     t_hello = now() - T_HELLO;
-    dos_print("zmux.sys 0.1: AUX (CTTY AUX) is multiplexed on RS-232C by zmux\r\n");
+    dos_print("zmux.sys 0.2: AUX (CTTY AUX) is multiplexed on RS-232C by zmux\r\n");
     req->addr = (uint8_t *)&_end;
     return 0;
   }

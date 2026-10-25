@@ -17,6 +17,7 @@ pub const F_END: u8 = 0x08; // チャネル 1: 交換のブロックの最後の
 
 pub const CH_CON: u8 = 0;
 pub const CH_NP: u8 = 1;
+pub const CH_RD: u8 = 2;
 pub const CH_KEY: u8 = 3;
 pub const CH_CTL: u8 = 15;
 pub const OP_HELLO: u8 = 1;
@@ -233,6 +234,7 @@ impl Link {
             }
         }
         self.queue[CH_NP as usize].clear();
+        self.queue[CH_RD as usize].clear(); // リモートドライブの応答も捨てる (zrmt.sys は時間切れで送り直す)
         self.need_ack = false;
         self.nak = false;
         self.peer_busy = false;
@@ -322,7 +324,7 @@ impl Link {
     fn got(&mut self, f: Frame, out: &mut Vec<u8>, ev: &mut Vec<Event>, now: Instant) {
         self.stats.rx_frames += 1;
         if self.up {
-            self.t_last_rx = now; // 番号の無いフレームも生きている印
+            self.t_last_rx = now; // 番号の無いフレームも、相手が生きていることの知らせにする
         }
         if f.flags & F_UNSEQ != 0 {
             if f.chan == CH_CTL && !f.data.is_empty() {

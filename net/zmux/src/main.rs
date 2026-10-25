@@ -2,20 +2,24 @@
 //!
 //!   zmux daemon --port /dev/ttyUSB0 [--baud 19200]   線を持つ (zmuxd)。`zmuxd` という名前で起動しても同じ
 //!   zmux daemon --tcp 127.0.0.1:54368                 XEiJ の RS-232C (TCP/IP ⇔ AUX) につなぐ
+//!   zmux daemon ... --drive DIR [--drive DIR2]        チャネル 2 のリモートドライブ (zrmt.sys) の中身にする Pi のディレクトリ
+//!   zmux                                              tmux のような画面 (tui.rs)。タブ 0 = COMMAND.X、ほかは zosh のセッション
 //!   zmux attach 0                                     チャネル 0 (COMMAND.X のコンソール、タブ 0) の端末
 //!   zmux attach                                       新しい zosh のセッション (X68000 で zos.x が動いているとき)
 //!   zmux attach N                                     セッション N (1〜4) につなぎ直す
 //!   zmux kill N                                       セッション N を閉じる
 //!   zmux status                                       線の状態
 //!
-//! attach にはホットキーも前置キーも無い。端末を raw にして、届いたバイトをそのまま送る。
-//! 切り離しやタブは herdr / tmux の役目。デーモンとはソケット ($ZMUX_SOCK、無ければ $XDG_RUNTIME_DIR/zmux.sock、
+//! attach にはホットキーも前置キーも無い。端末を raw にして、届いたバイトをそのまま送る (`zmux` の TUI は前置キー Ctrl+X だけ持つ)。
+//! デーモンとはソケット ($ZMUX_SOCK、無ければ $XDG_RUNTIME_DIR/zmux.sock、
 //! それも無ければ /tmp/zmux-<uid>.sock) でつながる。
 
 mod accel;
 mod keys;
 mod link;
 mod netpipe;
+mod rdrive;
+mod tui;
 mod tsp;
 mod zss;
 
@@ -128,10 +132,12 @@ fn daemon(args: &[String]) {
     let mut tcp = None;
     let mut baud = 19200u32;
     let mut log = false;
+    let mut drives: Vec<std::path::PathBuf> = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--port" => { port_path = args.get(i + 1).cloned(); i += 1; }
+            "--drive" => { drives.push(std::path::PathBuf::from(args.get(i + 1).cloned().unwrap_or_else(|| die("--drive DIR")))); i += 1; }
             "--tcp" => { tcp = args.get(i + 1).cloned(); i += 1; }
             "--baud" => { baud = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or_else(|| die("--baud")); i += 1; }
             "-v" => log = true,
@@ -203,6 +209,10 @@ fn daemon(args: &[String]) {
     np.tsp.log = log;
     np.zss.log = log;
     let mut npblk: Vec<u8> = Vec::new();      // チャネル 1 で組み立て中の要求のブロック
+    let mut rd = rdrive::Drive::new(drives);  // チャネル 2 のリモートドライブ (--drive が無ければ中身なし: 要求には「ドライブが無い」と答える)
+    rd.log = log;
+    let mut rdblk: Vec<u8> = Vec::new();      // チャネル 2 で組み立て中の要求
+    let mut layout = String::new();           // TUI のタブとペインの配置 (クライアントが置き、つなぎ直したときに取る)
     let mut last_xchg = Instant::now();
     let mut last_kick = Instant::now();
     let mut loop_t = Instant::now();
@@ -234,11 +244,13 @@ fn daemon(args: &[String]) {
                             "new" => {
                                 if !np.zss.seen {
                                     let _ = s.write_all(b"zmux: Z-OS (zos.x) is not running on the X68000 (no 0xA7 records yet)\r\n");
+                                    let _ = s.shutdown(std::net::Shutdown::Both);
                                 } else if let Some(i) = np.zss.open(num(2, 80), num(3, 24), words.get(4).copied().unwrap_or("xterm-256color")) {
                                     let _ = s.write_all(format!("\x1b]2;zmux {}\x07", i + 1).as_bytes());
                                     clients.insert(id, (s, Att::Sess(i)));
                                 } else {
                                     let _ = s.write_all(b"zmux: no free session (4 in use; zmux kill N)\r\n");
+                                    let _ = s.shutdown(std::net::Shutdown::Both);
                                 }
                             }
                             n => match n.parse::<usize>() {
@@ -248,7 +260,7 @@ fn daemon(args: &[String]) {
                                     np.zss.winch(k - 1, num(2, 80), num(3, 24));
                                     clients.insert(id, (s, Att::Sess(k - 1)));
                                 }
-                                _ => { let _ = s.write_all(format!("zmux: no session {}\r\n", n).as_bytes()); }
+                                _ => { let _ = s.write_all(format!("zmux: no session {}\r\n", n).as_bytes()); let _ = s.shutdown(std::net::Shutdown::Both); }
                             },
                         }
                     }
@@ -268,14 +280,45 @@ fn daemon(args: &[String]) {
                         }
                         let _ = writeln!(s, "ok");
                     }
+                    Some("open") => {
+                        // TUI 用: open COLS ROWS TERM → 最初に "ok N" か "err 理由" を 1 行、以後は attach N と同じ
+                        if !np.zss.seen {
+                            let _ = writeln!(s, "err Z-OS (zos.x) が X68000 で動いていない (0xA7 の要求がまだ無い)");
+                            let _ = s.shutdown(std::net::Shutdown::Both);
+                        } else if let Some(i) = np.zss.open(num(1, 80), num(2, 24), words.get(3).copied().unwrap_or("xterm-256color")) {
+                            let _ = writeln!(s, "ok {}", i + 1);
+                            clients.insert(id, (s, Att::Sess(i)));
+                        } else {
+                            let _ = writeln!(s, "err 空いているセッションが無い (4 つ使用中。zmux kill N)");
+                            let _ = s.shutdown(std::net::Shutdown::Both);
+                        }
+                    }
+                    Some("sessions") => {
+                        // TUI 用: 使っているセッションの番号 (1〜4) を 1 行で
+                        let v: Vec<String> = (0..zss::NSESS).filter(|&i| np.zss.s[i].used).map(|i| (i + 1).to_string()).collect();
+                        let _ = writeln!(s, "{}", v.join(" "));
+                    }
+                    Some("layout") => {
+                        // layout get → 置いてある配置を 1 行で。layout set TEXT → 置く (TUI が切り離すときに)
+                        if let Some(rest) = cmd.strip_prefix("layout set ") {
+                            layout = rest.trim().to_string();
+                            let _ = writeln!(s, "ok");
+                        } else if cmd.trim() == "layout clear" {
+                            layout.clear();
+                            let _ = writeln!(s, "ok");
+                        } else {
+                            let _ = writeln!(s, "{}", layout);
+                        }
+                    }
                     Some("status") => {
                         let st = &link.stats;
                         let sess: Vec<String> = (0..zss::NSESS).filter(|&i| np.zss.s[i].used)
                             .map(|i| format!("{}:{}x{}{}", i + 1, np.zss.s[i].cols, np.zss.s[i].rows, if np.zss.s[i].accepted { "" } else { "(opening)" })).collect();
-                        let _ = writeln!(s, "line {} rx {} tx {} resent {} bad {} ups {} downs {} pending {} clients {} xchg {} tsp {} accel {} zos {} sessions [{}]",
+                        let _ = writeln!(s, "line {} rx {} tx {} resent {} bad {} ups {} downs {} pending {} clients {} xchg {} tsp {} accel {} zos {} sessions [{}] baud {} drive {} rdreq {} rdrd {} rdwr {}",
                                          if link.up { "up" } else { "raw" }, st.rx_frames, st.tx_frames, st.resent,
                                          link.parser.bad, st.ups, st.downs, link.pending(), clients.len(),
-                                         np.stats.xchg, np.stats.tsp, np.accel.count, if np.zss.seen { "yes" } else { "no" }, sess.join(" "));
+                                         np.stats.xchg, np.stats.tsp, np.accel.count, if np.zss.seen { "yes" } else { "no" }, sess.join(" "),
+                                         baud, rd.roots.len(), rd.stats.requests, rd.stats.read_bytes, rd.stats.write_bytes);
                         if words.get(1) == Some(&"-v") { let _ = writeln!(s, "{}", link.debug()); }
                     }
                     _ => { let _ = writeln!(s, "unknown command"); }
@@ -354,9 +397,21 @@ fn daemon(args: &[String]) {
                     }
                     continue;
                 }
+                link::Event::Data(rdrive::CH_RD, d, fl) => {
+                    // チャネル 2: zrmt.sys の要求 1 つ (最後のフレームに F_END) → 応答 1 つ
+                    rdblk.extend_from_slice(&d);
+                    if fl & link::F_END != 0 {
+                        let res = rd.exchange(&rdblk);
+                        if !res.is_empty() {
+                            link.send_block(rdrive::CH_RD, &res);
+                        }
+                        rdblk.clear();
+                    }
+                    continue;
+                }
                 link::Event::Data(ch, d, _) => (ch, d),
-                link::Event::Up => { if log { eprintln!("zmuxd: line up"); } continue; }
-                link::Event::Down => { if log { eprintln!("zmuxd: line down (raw)"); } npblk.clear(); continue; }
+                link::Event::Up => { if log { eprintln!("zmuxd: line up"); } rdblk.clear(); continue; }
+                link::Event::Down => { if log { eprintln!("zmuxd: line down (raw)"); } npblk.clear(); rdblk.clear(); continue; }
             };
             if ch == 0 {
                 scroll.extend(data.iter().copied());
@@ -598,6 +653,7 @@ fn main() {
         return daemon(&argv[1..]);
     }
     match argv.get(1).map(|s| s.as_str()) {
+        None => tui::run(),
         Some("daemon") => daemon(&argv[2..]),
         Some("attach") => attach(&argv[2..]),
         Some("status") => status(),
@@ -609,7 +665,7 @@ fn main() {
             println!("\ndefault ~/.config/zmux/keys.toml:\n{}", keys::DEFAULT_TOML);
         }
         _ => {
-            eprintln!("usage: zmux daemon (--port DEV [--baud N] | --tcp HOST:PORT) [-v]\n       zmux attach [0 | N]   (0 = X68000 のコンソール、番号なし = 新しい zosh のセッション、N = セッション N につなぎ直す)\n       zmux kill N\n       zmux key TEXT | zmux key -n NAME...   (本体のキー入力に注入)\n       zmux kbd   (打ったキーを全部注入)\n       zmux keys  (キーの名前と keys.toml の既定)\n       zmux status");
+            eprintln!("usage: zmux            (tmux のような画面。前置キー Ctrl+X のあと | - c n p 0-9 k d ?)\n       zmux daemon (--port DEV [--baud N] | --tcp HOST:PORT) [--drive DIR] [-v]\n       zmux attach [0 | N]   (0 = X68000 のコンソール、番号なし = 新しい zosh のセッション、N = セッション N につなぎ直す)\n       zmux kill N\n       zmux key TEXT | zmux key -n NAME...   (本体のキー入力に注入)\n       zmux kbd   (打ったキーを全部注入)\n       zmux keys  (キーの名前と keys.toml の既定)\n       zmux status");
             std::process::exit(2);
         }
     }
