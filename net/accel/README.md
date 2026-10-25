@@ -79,7 +79,7 @@ python3 -m venv venv && venv/bin/pip install cryptography    # 1 回 (venv は .
 ./run.sh 300
 ```
 
-1. `accel_tool roundtrip 2000`: 記録形式の組み立て / 解読の往復 (乱数の op・id・長さ、短い要求・長すぎるメッセージ・違う印の拒否)
+1. `accel_tool roundtrip 2000`: 記録形式の組み立て / 解読の往復 (乱数の op・id・長さ、短い要求・長すぎるメッセージ・違うフラグの要求の拒否)
 2. `npdsim`: 本物の `npdsys.c` を include して ETD 19〜24 の状態遷移 (預ける → 19 で IP の後ろに載る → Pico 側 (`accel_compute`) →
    応答を 23 で受ける → 21 で取る → 取り消し後の遅れた応答は捨てる → 1124 バイトの要求は入らなければ次回)
 3. `difftest.py`: `accel_ops.c` + Monocypher を記録形式ごと通して、RFC 7748 5.2 / 6.1、RFC 8032 7.1 TEST 1〜3、乱数 (X25519 300 回、
@@ -111,7 +111,7 @@ python3 -m venv venv && venv/bin/pip install cryptography    # 1 回 (venv は .
 
 ハンドシェイク 1 回分 (keygen + shared + verify + sign) で 0.4〜0.6 秒 + 交換の往復 (npd.x の問い合わせ間隔 60ms × 数回)。
 Z 側の 59 秒に対して 100 倍以上速い。Monocypher の公式ページに M0+ の数字は無く、M0+ は 64 ビット積を持たないので
-`fe_mul` の i64 積が効いている。`acceltest.x` が実測 (Pico の µs と Z の往復) を出す。
+`fe_mul` の i64 積が有効。`acceltest.x` が実測 (Pico の µs と Z の往復) を出す。
 
 ## 実機でやること (まだ何もしていない)
 

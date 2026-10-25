@@ -42,7 +42,7 @@ make -C harness/picosim FW=<x68kzremotedrv の clone>/driver RS=<clone>/x68kserr
 | tests/bootwaittest.py | 控え無し → NOT READY → 控えを作る、待ち IPL の WAIT / READY / CHANGED、設定画面の vdbuf、ID 1 のデータの HDS、`-Q` | FW (driver/ のバイナリ) |
 | tests/remotetest.py | B: の com_cmdres を再現: 古いドライバの 16 / 24 ページの後の破損、rpage ドライバで正しい (ソフトリセット後の読み直しも) | RS、FW |
 | tests/tsptest.sh | XEiJ で tis.x -p: 名前・echo・put・get・sink・src・ssh.x (鍵交換まで)・Mac からの rcmd.x (net/tistack/tests/xeij_pico.sh を回す) | lwIP、XEiJ (x68kcli/tools)、GUI のセッション |
-| tests/pzltest.py | Pico Z Loader (x68k-zos pzl) の SCSI の層をホストで: NOT READY → 開く、LBA 2 = hdsboot、0x20 = 本物の 2、READ CAPACITY、書き込み、ID 6 の顔、無い HDS1 は 03/11 | PZL の作業木 (PZLREPO)、elf2x68k |
+| tests/pzltest.py | Pico Z Loader (x68k-zos pzl) の SCSI の層をホストで: NOT READY → 開く、LBA 2 = hdsboot、0x20 = 本物の 2、READ CAPACITY、書き込み、ID 6 の署名・分割表・scsiremote.bin、無い HDS1 は 03/11 | PZL の作業木 (PZLREPO)、elf2x68k |
 | tests/tsptest.sh (PZL=1, make test-tsppzl) | 同じ tis.x -p の試験を Pico Z Loader の TSP (pzl の src/tsp、TSP_ENABLE=1) で | 上 + PZL |
 | tests/zostest.sh | XEiJ で zos.x (ksh 2 ペイン)、右で ssh.x -t を TSP 越しに試験用 sshd へ、テキスト VRAM で判定 | 上 + x68k-zos の kernel/ (ZOS=)、x68kcli の stage、ssh.x |
 
@@ -63,7 +63,7 @@ FW / RS の部品の作り方は README の「ファームの部品」 (本家 3
 - 速度は MPU のクロックに比例 (Z の 68000 が律速): 10MHz で Z→Mac 29KB/s、16.7MHz で 50KB/s (実機の Z 並み)、33.3MHz で 100KB/s
 - SPC の道の書き込みの失敗は Z に伝わらない。メールボックスは READ(10)/WRITE(10) だけ。USB の遅れは `-d` で足さないと 0
 - XEiJ の ROM からの起動は Z の Linux 越しの起動とは違う (キャッシュと先読みの真似で近づけているだけ)。ファームの 5 秒の保留は無い
-- Wi-Fi / SMB は時間で進むだけ。設定画面の SSID などは効かない (HDS0 のパスだけ)
+- Wi-Fi / SMB は時間で進むだけ。設定画面の SSID などは有効にならない (HDS0 のパスだけ有効)
 - 電源の入れ直し = picosim と XEiJ を両方起動し直す
 - **不安定なもの**: zostest が `make test` の通しで 1 回、TSP 越しの ssh.x が認証前に "Error writing: I/O error" で落ちた
   (すぐ回し直すと通った)。x68k-tistack-2 に報告済み。負荷のある時の TSP の write_s の失敗を疑っている (未確認)
@@ -72,8 +72,8 @@ FW / RS の部品の作り方は README の「ファームの部品」 (本家 3
 
 README の「ドライブ名」。Human68k 3.02 は SCSI を ID の小さい順に組み込む (ID0 = A:、ID1 のデータ = B:、ID6 のリモート = C:)。
 
-- **ファームだけで B: をリモートに**: リモートドライブの顔 (LBA 0 署名・LBA 4 分割表・LBA 6〜 scsiremote.bin) をデータの HDS
-  より小さい ID で出し、運ぶ道は ID 6 のまま。picosim `-Q 1 -H 2:data.hds` で A: ID0、B: リモート、C: データを確かめた。
+- **ファームだけで B: をリモートに**: リモートドライブの署名・分割表・scsiremote.bin (LBA 0・LBA 4・LBA 6〜) をデータの HDS
+  より小さい ID で出し、運ぶ経路は ID 6 のまま。picosim `-Q 1 -H 2:data.hds` で A: ID0、B: リモート、C: データを確かめた。
   ファームへの実装は x68k-tistack-2 (SD を第 2 段で) に伝えた。まだ入っていない
 - **Z だけで**: AUTOEXEC.BAT に `SUBST X: B:\` / `SUBST B: C:\` / `SUBST C: X:\` / `SUBST /D X:` (確かめた)
 - **決まった高い名前 (Z: など)**: [../zremote](../zremote) の `zdrv.x` が、デバイス名 "\x01ZREMOTE" のドライブを探して

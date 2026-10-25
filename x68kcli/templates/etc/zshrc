@@ -28,6 +28,7 @@ alias dir='ls -alF'
 function gcc {
   gcc.x "$@" -lgcc2
 }
+# コンパイルを LAN の別の機械に任せるなら (net/rcc): export RCC_HOST=<機械の名前か番地> と alias gcc=rcc を ~/.zshrc に
 #   (zsh 2.5 X68k 版は `VAR=値 コマンド` の一時代入が親シェルに残るバグがあるので、明示的に戻す)
 function gcc295 {
   A:/usr/gcc295/gcc.x -IA:/usr/gcc295/include "$@"

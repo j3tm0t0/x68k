@@ -1,15 +1,33 @@
-{%- comment -%} トップページ: シリーズごとに、説明、本数、第 1 回と最新回へのリンク {%- endcomment -%}
-<h2 class="post-list-heading">シリーズ</h2>
+{%- comment -%} トップページ: シリーズごとに、説明、本数、第 1 回と最新回へのリンク。include.lang が en なら英語版 {%- endcomment -%}
+{%- assign lang = include.lang | default: "ja" -%}
+<h2 class="post-list-heading">{% if lang == "en" %}Series{% else %}シリーズ{% endif %}</h2>
 <ul class="post-list">
   {%- for series in site.data.series -%}
-  {%- assign posts = site.posts | where: "series", series.id | sort: "date" -%}
+  {%- assign posts = site.posts | where: "series", series.id | where: "lang", lang | sort: "date" -%}
   {%- assign first = posts | first -%}
   {%- assign last = posts | last -%}
+  {%- if lang == "en" -%}
+    {%- assign title = series.title_en -%}
+    {%- assign page_url = series.page_en -%}
+    {%- assign description = series.description_en -%}
+  {%- else -%}
+    {%- assign title = series.title -%}
+    {%- assign page_url = series.page -%}
+    {%- assign description = series.description -%}
+  {%- endif -%}
   <li>
+    {%- if lang == "en" %}
+    <span class="post-meta">{{ posts.size }} posts · updated {{ last.date | date: "%b %-d, %Y" }}</span>
+    {%- else %}
     <span class="post-meta">{{ posts.size }} 本 · {{ last.date | date: "%b %-d, %Y" }} 更新</span>
-    <h3><a class="post-link" href="{{ series.page | relative_url }}">{{ series.title | escape }}</a></h3>
-    <p>{{ series.description }}</p>
-    <p><a href="{{ first.url | relative_url }}">第 1 回から読む</a> · <a href="{{ last.url | relative_url }}">最新回: {{ last.title | remove_first: series.title | strip | escape }}</a></p>
+    {%- endif %}
+    <h3><a class="post-link" href="{{ page_url | relative_url }}">{{ title | escape }}</a></h3>
+    <p>{{ description }}</p>
+    {%- if lang == "en" %}
+    <p><a href="{{ first.url | relative_url }}">Start from part 1</a> · <a href="{{ last.url | relative_url }}">Latest: {{ last.title | remove_first: title | strip | escape }}</a></p>
+    {%- else %}
+    <p><a href="{{ first.url | relative_url }}">第 1 回から読む</a> · <a href="{{ last.url | relative_url }}">最新回: {{ last.title | remove_first: title | strip | escape }}</a></p>
+    {%- endif %}
   </li>
   {%- endfor -%}
 </ul>

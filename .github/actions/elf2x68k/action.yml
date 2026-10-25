@@ -1,0 +1,27 @@
+name: elf2x68k
+description: m68k-xelf (elf2x68k) の Linux x86-64 版を公式のリリースから取って PATH に入れる (版と sha256 は固定、actions/cache に置く)
+inputs:
+  version:
+    default: "20261004"
+  sha256:
+    default: a57c00f33898e3a540504ac55bb5c15313ff7dd51d6fa197bd36230856bec3db
+runs:
+  using: composite
+  steps:
+    - id: cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/elf2x68k
+        key: elf2x68k-Linux-${{ inputs.version }}-${{ inputs.sha256 }}
+    - if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        f=$RUNNER_TEMP/elf2x68k.tar.bz2
+        curl -fsSL -o "$f" "https://github.com/yunkya2/elf2x68k/releases/download/${{ inputs.version }}/elf2x68k-Linux-${{ inputs.version }}.tar.bz2"
+        echo "${{ inputs.sha256 }}  $f" | sha256sum -c -
+        mkdir -p "$RUNNER_TEMP/elf2x68k" && tar xjf "$f" -C "$RUNNER_TEMP/elf2x68k" && rm "$f"
+    - shell: bash
+      run: |
+        echo "$RUNNER_TEMP/elf2x68k/m68k-xelf/bin" >> "$GITHUB_PATH"
+        "$RUNNER_TEMP/elf2x68k/m68k-xelf/bin/m68k-xelf-gcc" --version | head -1

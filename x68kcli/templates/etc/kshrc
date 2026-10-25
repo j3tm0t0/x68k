@@ -24,5 +24,6 @@ alias awk='gawk.x'
 alias h='history'
 # gcc = 真里子版 1.42、gcc295 = GCC 2.95.2 (68020 以上専用、Z では SIGBUS)、cc = XC 2.1
 gcc() { gcc.x "$@" -lgcc2; }
+# コンパイルを LAN の別の機械に任せるなら (net/rcc): export RCC_HOST=<機械の名前か番地>; alias gcc=rcc
 gcc295() { A:/usr/gcc295/gcc.x -IA:/usr/gcc295/include "$@"; }
 cc() { include=A:/xc/include lib=A:/xc/lib A:/xc/cc/cc.x "$@"; }
