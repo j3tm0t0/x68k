@@ -46,3 +46,51 @@
  
  	sign_key_free(hostkey);
  	hostkey = NULL;
+@@ -223,6 +230,15 @@
+ 			fp);
+ 	m_free(fp);
+ 
++#if DROPBEAR_X68K
++	/* x68k: /dev/tty は無く、getc(stdin) は DOS の読み込みで待つので、CTTY AUX (zmux) の下で入力が届かず止まった。
++	   パスワードと同じ入力 (x68k_pass.c: _INPOUT で 1 文字ずつ、待つ間は _dos_change_pr、エコーあり、Enter で確定) で y / n を読む。ESC / Ctrl-C は n */
++	{
++		char *r = x68k_readpass("", 1);
++		(void)tty;
++		response = r ? r[0] : 'n';
++	}
++#else
+ 	tty = fopen(_PATH_TTY, "r");
+ 	if (tty) {
+ 		response = getc(tty);
+@@ -232,6 +248,7 @@
+ 		/* flush stdin buffer */
+ 		while ((getchar()) != '\n');
+ 	}
++#endif
+ 
+ 	if (response == 'y') {
+ 		return;
+@@ -258,6 +275,15 @@
+ 
+ 	if (homedir) {
+ 		unsigned int len;
++#if DROPBEAR_X68K
++		/* x68k: ~/.ssh が作れない Human68k (TwentyOne が無い) のために置き場を選ぶ (x68k_shim.c の x68k_ssh_dir: SSH_DIR か ~/ssh) */
++		{
++			const char *sd = x68k_ssh_dir(homedir);
++			len = strlen(sd);
++			filename = m_malloc(len + 18);
++			snprintf(filename, len+18, "%s/known_hosts", sd);
++		}
++#else
+ 		len = strlen(homedir);
+ 		filename = m_malloc(len + 18); /* "/.ssh/known_hosts" and null-terminator*/
+ 
+@@ -273,6 +299,7 @@
+ 		}
+ 
+ 		snprintf(filename, len+18, "%s/.ssh/known_hosts", homedir);
++#endif
+ 		hostsfile = fopen(filename, "a+");
+ 		
+ 		if (hostsfile != NULL) {

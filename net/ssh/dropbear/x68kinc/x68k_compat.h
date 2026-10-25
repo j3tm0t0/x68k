@@ -44,6 +44,7 @@ struct x68k_linger { int l_onoff; int l_linger; };
 
 /* 位相ごとのデバッグ印 (x68k_shim.c)。-DX68K_SSH_DEBUG のビルドでのみ出力する */
 void x68dbg(const char *m);
+const char *x68k_ssh_dir(const char *homedir);   /* known_hosts と鍵の置き場 (x68k_shim.c) */
 
 /* パスワード / keyboard-interactive の入力 (x68k_pass.c)。echo=0 ならエコー無し。ESC / Ctrl-C で NULL */
 char *x68k_readpass(const char *prompt, int echo);

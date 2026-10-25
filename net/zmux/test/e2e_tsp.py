@@ -179,6 +179,55 @@ try:
         a.buf.clear() if hasattr(a.buf, "clear") else None
         a.send("\r")
         a.wait("A>", 30)
+    if os.path.exists(SSH_X) and os.environ.get("HOSTKEY", "1") == "1":
+        # 初めての相手のホスト鍵の y/n の確認 (CTTY AUX のコンソールから n / y が効く) と、~/.ssh が作れない Human68k での known_hosts の置き場 (~/ssh)
+        def drain(t=3):
+            time.sleep(t)
+            a.buf.clear()
+        def ssh_try(answer, label):
+            a.buf.clear()
+            a.send("ssh zmuxnouser@192.168.68.1 true\r")
+            end = time.time() + 240
+            while time.time() < end and b"y/n" not in a.buf and b"A>" not in a.buf[20:]:
+                time.sleep(0.2)
+            asked = b"y/n" in a.buf
+            if asked:
+                a.send(answer + "\r")
+            end = time.time() + 240
+            while time.time() < end and not any(k in a.buf for k in (b"assword", b"denied", b"No auth", b"A>", b"rror", b"failed")):
+                time.sleep(0.2)
+            out = bytes(a.buf).decode("cp932", "replace")
+            return asked, out
+        a.send("set HOME=A:/home\r"); a.wait("A>", 10)
+        a.send("md A:\\home\r"); a.wait("A>", 10)
+        for _ in range(3):
+            a.send("\x03"); time.sleep(1); a.send("\r"); time.sleep(1)
+        asked, out = ssh_try("n", "n")
+        ok = asked and any(k in out for k in ("failed", "rror", "A>")) and "assword" not in out
+        fails += not ok
+        print("e2e: ssh host key prompt, answer n: %s asked=%s %r" % ("ok" if ok else "NG", asked, out[-300:]))
+        for _ in range(3):
+            a.send("\x03"); time.sleep(1); a.send("\r"); time.sleep(1)
+        a.buf.clear(); a.send("\r"); a.wait("A>", 30)
+        asked, out = ssh_try("y", "y")
+        ok = asked and any(k in out for k in ("assword", "denied", "No auth"))
+        fails += not ok
+        print("e2e: ssh host key prompt, answer y: %s asked=%s %r" % ("ok" if ok else "NG", asked, out[-300:]))
+        for _ in range(3):
+            a.send("\x03"); time.sleep(1); a.send("\r"); time.sleep(1)
+        a.buf.clear(); a.send("\r"); a.wait("A>", 30)
+        a.send("dir A:\\home\\ssh\r")
+        out = (a.wait("A>", 20) or b"").decode("cp932", "replace")
+        ok = "KNOWN" in out.upper()
+        fails += not ok
+        print("e2e: known_hosts saved under A:\\home\\ssh: %s %r" % ("ok" if ok else "NG", out[-200:]))
+        asked, out = ssh_try("y", "again")
+        ok = not asked and any(k in out for k in ("assword", "denied", "No auth"))
+        fails += not ok
+        print("e2e: second connection asks nothing: %s asked=%s" % ("ok" if ok else "NG", asked))
+        for _ in range(3):
+            a.send("\x03"); time.sleep(1); a.send("\r"); time.sleep(1)
+        a.buf.clear(); a.send("\r"); a.wait("A>", 30)
     if os.path.exists(RCMD_X):
         # rcmd.x を X68000 で待ち受けさせ、Pi (Mac) の 127.0.0.1:2323 からつなぐ (zmuxd が Pi で listen する)
         a.send("rcmd -s A:\\COMMAND.X\r")
