@@ -2202,7 +2202,7 @@ unsigned long vt_emoji_cp(int idx) { return (idx >= 0 && idx < EMOJITAB_N) ? emo
  *   大域変数のまま)。画面 2 面のセル (24 KB) は写さず、入れ物の行ポインタ表がそれぞれの置き場を指す。
  * ・裏の端末 (vt_hidden) は解析と論理画面だけ: flush と scroll の VRAM・drawn は触らない。drawn は表の VRAM の控えのまま。
  * ・カーソルの描画状態 (csr_*) も端末ごと。裏に回すとき csr_shown を 0 にする (表に出すとき全面を描き直すので消さなくてよい)。
- * ・グリフ表・pm_tab・cp_kind の控え・同時アクセス・パレットの退避・drawn・rlo/rhi は共通。 */
+ * ・グリフ表・pm_tab・cp_kind の控え・同時アクセス・パレットの退避・drawn は共通。 */
 #ifdef VT_VCONS
 #include <string.h>
 #define VC_VARS X(cx) X(cy) X(pend_wrap) X(top) X(bot) X(c_fg) X(c_bg) X(a_bold) X(a_uline) X(a_reverse) X(cur_at) X(clr_cell) \
@@ -2210,7 +2210,7 @@ unsigned long vt_emoji_cp(int idx) { return (idx >= 0 && idx < EMOJITAB_N) ? emo
   X(sv_sp0) X(sv_sp1) X(sv_gl) X(csr_shown) X(csr_x) X(csr_y) X(state) X(csi_priv) X(csi_inter) X(nparam) X(str_kind) \
   X(str_esc) X(str_len) X(cs_which) X(u_cp) X(u_need) X(outq_len) X(vt_hidden) \
   X(vt_base) X(COLS) X(ROWS) X(vt_pane) X(pane_x) X(pane_y) X(pane_w) X(pane_h) X(pane_px) X(pane_py) X(csr_ok) X(sb) X(view_off)
-#define VC_ARRS X(g_special) X(tabstop) X(param) X(str_buf) X(outq) X(rows_main) X(rows_alt) X(drawn)
+#define VC_ARRS X(g_special) X(tabstop) X(param) X(str_buf) X(outq) X(rows_main) X(rows_alt) X(drawn) X(rlo) X(rhi)
 typedef struct {
 #define X(v) __typeof__(v) v;
   VC_VARS VC_ARRS
