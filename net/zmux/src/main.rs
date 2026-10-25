@@ -341,6 +341,8 @@ fn daemon(args: &[String]) {
             Ok(Msg::ClientIn(id, d)) => {
                 match clients.get(&id).map(|c| c.1) {
                     Some(Att::Console) => {
+                        // 端末の Delete/Backspace は DEL (0x7f) を送るが、COMMAND.X の 1 文字消しは BS (0x08)
+                        let d: Vec<u8> = d.iter().map(|&c| if c == 0x7f { 0x08 } else { c }).collect();
                         if !link.up {
                             out.extend_from_slice(&d); // RAW: そのまま線へ
                         } else {
