@@ -194,10 +194,22 @@ char *dirname(char *p)
   return p;
 }
 
-/* --- getaddrinfo を数値 IP 専用で上書き (xip resolver のハング回避) --- */
+/* --- getaddrinfo を上書き: 数値 IP は inet_addr で直接 (xip の resolver は数値でも返らないことがある)、
+   名前のときだけ gethostbyname (tis.x -p なら Pico が引く。.local は mDNS) --- */
 #include <netdb.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+static int x68k_resolve4(const char *node, unsigned long *ip)
+{
+  struct hostent *h;
+  *ip = inet_addr(node);
+  if (*ip != 0xffffffffUL || strcmp(node, "255.255.255.255") == 0)
+    return 0;
+  if ((h = gethostbyname(node)) == NULL || h->h_length != 4 || !h->h_addr)
+    return -1;
+  memcpy(ip, h->h_addr, 4);
+  return 0;
+}
 int getaddrinfo(const char *node, const char *service,
                 const struct addrinfo *hints, struct addrinfo **res)
 {
@@ -205,8 +217,7 @@ int getaddrinfo(const char *node, const char *service,
   struct sockaddr_in *sa;
   unsigned long ip;
   if (!node) return EAI_NONAME;
-  ip = inet_addr(node);
-  if (ip == 0xffffffffUL && strcmp(node, "255.255.255.255") != 0)
+  if (x68k_resolve4(node, &ip) < 0)
     return EAI_NONAME;
   ai = (struct addrinfo *)calloc(1, sizeof *ai);
   sa = (struct sockaddr_in *)calloc(1, sizeof *sa);
@@ -239,7 +250,11 @@ int x68k_connect(const char *host, const char *port)
   memset(&sin, 0, sizeof sin);
   sin.sin_family = AF_INET;
   sin.sin_port = htons((unsigned short)atoi(port ? port : "22"));
-  sin.sin_addr.s_addr = inet_addr(host);
+  {
+    unsigned long ip;
+    if (x68k_resolve4(host, &ip) < 0) { close(s); return -1; }
+    sin.sin_addr.s_addr = ip;
+  }
   r = connect(s, (struct sockaddr *)&sin, sizeof sin);   /* ブロッキング */
   if (r < 0) { close(s); return -1; }
   x68dbg("connected");
