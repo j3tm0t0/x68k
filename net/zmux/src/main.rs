@@ -458,7 +458,13 @@ fn daemon(args: &[String]) {
                     continue;
                 }
                 link::Event::Data(ch, d, _) => (ch, d),
-                link::Event::Up => { if log { eprintln!("zmuxd: line up"); } rdblk.clear(); continue; }
+                link::Event::Up => {
+                    if log { eprintln!("zmuxd: line up"); }
+                    rdblk.clear(); scrblk.clear();
+                    // 線を作り直すと X68000 は送りかけの画面の写しを捨てる
+                    for (mut w, _) in scr_wait.drain(..) { let _ = writeln!(w, "err line was reset"); }
+                    continue;
+                }
                 link::Event::Down => {
                     if log { eprintln!("zmuxd: line down (raw)"); }
                     npblk.clear(); rdblk.clear(); scrblk.clear();

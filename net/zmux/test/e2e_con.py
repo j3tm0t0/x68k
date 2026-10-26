@@ -165,8 +165,13 @@ try:
     for k in range(4):
         d = dump("tvram%d.bin" % k, 0xE00000 + k * 0x20000, 128 * 512)
         want += b"".join(d[y * 128:y * 128 + 96] for y in range(512)) if d else b""
-    check("zmux screen -p 0123: the planes equal the text VRAM dump (4 x 48KB)", len(got) == 4 * 96 * 512 and got == want,
-          "got %d want %d diff %d" % (len(got), len(want), sum(1 for x, y in zip(got, want) if x != y) if got and want else -1))
+    # カーソルの点滅 (IOCS がテキスト VRAM の 1 字分を反転する) は、写す間と dump の間で変わりうる。違いが 1 字分 (同じ桁、16 ラスタの中) なら同じとみなす
+    diff = [i for i, (x, y) in enumerate(zip(got, want)) if x != y]
+    cells = {((i % (96 * 512)) // 96 // 16, i % 96) for i in diff}
+    rows = sorted({(i % (96 * 512)) // 96 for i in diff})
+    cursor_only = len({c for _, c in cells}) <= 1 and (not rows or rows[-1] - rows[0] < 16)
+    check("zmux screen -p 0123: the planes equal the text VRAM dump (4 x 48KB, cursor cell aside)", len(got) == 4 * 96 * 512 and len(want) == len(got) and cursor_only,
+          "got %d want %d diff %d bytes in cells %s" % (len(got), len(want), len(diff), sorted(cells)[:6]))
     png = open(os.path.join(run, "scr.png"), "rb").read() if os.path.exists(os.path.join(run, "scr.png")) else b""
     check("PNG written (768x512)", png[:8] == b"\x89PNG\r\n\x1a\n" and png[16:24] == (768).to_bytes(4, "big") + (512).to_bytes(4, "big"))
     r, t = zmux_screen("-t")
@@ -176,8 +181,9 @@ try:
     r, t2 = zmux_screen("-t")
     check("zmux screen -t again uses the cached CGROM and is quicker", "Human68k version 3.02" in r.stdout.decode("utf-8", "replace") and t2 < t,
           "%.1fs -> %.1fs" % (t, t2))
-    r, _ = zmux_screen("-p", "0", "-y", "1000", "-n", "100", "-r", rawf)
-    check("zmux screen clips the region at the bottom of VRAM", r.returncode == 0 and os.path.getsize(rawf) == 96 * 24, r.stderr.decode(errors="replace")[-120:])
+    rawc = os.path.join(run, "scrclip.raw")
+    r, _ = zmux_screen("-p", "0", "-y", "1000", "-n", "100", "-r", rawc)
+    check("zmux screen clips the region at the bottom of VRAM", r.returncode == 0 and os.path.getsize(rawc) == 96 * 24, r.stderr.decode(errors="replace")[-120:])
 
     # CTTY AUX にして、これまでの動き (AUX のコンソール)
     a.buf.clear()

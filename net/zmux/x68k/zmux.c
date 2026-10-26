@@ -357,6 +357,8 @@ static void reset_link(void)
   brx_len = brx_done = 0;
   rtx_len = rtx_pos = 0;                /* リモートドライブの要求も (zrmt.sys は時間切れで失敗を返す) */
   rd_done = 0;
+  scr_on = 0;                           /* 画面の写しも (zmuxd は線が作り直されたら待っている人に断る) */
+  stage_len = stage_pos = 0;
 }
 
 static void go_up(void)
