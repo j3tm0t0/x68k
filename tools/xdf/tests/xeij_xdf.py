@@ -4,7 +4,7 @@ usage: xeij_xdf.py RUNDIR
 
 ドライブの並び (実機の Compact XVI と同じく A: と B: がフロッピー):
   A: (装置 0)  起動ディスク。HUMAN302.XDF に xdfwrite.x / xdfread.x と、試すコマンドを足した AUTOEXEC.BAT
-  B: (装置 1)  書き込み先。試験ごとに 空 (0 埋め) / HUMAN302 / 書き込み禁止 / 無し
+  B: (装置 1)  書き込み先。試験ごとに 空 (0 埋め) / HUMAN302 / DOS/V の 1.44MB / 書き込み禁止 / 無し
   C: (装置 2)  2HQ (1440KB) に乱数の XDF (R.XDF) を入れたもの。XVI ではリモートドライブの C: にあたる
   D: (装置 3)  空の 2HQ。xdfread の書き出し先
 試験が終わったら XEiJ の FDC.fdcTini を呼んでイメージをファイルに書き戻させ、ホストで中身を比べる。"""
@@ -48,9 +48,12 @@ def agent(line):
 
 
 def xeij(name, fds, cmds, timeout=900):
-    if os.environ.get("ONLY") and name not in os.environ["ONLY"].split(","):
+    """fds: {装置番号: パス}。cmds を AUTOEXEC.BAT の最後に足して起動し、TESTDONE が出たら画面の文字を返す。
+    環境変数 ONLY (試験の名前をコンマ区切り) にない試験は飛ばし、その確認も出さない"""
+    global skipping
+    skipping = bool(os.environ.get("ONLY")) and name not in os.environ["ONLY"].split(",")
+    if skipping:
         return ""
-    """fds: {装置番号: パス}。cmds を AUTOEXEC.BAT の最後に足して起動し、TESTDONE が出たら画面の文字を返す"""
     for f in ("cgrom.bin", "agent.cmd", "XEiJControl"):
         if os.path.exists(os.path.join(run, f)): os.remove(os.path.join(run, f))
     add = os.path.join(run, "boot-add")
@@ -98,7 +101,9 @@ def xeij(name, fds, cmds, timeout=900):
 
 
 fails = []
+skipping = False
 def check(name, ok):
+    if skipping: return
     print("%s %s" % ("PASS" if ok else "FAIL", name))
     if not ok: fails.append(name)
 
@@ -136,6 +141,15 @@ s = xeij("overwrite", {1: fd1, 2: c2hq, 3: d2hq}, ["xdfwrite -v c:\\R.XDF b:"])
 check("overwrite OK", "OK: 1261568 bytes written and verified" in s)
 check("B: image == R.XDF (overwrite)", open(fd1, "rb").read() == R)
 
+# 3b. DOS/V の 1.44MB (512 バイト x 18 セクタ) のディスクに -f 無しで書く (自動で 2HD に初期化する)
+mk2hq(fd1, {})
+mk2hq(d2hq, {})
+s = xeij("dosv", {1: fd1, 2: c2hq, 3: d2hq}, ["xdfwrite c:\\R.XDF b:", "xdfread b: d:\\DOSV.XDF"])
+check("DOS/V disk detected", "B: is not X68000 2HD" in s)
+check("DOS/V disk: format + write + verify OK", "OK: 1261568 bytes written and verified" in s)
+check("DOS/V disk: read back == R.XDF", get(d2hq, "DOSV.XDF") == R)
+check("DOS/V disk: B: image == R.XDF", open(fd1, "rb").read() == R)
+
 # 4. 書き込み禁止 (中身は R.XDF。HUMAN302.XDF は XEiJ が読み込むときに消されたファイル 2 つを戻すので、読んだものと一致しない)
 shutil.copy(rnd, fd1); os.chmod(fd1, 0o644)
 mk2hq(d2hq, {})
@@ -144,7 +158,6 @@ s = xeij("protected", {1: fd1 + ":R", 2: c2hq, 3: d2hq},
 check("write protected refused", "the disk in drive B: is write protected" in s)
 check("B: unchanged", open(fd1, "rb").read() == R)
 check("read of protected disk == R.XDF", get(d2hq, "WP.XDF") == R)
-if os.environ.get("ONLY"): sys.exit(0)
 
 # 5. ディスク無し
 mk2hq(d2hq, {})

@@ -3,7 +3,9 @@
  *
  *   xdfwrite [-v] [-f] [--force] IMAGE.XDF B:   イメージを B: のフロッピーに書き、全トラックを読み返して比べる
  *                                                (比べるのは書いたときに取ったセクタごとの CRC32。イメージは 1 度だけ読む)
- *                                                -f は先に _B_FORMAT で 2HD (1024 バイト x 8 セクタ) に初期化する
+ *                                                -f は先に _B_FORMAT で 2HD (1024 バイト x 8 セクタ) に初期化する。
+ *                                                -f が無くても、最初と最後のトラックが 2HD として読めなければ初期化する
+ *                                                (DOS/V の 1.44MB や未初期化のディスク)
  *                                                A: (起動中のディスク) は --force が無いと断る
  *   xdfread  [-v] B: OUT.XDF                     B: のフロッピーを丸ごと読んでファイルにする (A: も読める)。
  *                                                OUT.XDF が既にあれば断る
@@ -126,6 +128,20 @@ static int fmttrack(int unit, int c, int h)
 
 #endif
 
+#ifndef XDFREAD
+/* 2HD (1024 バイト x 8 セクタ) に初期化してあるかを、最初と最後のトラックを読んで見る。
+ * DOS/V の 1.44MB (512 バイト x 18 セクタ) や未初期化のディスクは読めない */
+static int is_2hd(int unit)
+{
+  int st;
+  if ((st = rdtrack(unit, 0, 0, dbuf)) || (st = rdtrack(unit, CYLS - 1, HEADS - 1, dbuf))) {
+    if (verbose) { printf("track check"); explain(st); }
+    return 0;
+  }
+  return 1;
+}
+#endif
+
 static void progress(const char *what, int c)
 {
   printf("\r%s cylinder %2d/%d", what, c + 1, CYLS);
@@ -222,6 +238,10 @@ static int run(int argc, char **argv)
     crctab[i] = c;
   }
 
+  if (!format && !is_2hd(unit)) {
+    printf("drive %c: is not X68000 2HD (1024 bytes x 8 sectors); formatting it first\n", 'A' + unit);
+    format = 1;
+  }
   if (format) {
     for (int c = 0; c < CYLS; c++) {
       progress("format", c);
@@ -244,7 +264,7 @@ static int run(int argc, char **argv)
       if (st) {
         printf("\nNG: write failed at C%d H%d", c, h);
         explain(st);
-        if (!format) printf("an unformatted disk needs -f\n");
+        if (!format) printf("the disk may not be formatted as X68000 2HD; try again with -f\n");
         return 1;
       }
     }
