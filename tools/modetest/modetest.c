@@ -64,7 +64,9 @@ static const u8  t_pages[6]  = {  4,   2, 1,  1,   1, 1 };
 static const u16 t_real[6]   = { 512, 512, 512, 1024, 1024, 1024 };
 
 struct minfo { const struct group *g; int t; };
-static struct minfo info[MAXMODE + 1];
+#define VMODE0 100          /* 100-103: モード 16 の縦の表示期間を変えた試験用 (R04-R07 を直接書く) */
+#define VMODE1 103
+static struct minfo info[VMODE1 + 1];
 
 static void build_table(void)
 {
@@ -75,6 +77,7 @@ static void build_table(void)
       int m = groups[i].mode[t];
       if (m >= 0) { info[m].g = &groups[i]; info[m].t = t; }
     }
+  for (t = VMODE0; t <= VMODE1; t++) info[t] = info[16];
 }
 
 static void list_modes(void)
@@ -202,6 +205,95 @@ static void draw_bars(int K, int stride, int w, int h)
     }
 }
 
+/* ---- 枠・目盛り・数字 (画面の端が切れていないかを見る) ---- */
+static int frame_only;   /* F キーで切り替え: 枠だけ (カラーバー無し) */
+static int g_stride;
+
+static const u8 font35[15][5] = {   /* 3x5 の字: 0-9, T L R B (各行 3 ビット) */
+  {7,5,5,5,7}, {2,6,2,2,7}, {7,1,7,4,7}, {7,1,7,1,7}, {5,5,7,1,1},
+  {7,4,7,1,7}, {7,4,7,5,7}, {7,1,1,1,1}, {7,5,7,5,7}, {7,5,7,1,7},
+  {7,2,2,2,2}, {4,4,4,4,7}, {6,5,6,5,5}, {6,5,6,5,6}, {0,0,0,0,0}
+};
+
+static void gput(int x, int y, int w, int h, u16 v)
+{
+  if (x < 0 || y < 0 || x >= w || y >= h) return;
+  *(volatile u16 *)(GVRAM + (long)y * g_stride + (long)x * 2) = v;
+}
+
+static void grect(int x0, int y0, int x1, int y1, int w, int h, u16 v)   /* x1, y1 を含む */
+{
+  int x, y;
+  for (y = y0; y <= y1; y++) for (x = x0; x <= x1; x++) gput(x, y, w, h, v);
+}
+
+static void glyph(int idx, int x, int y, int sc, int w, int h, u16 fg)
+{
+  int r, c;
+  for (r = 0; r < 5; r++)
+    for (c = 0; c < 3; c++)
+      if (font35[idx][r] & (4 >> c)) grect(x + c * sc, y + r * sc, x + c * sc + sc - 1, y + r * sc + sc - 1, w, h, fg);
+}
+
+/* 文字列 (数字と T L R B) を黒い下地つきで描く。(x, y) は左上 */
+static void gtext(const char *t, int x, int y, int sc, int w, int h, u16 fg, u16 bg)
+{
+  int n = (int)strlen(t), i;
+  grect(x - 1, y - 1, x + n * 4 * sc - sc, y + 5 * sc, w, h, bg);
+  for (i = 0; i < n; i++) {
+    char c = t[i];
+    int idx = c >= '0' && c <= '9' ? c - '0' : c == 'T' ? 10 : c == 'L' ? 11 : c == 'R' ? 12 : c == 'B' ? 13 : 14;
+    glyph(idx, x + i * 4 * sc, y, sc, w, h, fg);
+  }
+}
+
+static void draw_overlay(int K, int w, int h)
+{
+  u16 fw = pix_bar(K, 1), bk = pix_bar(K, 0);
+  int k, d, len, x, y;
+  char num[8];
+  /* 外枠 1 画素 */
+  grect(0, 0, w - 1, 0, w, h, fw); grect(0, h - 1, w - 1, h - 1, w, h, fw);
+  grect(0, 0, 0, h - 1, w, h, fw); grect(w - 1, 0, w - 1, h - 1, w, h, fw);
+  /* 目盛り: 端から 8 画素ごと。短い線 6 画素、16 画素ごとは 12 画素。数字は 32 画素ごと */
+  for (k = 1; 8 * k < w / 2 + 8; k++) {
+    d = 8 * k; len = (k & 1) ? 6 : 12;
+    for (y = 0; y < len; y++) {
+      gput(d, y, w, h, fw); gput(w - 1 - d, y, w, h, fw);                 /* 上の端 */
+      gput(d, h - 1 - y, w, h, fw); gput(w - 1 - d, h - 1 - y, w, h, fw); /* 下の端 */
+    }
+  }
+  for (k = 1; 8 * k < h / 2 + 8; k++) {
+    d = 8 * k; len = (k & 1) ? 6 : 12;
+    for (x = 0; x < len; x++) {
+      gput(x, d, w, h, fw); gput(x, h - 1 - d, w, h, fw);                 /* 左の端 */
+      gput(w - 1 - x, d, w, h, fw); gput(w - 1 - x, h - 1 - d, w, h, fw); /* 右の端 */
+    }
+  }
+  for (k = 4; k <= 12; k += 4) {          /* 32, 64, 96 */
+    int sc = 2, nw;
+    d = 8 * k;
+    sprintf(num, "%d", d); nw = (int)strlen(num) * 4 * sc - sc;
+    if (d < w / 2 - nw) {
+      gtext(num, d - nw / 2, 14, sc, w, h, fw, bk);                       /* 上: 左端からの距離 */
+      gtext(num, w - 1 - d - nw / 2, 14, sc, w, h, fw, bk);               /* 上: 右端からの距離 */
+      gtext(num, d - nw / 2, h - 25, sc, w, h, fw, bk);
+      gtext(num, w - 1 - d - nw / 2, h - 25, sc, w, h, fw, bk);
+    }
+    if (d < h / 2 - 8) {
+      gtext(num, 16, d - 4, sc, w, h, fw, bk);                            /* 左: 上端からの距離 */
+      gtext(num, 16, h - 1 - d - 4, sc, w, h, fw, bk);                    /* 左: 下端からの距離 */
+      gtext(num, w - 17 - nw, d - 4, sc, w, h, fw, bk);
+      gtext(num, w - 17 - nw, h - 1 - d - 4, sc, w, h, fw, bk);
+    }
+  }
+  /* 四隅の印 */
+  gtext("TL", 44, 44, 3, w, h, fw, bk);
+  gtext("TR", w - 44 - 23, 44, 3, w, h, fw, bk);
+  gtext("BL", 44, h - 44 - 15, 3, w, h, fw, bk);
+  gtext("BR", w - 44 - 23, h - 44 - 15, 3, w, h, fw, bk);
+}
+
 /* ---- テキストのラベル ---- */
 #define MAXLINES 8
 static char lines[MAXLINES][40];
@@ -219,10 +311,13 @@ static void make_label(int mode, int lo, int hi)
   sprintf(lines[nlines++], "H %d.%03d kHz", g->hf / 1000, g->hf % 1000);
   sprintf(lines[nlines++], "V %d.%03d Hz%s", g->vf / 1000, g->vf % 1000, g->interlace ? " (interlace)" : "");
   sprintf(lines[nlines++], "GVRAM %dx%d", real, real);
-  strcpy(lines[nlines++], "SPACE:next BS:back ESC:quit");
+  strcpy(lines[nlines++], "SPACE:next BS:back");
+  strcpy(lines[nlines++], "F:frame ESC:quit");
 }
 
 /* ラベルを出して背景 (コード 1 = 黒) を敷く。文字はコード 3 (白) */
+static int lab_col, lab_row;
+
 static void draw_label(void)
 {
   int i, width = 0, p, y, x, s;
@@ -231,7 +326,7 @@ static void draw_label(void)
   _iocs_b_curoff();
   _iocs_b_color(3);
   for (i = 0; i < nlines; i++) {
-    _iocs_b_locate(0, i);
+    _iocs_b_locate(lab_col, lab_row + i);
     sprintf(buf, "%-*.40s", width, lines[i]);
     _iocs_b_print(buf);
   }
@@ -239,7 +334,7 @@ static void draw_label(void)
   /* 文字のない画素をコード 1 にする (プレーン 0 を全部 1 にする。文字の画素はもとからコード 3) */
   s = sup_enter();
   for (y = 0; y < nlines * 16; y++)
-    for (x = 0; x < width; x++) TVRAM[(long)y * 128 + x] = 0xFF;
+    for (x = 0; x < width; x++) TVRAM[(long)(lab_row * 16 + y) * 128 + lab_col + x] = 0xFF;
   sup_leave(s);
   (void)p;
 }
@@ -282,7 +377,108 @@ static void show_failed(int mode, int lo, int hi)
   _iocs_b_clr_al();
   make_label(mode, lo, hi);
   sprintf(lines[5], "CRTMOD failed (%d)", last_ret);   /* GVRAM の行を置き換える */
+  lab_col = lab_row = 0;
   draw_label();
+}
+
+static void center_label(int w, int h)
+{
+  int i, width = 0, cols = w / 8, rows = h / 16;
+  for (i = 0; i < nlines; i++) { int l = (int)strlen(lines[i]); if (l > width) width = l; }
+  lab_col = cols > width ? (cols - width) / 2 : 0;
+  lab_row = rows > nlines ? (rows - nlines) / 2 : 0;
+}
+
+/* ---- 縦の表示期間を変える (モード 16 を元にした 100-103) ----
+   CRTC R04 = 総ライン数 - 1、R05 = 垂直同期の終わり、R06 = 表示の開始、R07 = 表示の終わり。
+   100/101/102 は表示を 480/496/464 行にし、R06 をずらして画面の中央に寄せる (R04, R05 は元のまま)。
+   103 は 31kHz の VGA に近づけて総ライン 525、同期 2 行、表示 480 行にする。 */
+#define CRTC ((volatile u16 *)0xE80000UL)
+static const int var_lines[4] = { 480, 496, 464, 480 };
+static int cur_r[4];      /* R04-R07 の現在値 */
+static int adjusting, assumed;
+
+static void crtc_read(void)
+{
+  int i, s = sup_enter();
+  for (i = 0; i < 4; i++) cur_r[i] = CRTC[4 + i];
+  sup_leave(s);
+  /* CRTC のレジスタは読めない機種・エミュレータがある (0 が返る)。そのときはモード 16 の標準値にする */
+  if (cur_r[0] == 0 || cur_r[3] <= cur_r[2]) { cur_r[0] = 567; cur_r[1] = 5; cur_r[2] = 40; cur_r[3] = 552; assumed = 1; }
+  else assumed = 0;
+}
+
+static void crtc_write(void)
+{
+  int i, s = sup_enter();
+  for (i = 0; i < 4; i++) CRTC[4 + i] = (u16)cur_r[i];
+  sup_leave(s);
+}
+
+static void paint_variant(int mode, int lo, int hi)
+{
+  int w = 768, h = cur_r[3] - cur_r[2], s;
+  if (h < 8) h = 8;
+  if (h > 512) h = 512;
+  _iocs_g_clr_on();
+  set_palette(0);
+  s = sup_enter();
+  g_stride = 2048;
+  if (!frame_only) draw_bars(0, 2048, w, h);
+  draw_overlay(0, w, h);
+  sup_leave(s);
+  set_text_palette();
+  _iocs_b_clr_al();
+  nlines = 0;
+  if (adjusting) sprintf(lines[nlines++], "ADJUST %d  R04-R07", mode);
+  else sprintf(lines[nlines++], "MODE 16 V%d  (%d)", var_lines[mode - VMODE0], mode);
+  sprintf(lines[nlines++], "768x%d 16 colors", h);
+  sprintf(lines[nlines++], "R04=%d R05=%d%s", cur_r[0], cur_r[1], assumed ? " (assumed)" : "");
+  sprintf(lines[nlines++], "R06=%d R07=%d", cur_r[2], cur_r[3]);
+  sprintf(lines[nlines++], "total %d lines, show %d", cur_r[0] + 1, cur_r[3] - cur_r[2]);
+  if (adjusting) {
+    strcpy(lines[nlines++], "<- -> move  up/down height");
+    strcpy(lines[nlines++], "A:end R:reset F:frame");
+  } else {
+    strcpy(lines[nlines++], "A:adjust SPACE:next BS:back");
+    strcpy(lines[nlines++], "F:frame ESC:quit");
+  }
+  center_label(w, h);
+  draw_label();
+}
+
+static void show_variant(int mode, int lo, int hi, int reset)
+{
+  if (reset) {
+    int l = var_lines[mode - VMODE0];
+    adjusting = 0;
+    if (!set_mode(16)) { show_failed(mode, lo, hi); return; }
+    crtc_read();
+    if (mode == VMODE1) { cur_r[0] = 524; cur_r[1] = 1; cur_r[2] = 34; cur_r[3] = 34 + l; }
+    else { cur_r[2] += (512 - l) / 2; cur_r[3] = cur_r[2] + l; }
+    crtc_write();
+  }
+  paint_variant(mode, lo, hi);
+}
+
+static int next_mode(int m, int lo, int hi)
+{
+  do {
+    if (m == VMODE1) m = lo;
+    else if (m == hi) m = VMODE0;
+    else m++;
+  } while (!info[m].g);
+  return m;
+}
+
+static int prev_mode(int m, int lo, int hi)
+{
+  do {
+    if (m == lo) m = VMODE1;
+    else if (m == VMODE0) m = hi;
+    else m--;
+  } while (!info[m].g);
+  return m;
 }
 
 static void show_mode(int mode, int lo, int hi)
@@ -295,56 +491,46 @@ static void show_mode(int mode, int lo, int hi)
   _iocs_g_clr_on();
   set_palette(K);
   s = sup_enter();
-  draw_bars(K, real * 2, w, h);
+  g_stride = real * 2;
+  if (!frame_only) draw_bars(K, real * 2, w, h);
+  draw_overlay(K, w, h);
   sup_leave(s);
   set_text_palette();
   _iocs_b_clr_al();
   make_label(mode, lo, hi);
+  center_label(w, h);
   draw_label();
 }
 
-/* ---- 元の画面を取っておく ---- */
-#define SAVE_BYTES 96            /* 768 ドット */
-#define SAVE_LINES 512
-static u8 *saved;
-static int saved_ok;
+/* ---- 終了時にテキスト画面を戻す ----
+   元の文字は戻さず、画面を消してカーソルを左上に置く (カーソル位置は機種によって読めず、
+   0,0 に戻ると残った文字に重なった)。コンソール範囲とファンクションキー行は元のモードに合わせる */
 static u16 saved_pal[4];
-static int saved_cur;
+static int saved_fnk;
 
 static void save_text(void)
 {
-  int p, y, s;
-  saved = malloc((size_t)4 * SAVE_LINES * SAVE_BYTES);
-  saved_cur = _iocs_b_locate(-1, -1);
+  int p;
   for (p = 0; p < 4; p++) saved_pal[p] = (u16)_iocs_tpalet(p, -1);
-  if (!saved) return;
-  s = sup_enter();
-  for (p = 0; p < 4; p++)
-    for (y = 0; y < SAVE_LINES; y++)
-      memcpy(saved + ((long)p * SAVE_LINES + y) * SAVE_BYTES, (const void *)(TVRAM + (long)p * 0x20000 + (long)y * 128), SAVE_BYTES);
-  sup_leave(s);
-  saved_ok = 1;
+  saved_fnk = _dos_c_fnkmod(-1);   /* ファンクションキー行の表示モード */
 }
 
-static void restore_text(void)
+static void restore_text(int orig)
 {
-  int p, y, s;
-  set_text_palette();
+  int p, fm = saved_fnk >= 0 && saved_fnk <= 3 ? saved_fnk : 0;
+  const struct group *g = orig >= 0 && orig <= MAXMODE ? info[orig].g : 0;
+  if (!g) g = info[16].g;
   for (p = 1; p < 4; p++) _iocs_tpalet(p, saved_pal[p]);
-  if (saved_ok) {
-    s = sup_enter();
-    for (p = 0; p < 4; p++)
-      for (y = 0; y < SAVE_LINES; y++)
-        memcpy((void *)(TVRAM + (long)p * 0x20000 + (long)y * 128), saved + ((long)p * SAVE_LINES + y) * SAVE_BYTES, SAVE_BYTES);
-    sup_leave(s);
-  }
-  _iocs_b_locate((saved_cur >> 16) & 0xFFFF, saved_cur & 0xFFFF);
+  _dos_c_fnkmod(fm);
+  _iocs_b_consol(0, 0, g->w / 8 - 1, g->h / 16 - 1 - (fm == 2 ? 0 : 1));   /* 終わりの桁・行 */
+  _iocs_b_clr_al();
+  _iocs_b_locate(0, 0);
   _iocs_b_curon();
 }
 
 int main(int argc, char **argv)
 {
-  int orig, lo = 0, hi = 19, mode = 0, i, ext = 0, key = 0, orig_color;
+  int orig, lo = 0, hi = 19, mode = 0, i, ext = 0, key = 0, orig_color, redraw = 0;
   build_table();
   for (i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "-l")) { list_modes(); return 0; }
@@ -357,25 +543,40 @@ int main(int argc, char **argv)
     if (((unsigned)r >> 24) == 0x16 && (r & 0xFFFFFF) >= 19 && (r & 0xFFFFFF) <= MAXMODE) hi = r & 0xFFFFFF;
     else fprintf(stderr, "modetest: IOCS has no mode-count query (returned %08x), using 0-19\n", r);
   }
-  if (mode < lo || mode > hi) mode = lo;
+  if (mode < lo || (mode > hi && (mode < VMODE0 || mode > VMODE1))) mode = lo;
   orig = crtmod(-1);
   orig_color = _iocs_b_color(-1);
   save_text();
   while (_iocs_b_keysns()) _iocs_b_keyinp();
   for (;;) {
-    while (!info[mode].g) mode = mode < hi ? mode + 1 : lo;   /* 抜けのある番号は飛ばす */
-    show_mode(mode, lo, hi);
+    while (!info[mode].g) mode = next_mode(mode, lo, hi);
+    if (redraw == 1) show_variant(mode, lo, hi, 0);
+    else if (mode >= VMODE0) show_variant(mode, lo, hi, 1);
+    else show_mode(mode, lo, hi);
+    redraw = 0;
     key = _iocs_b_keyinp();
     {
       int ch = key & 0xFF, sc = (key >> 8) & 0xFF;
       if (ch == 0x1B || ch == 'q' || ch == 'Q') break;
-      if (ch == 0x08 || ch == 'p' || ch == 'P' || sc == 0x3C) {    /* BS ← ↑ */
-        do mode = mode > lo ? mode - 1 : hi; while (!info[mode].g);
-      } else mode = mode < hi ? mode + 1 : lo;
+      if (ch == 'f' || ch == 'F') { frame_only ^= 1; redraw = mode >= VMODE0 ? 1 : 2; continue; }   /* 同じモードを描き直す */
+      if (mode >= VMODE0 && (ch == 'a' || ch == 'A')) { adjusting ^= 1; redraw = 1; continue; }
+      if (adjusting) {
+        if (ch == 'r' || ch == 'R') { adjusting = 0; continue; }   /* 同じモードを最初から */
+        if (sc == 0x3B) { cur_r[2]--; cur_r[3]--; }          /* ← 表示を 1 行上へ */
+        else if (sc == 0x3D) { cur_r[2]++; cur_r[3]++; }     /* → 1 行下へ */
+        else if (sc == 0x3C) cur_r[3]++;                     /* ↑ 縦を 1 行長く */
+        else if (sc == 0x3E) cur_r[3]--;                     /* ↓ 1 行短く */
+        else continue;
+        crtc_write();
+        redraw = 1;
+        continue;
+      }
+      if (ch == 0x08 || ch == 'p' || ch == 'P' || sc == 0x3C) mode = prev_mode(mode, lo, hi);   /* BS ← ↑ */
+      else mode = next_mode(mode, lo, hi);
     }
   }
   crtmod(orig < 0 ? 16 : orig);
-  restore_text();
+  restore_text(orig);
   if (orig_color >= 0) _iocs_b_color(orig_color);
   return 0;
 }
