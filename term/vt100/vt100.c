@@ -823,11 +823,17 @@ static void cursor_xor(int col, int row)
  * 下方向 (dst>src) は重なるので後ろのラスタから: d3 の bit15 を立てると 1 ラスタごとに src/dst を 1 ずつ減らす
  * (IPLROM の _TXRASCPY = $FF781A を逆アセンブルして確認: tst.w d3 / bpl で増分 $0101 と $FEFF を切り替える)。
  * このとき d1 は最後 (いちばん下) のラスタ番号を渡す。それ以外は 32bit 転送 (画面の COLS バイトだけ)。 */
+/* 1: スクロールで IOCS の TXRASCOPY (ハードのラスタコピー) を使わず、CPU の 32bit 転送で VRAM を動かす (実機の Z で、ラスタコピーが
+ * 重なって全行が同じ行になった疑いの切り分け用。遅い: 1 画面で 70ms ほど)。zos.x の ZOS_NORAS=1 / -N */
+int vt_noras;
 static void vram_move_lines(int dst_line, int src_line, int nlines)
 {
   int p, y, k, nl = (COLS + 3) / 4;   /* 1 ラインのうち画面の COLS バイトだけ (128 のうち 96) 動かす */
 #if !defined(VT_HOSTTEST) || defined(VT_SIM_TXRAS)
-  if (!vt_pane && (dst_line & 3) == 0 && (src_line & 3) == 0 && (nlines & 3) == 0 && dst_line != src_line) {
+  /* 全幅の枠 (zos.x の全幅のペイン) も、ラスタ単位の転送なので TXRASCOPY が使える (枠の上端 pane_py ぶん足す) */
+  if ((!vt_pane || (pane_x == 0 && pane_w >= SCRCOLS)) && !vt_noras && (dst_line & 3) == 0 && (src_line & 3) == 0 && (nlines & 3) == 0 && dst_line != src_line) {
+    int o = vt_pane ? pane_py : 0;
+    dst_line += o; src_line += o;
     if (dst_line < src_line)
       _iocs_txrascpy(((src_line / 4) << 8) | (dst_line / 4), nlines / 4, 0x000f);
     else
@@ -2196,7 +2202,7 @@ unsigned long vt_emoji_cp(int idx) { return (idx >= 0 && idx < EMOJITAB_N) ? emo
  *   大域変数のまま)。画面 2 面のセル (24 KB) は写さず、入れ物の行ポインタ表がそれぞれの置き場を指す。
  * ・裏の端末 (vt_hidden) は解析と論理画面だけ: flush と scroll の VRAM・drawn は触らない。drawn は表の VRAM の控えのまま。
  * ・カーソルの描画状態 (csr_*) も端末ごと。裏に回すとき csr_shown を 0 にする (表に出すとき全面を描き直すので消さなくてよい)。
- * ・グリフ表・pm_tab・cp_kind の控え・同時アクセス・パレットの退避・drawn・rlo/rhi は共通。 */
+ * ・グリフ表・pm_tab・cp_kind の控え・同時アクセス・パレットの退避・drawn は共通。 */
 #ifdef VT_VCONS
 #include <string.h>
 #define VC_VARS X(cx) X(cy) X(pend_wrap) X(top) X(bot) X(c_fg) X(c_bg) X(a_bold) X(a_uline) X(a_reverse) X(cur_at) X(clr_cell) \
@@ -2204,7 +2210,7 @@ unsigned long vt_emoji_cp(int idx) { return (idx >= 0 && idx < EMOJITAB_N) ? emo
   X(sv_sp0) X(sv_sp1) X(sv_gl) X(csr_shown) X(csr_x) X(csr_y) X(state) X(csi_priv) X(csi_inter) X(nparam) X(str_kind) \
   X(str_esc) X(str_len) X(cs_which) X(u_cp) X(u_need) X(outq_len) X(vt_hidden) \
   X(vt_base) X(COLS) X(ROWS) X(vt_pane) X(pane_x) X(pane_y) X(pane_w) X(pane_h) X(pane_px) X(pane_py) X(csr_ok) X(sb) X(view_off)
-#define VC_ARRS X(g_special) X(tabstop) X(param) X(str_buf) X(outq) X(rows_main) X(rows_alt) X(drawn)
+#define VC_ARRS X(g_special) X(tabstop) X(param) X(str_buf) X(outq) X(rows_main) X(rows_alt) X(drawn) X(rlo) X(rhi)
 typedef struct {
 #define X(v) __typeof__(v) v;
   VC_VARS VC_ARRS
