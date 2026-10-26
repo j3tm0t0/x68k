@@ -20,6 +20,8 @@ os.makedirs(run, exist_ok=True)
 sock = "/tmp/zmux-e2econre-%d.sock" % os.getpid()
 env = dict(os.environ, ZMUX_SOCK=sock, XPORT=str(XPORT))
 fails = []
+AUX = os.environ.get("MODE") == "aux"        # ctty con にしない (CTTY AUX のまま同じことを試す)
+DELAY = float(os.environ.get("DELAY", "10"))  # zmuxd を止めてから起動し直すまでの秒
 
 
 def check(name, cond, extra=""):
@@ -120,7 +122,7 @@ def ver_from_tab0(how):
     a.send("\r")
     time.sleep(2)
     out = a.cmd("ver")
-    check("%s: ver typed in tab 0 comes back through the CON mirror" % how, out is not None and "Human68k version 3.02" in out,
+    check("%s: ver typed in tab 0 comes back (%s)" % (how, "AUX" if AUX else "CON mirror"), out is not None and "Human68k version 3.02" in out,
           repr(out)[-100:] if out else repr(bytes(a.buf[-120:])))
     return a
 
@@ -144,9 +146,10 @@ try:
     check("line up (CTTY AUX)", wait_up(30), status())
     a = Attach()
     time.sleep(1)
-    a.buf.clear()
-    a.send("ctty con\r")
-    time.sleep(3)
+    if not AUX:
+        a.buf.clear()
+        a.send("ctty con\r")
+        time.sleep(3)
     a.close()
     a = ver_from_tab0("first zmuxd")
     for k in range(10):          # CON の出力を写す先に溜めておく (zmuxd を止めたときに詰まる場面)
@@ -155,19 +158,22 @@ try:
 
     # 2, 3: zmuxd を止めて、すぐ起動し直す (X68000 は UP のつもり)
     zd.terminate(); zd.wait()
-    time.sleep(2)
     t0 = time.time()
-    sh(sys.executable, os.path.join(serial, "test", "xtype.py"), run, "ver\\n")
-    sh(sys.executable, os.path.join(serial, "test", "xtype.py"), run, "echo still-alive\\n")
-    t1 = time.time() - t0
-    time.sleep(3)
-    s = screen()
-    check("zmuxd stopped: keys typed on the X68000 keyboard still echo and run (CON is not stuck)", "still-alive" in s.split("echo still-alive")[-1] if "echo still-alive" in s else False,
-          "%.1fs to type / %s" % (t1, s[-160:].replace("\n", " | ")))
+    if not AUX:
+        time.sleep(2)
+        sh(sys.executable, os.path.join(serial, "test", "xtype.py"), run, "ver\\n")
+        sh(sys.executable, os.path.join(serial, "test", "xtype.py"), run, "echo still-alive\\n")
+        t1 = time.time() - t0
+        time.sleep(3)
+        s = screen()
+        check("zmuxd stopped: keys typed on the X68000 keyboard still echo and run (CON is not stuck)", "still-alive" in s.split("echo still-alive")[-1] if "echo still-alive" in s else False,
+              "%.1fs to type / %s" % (t1, s[-160:].replace("\n", " | ")))
+    time.sleep(max(0, DELAY - (time.time() - t0)))
+    print("e2e: restarting zmuxd %.1fs after stopping it" % (time.time() - t0))
     zd = start_zd(2)
     t0 = time.time()
     ok = wait_up(30)
-    check("zmuxd restarted at once (X68000 still up): line up again", ok, "%.1fs %s" % (time.time() - t0, status()))
+    check("zmuxd restarted after %gs (X68000 still up): line up again" % DELAY, ok, "%.1fs %s" % (time.time() - t0, status()))
     if ok:
         ver_from_tab0("restarted zmuxd").close()
 
