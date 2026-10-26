@@ -64,6 +64,22 @@ call_orig:
     movem.l %sp@+,%d2-%d7/%a2-%a6
     rts
 
+/* CON デバイスの横取り (zmux.c の con_hook が CON のヘッダの strategy / interrupt をここに替える)。
+ * strategy は要求の場所 (a5) を控えて元へ。interrupt は con_before(要求) を呼んでから元の interrupt へ (レジスタは元に渡すときのまま) */
+    .global con_strat, con_intr, old_con_strat, old_con_intr
+con_strat:
+    move.l  %a5,con_req
+    move.l  old_con_strat,%sp@-
+    rts
+con_intr:
+    movem.l %d0-%d7/%a0-%a6,%sp@-
+    move.l  con_req,%sp@-
+    jsr     con_before
+    addq.l  #4,%sp
+    movem.l %sp@+,%d0-%d7/%a0-%a6
+    move.l  old_con_intr,%sp@-
+    rts
+
     .global dos_print
 dos_print:
     move.l  %sp@(4),%sp@-
@@ -78,4 +94,10 @@ reqheader:
 old_keysns:
     .long   0
 old_keyinp:
+    .long   0
+old_con_strat:
+    .long   0
+old_con_intr:
+    .long   0
+con_req:
     .long   0

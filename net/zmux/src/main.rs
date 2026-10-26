@@ -8,6 +8,7 @@
 //!   zmux attach                                       新しい zosh のセッション (X68000 で zos.x が動いているとき)
 //!   zmux attach N                                     セッション N (1〜4) につなぎ直す
 //!   zmux kill N                                       セッション N を閉じる
+//!   zmux screen [-o FILE.png] [-t]                    X68000 のテキスト VRAM を PNG / 文字にする (screen.rs)
 //!   zmux status                                       線の状態
 //!
 //! attach にはホットキーも前置キーも無い。端末を raw にして、届いたバイトをそのまま送る (`zmux` の TUI は前置キー Ctrl+X だけ持つ)。
@@ -19,6 +20,7 @@ mod keys;
 mod link;
 mod netpipe;
 mod rdrive;
+mod screen;
 mod tui;
 mod tsp;
 mod zss;
@@ -44,7 +46,7 @@ fn sock_path() -> String {
     format!("/tmp/zmux-{}.sock", unsafe { libc::getuid() })
 }
 
-fn die(msg: &str) -> ! {
+pub(crate) fn die(msg: &str) -> ! {
     eprintln!("zmux: {}", msg);
     std::process::exit(1)
 }
@@ -103,6 +105,11 @@ fn open_serial(path: &str, baud: u32) -> std::fs::File {
         libc::cfsetispeed(&mut t, speed);
         libc::cfsetospeed(&mut t, speed);
         libc::tcsetattr(fd, libc::TCSANOW, &t);
+        #[cfg(not(target_os = "linux"))]
+        if ![9600, 19200, 38400, 57600, 115200].contains(&baud) {
+            die(&format!("--baud {}: 表に無い速さは Linux でだけ設定できる", baud));
+        }
+        #[cfg(target_os = "linux")]
         if ![9600, 19200, 38400, 57600, 115200].contains(&baud) {
             // X68000 の SCC を直接設定した速さ (5MHz / 32 / (tc + 2)、tc=0 で 78125) に合わせる
             let mut t2: libc::termios2 = std::mem::zeroed();
@@ -226,6 +233,8 @@ fn daemon(args: &[String]) {
     let mut rd = rdrive::Drive::new(drives);  // チャネル 2 のリモートドライブ (--drive が無ければ中身なし: 要求には「ドライブが無い」と答える)
     rd.log = log;
     let mut rdblk: Vec<u8> = Vec::new();      // チャネル 2 で組み立て中の要求
+    let mut scr_wait: Vec<(UnixStream, Instant)> = Vec::new();   // zmux screen の返事待ち (チャネル 4 の応答が揃ったら全員に返す)
+    let mut scrblk: Vec<u8> = Vec::new();
     let mut layout = String::new();           // TUI のタブとペインの配置 (クライアントが置き、つなぎ直したときに取る)
     let mut last_xchg = Instant::now();
     let mut last_kick = Instant::now();
@@ -286,6 +295,18 @@ fn daemon(args: &[String]) {
                             let _ = writeln!(s, "ok {}", codes.len() / 2);
                         } else {
                             let _ = writeln!(s, "zmux: line is not up (raw); key injection needs zmux.sys");
+                        }
+                    }
+                    Some("screen") => {
+                        // screen 種類 a b c d: X68000 にテキスト VRAM / CGROM の写しを頼む (screen.rs)。返事は "ok N\n" + N バイト
+                        if !link.up {
+                            let _ = writeln!(s, "err line is not up (raw); zmux screen needs zmux.sys");
+                        } else {
+                            if scr_wait.is_empty() {
+                                scrblk.clear();
+                                link.send(link::CH_KEY, &screen::request_msg(num(1, 0) as u8, num(2, 3), num(3, 0), num(4, 0), num(5, 0)));
+                            }
+                            scr_wait.push((s, now));
                         }
                     }
                     Some("kill") => {
@@ -375,7 +396,14 @@ fn daemon(args: &[String]) {
         link.tick(&mut out, &mut ev, now);
         for e in ev {
             let (ch, data) = match e {
-                link::Event::Raw(d) => (0u8, d),
+                link::Event::Raw(d) => {
+                    if log {
+                        // 枠の外の素の文字 (どこから来たかを後で調べられるように、そのまま残す)
+                        let t: String = d.iter().take(400).map(|&c| if (0x20..0x7f).contains(&c) { (c as char).to_string() } else { format!("\\x{:02x}", c) }).collect();
+                        eprintln!("zmuxd: raw {} bytes: {}", d.len(), t);
+                    }
+                    (0u8, d)
+                }
                 link::Event::Data(link::CH_NP, d, fl) => {
                     npblk.extend_from_slice(&d);
                     if fl & link::F_END != 0 {
@@ -425,9 +453,31 @@ fn daemon(args: &[String]) {
                     }
                     continue;
                 }
+                link::Event::Data(screen::CH_SCR, d, fl) => {
+                    scrblk.extend_from_slice(&d);
+                    if fl & link::F_END != 0 {
+                        for (mut w, _) in scr_wait.drain(..) {
+                            let _ = w.write_all(format!("ok {}\n", scrblk.len()).as_bytes());
+                            let _ = w.write_all(&scrblk);
+                        }
+                        scrblk.clear();
+                    }
+                    continue;
+                }
                 link::Event::Data(ch, d, _) => (ch, d),
-                link::Event::Up => { if log { eprintln!("zmuxd: line up"); } rdblk.clear(); continue; }
-                link::Event::Down => { if log { eprintln!("zmuxd: line down (raw)"); } npblk.clear(); rdblk.clear(); continue; }
+                link::Event::Up => {
+                    if log { eprintln!("zmuxd: line up"); }
+                    rdblk.clear(); scrblk.clear();
+                    // 線を作り直すと X68000 は送りかけの画面の写しを捨てる
+                    for (mut w, _) in scr_wait.drain(..) { let _ = writeln!(w, "err line was reset"); }
+                    continue;
+                }
+                link::Event::Down => {
+                    if log { eprintln!("zmuxd: line down (raw)"); }
+                    npblk.clear(); rdblk.clear(); scrblk.clear();
+                    for (mut w, _) in scr_wait.drain(..) { let _ = writeln!(w, "err line went down"); }
+                    continue;
+                }
             };
             if ch == 0 {
                 scroll.extend(data.iter().copied());
@@ -438,6 +488,11 @@ fn daemon(args: &[String]) {
             if ch == 0 {
                 clients.retain(|_, (s, a)| *a != Att::Console || s.write_all(&data).is_ok());
             }
+        }
+        if scr_wait.first().is_some_and(|(_, t)| now.duration_since(*t) > Duration::from_secs(120)) {
+            // 古い zmux.sys は IN_SCREEN を知らずに捨てるので、返事が来ない
+            for (mut w, _) in scr_wait.drain(..) { let _ = writeln!(w, "err no answer from the X68000 (zmux.sys too old?)"); }
+            scrblk.clear();
         }
         let tw = Instant::now();
         if !out.is_empty() {
@@ -506,7 +561,7 @@ impl Drop for RawMode {
     }
 }
 
-fn connect() -> UnixStream {
+pub(crate) fn connect() -> UnixStream {
     let sp = sock_path();
     UnixStream::connect(&sp).unwrap_or_else(|e| die(&format!("{}: {} (zmuxd は動いているか)", sp, e)))
 }
@@ -676,12 +731,13 @@ fn main() {
         Some("kill") => kill(&argv[2..]),
         Some("key") => key_cmd(&argv[2..]),
         Some("kbd") => kbd(),
+        Some("screen") => screen::run(&argv[2..]),
         Some("keys") => {
             println!("X68000 key names: {}", keys::NAMES.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(" "));
             println!("\ndefault ~/.config/zmux/keys.toml:\n{}", keys::DEFAULT_TOML);
         }
         _ => {
-            eprintln!("usage: zmux            (tmux のような画面。前置キー Ctrl+X のあと | - c n p 0-9 k d ?)\n       zmux daemon (--port DEV [--baud N] | --tcp HOST:PORT) [--drive DIR] [-v]\n       zmux attach [0 | N]   (0 = X68000 のコンソール、番号なし = 新しい zosh のセッション、N = セッション N につなぎ直す)\n       zmux kill N\n       zmux key TEXT | zmux key -n NAME...   (本体のキー入力に注入)\n       zmux kbd   (打ったキーを全部注入)\n       zmux keys  (キーの名前と keys.toml の既定)\n       zmux status");
+            eprintln!("usage: zmux            (tmux のような画面。前置キー Ctrl+X のあと | - c n p 0-9 k d ?)\n       zmux daemon (--port DEV [--baud N] | --tcp HOST:PORT) [--drive DIR] [-v]\n       zmux attach [0 | N]   (0 = X68000 のコンソール、番号なし = 新しい zosh のセッション、N = セッション N につなぎ直す)\n       zmux kill N\n       zmux key TEXT | zmux key -n NAME...   (本体のキー入力に注入)\n       zmux kbd   (打ったキーを全部注入)\n       zmux keys  (キーの名前と keys.toml の既定)\n       zmux screen [-o FILE.png] [-t] [-p 0123]   (テキスト VRAM を PNG / 文字に)\n       zmux status");
             std::process::exit(2);
         }
     }
