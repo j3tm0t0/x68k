@@ -135,6 +135,7 @@ static int ring_get(struct ring *r) { int c = r->b[r->tail]; r->tail = (r->tail 
    CON に書かれた文字をチャネル 0 に写す (con_before)。AUX を読みに来ると 0 に戻り、これまでと同じ動きになる */
 static volatile uint8_t con_rd;
 static uint8_t con_hooked;              /* CON デバイスを横取りした */
+static uint8_t mir_stall;               /* 1 = 写す先が待っても空かなかった: 半分空くまで待たずに捨てる (Pi が止まっていると、1 文字ごとに 1 秒待つことになる) */
 static uint8_t mirror_off;              /* zmux.x -m off: CON の写しとタブ 0 からのキー入力をやめる */
 static volatile uint32_t kp_n;           /* key_peek の呼ばれた回数 (st.kp に写す) */
 static volatile uint32_t keys_ch0;       /* タブ 0 の文字をキー入力として渡した数 */
@@ -357,6 +358,7 @@ static void reset_link(void)
   brx_len = brx_done = 0;
   rtx_len = rtx_pos = 0;                /* リモートドライブの要求も (zrmt.sys は時間切れで失敗を返す) */
   rd_done = 0;
+  mir_stall = 0;
   scr_on = 0;                           /* 画面の写しも (zmuxd は線が作り直されたら待っている人に断る) */
   stage_len = stage_pos = 0;
 }
@@ -748,15 +750,17 @@ static void mirror_put(const uint8_t *p, int n)
 {
   long t0 = 0;
   int i;
+  if (mir_stall && ring_free(&txr) > RINGSZ / 2)
+    mir_stall = 0;
   for (i = 0; i < n; i++) {
     if (ring_free(&txr) == 0) {
       uint16_t sr;
       __asm__ volatile ("move.w %%sr,%0" : "=d"(sr));
-      if (sr & 0x0700) { st.mirdrop += n - i; return; }
+      if ((sr & 0x0700) || mir_stall) { st.mirdrop += n - i; return; }
       if (!t0) t0 = now();
       while (ring_free(&txr) == 0 && up && since(t0) < 100)
         zl_poll();
-      if (ring_free(&txr) == 0 || !up) { st.mirdrop += n - i; return; }
+      if (ring_free(&txr) == 0 || !up) { mir_stall = 1; st.mirdrop += n - i; return; }
     }
     ring_put(&txr, p[i]);
     st.mirrored++;
@@ -832,7 +836,10 @@ long zmux_call(long cmd, long *a)
        これまでの呼び出し側は 0 / 1 しか見ないので、bit1 は無視される */
     uint32_t w0, w1;
     st.tcalls++;
-    if (!up && !rawpoll)
+    /* 素の文字の間は回さない (rx.x などが IOCS で直接読み書きしているかもしれない)。ただし zmux -c のときと、コンソールが CON のとき
+       (CON を横取りしていて CON に入力を読みに来た後) は回す: CON の間は誰も AUX を読まないので、回さないと HELLO を送らず、
+       zmuxd を起動し直したあと線が UP に戻らなかった (実機 XVI) */
+    if (!up && !rawpoll && !(con_hooked && con_rd && !mirror_off))
       return 0;
     w0 = st.rxbytes + st.outbytes + st.resend + st.txf + st.rxf;
     zl_poll();

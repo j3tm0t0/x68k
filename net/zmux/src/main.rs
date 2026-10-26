@@ -396,7 +396,14 @@ fn daemon(args: &[String]) {
         link.tick(&mut out, &mut ev, now);
         for e in ev {
             let (ch, data) = match e {
-                link::Event::Raw(d) => (0u8, d),
+                link::Event::Raw(d) => {
+                    if log {
+                        // 枠の外の素の文字 (どこから来たかを後で調べられるように、そのまま残す)
+                        let t: String = d.iter().take(400).map(|&c| if (0x20..0x7f).contains(&c) { (c as char).to_string() } else { format!("\\x{:02x}", c) }).collect();
+                        eprintln!("zmuxd: raw {} bytes: {}", d.len(), t);
+                    }
+                    (0u8, d)
+                }
                 link::Event::Data(link::CH_NP, d, fl) => {
                     npblk.extend_from_slice(&d);
                     if fl & link::F_END != 0 {

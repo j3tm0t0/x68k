@@ -189,6 +189,7 @@ pub struct Link {
     t_ack_due: Instant,
     busy_until: Instant, // 線に書いたバイトを送り終える見込みの時刻
     t_done: Instant,     // 確認待ちのデータのフレームを送り終える見込みの時刻 (送り直しの時計はここから数える。KICK などでは動かさない)
+    t_hello: Option<Instant>, // こちらから HELLO を送った時刻 (X68000 が UP のままで、こちらが作り直されたとき)
     pub byte_time: Duration, // 1 バイトの時間 (10 ビット / 速さ)
     pub stats: Stats,
 }
@@ -229,6 +230,7 @@ impl Link {
             t_ack_due: now,
             busy_until: now,
             t_done: now,
+            t_hello: None,
             byte_time: Duration::from_micros(10_000_000 / 19200),
             stats: Stats::default(),
         }
@@ -351,6 +353,14 @@ impl Link {
                         }
                         self.ctl(OP_HELLO_ACK, out, now);
                     }
+                    OP_HELLO_ACK if !self.up && self.t_hello.is_some_and(|t| now.duration_since(t) < Duration::from_secs(5)) => {
+                        // こちらの HELLO に X68000 が答えた (X68000 も線を作り直した)
+                        self.reset(now);
+                        self.up = true;
+                        self.stats.ups += 1;
+                        self.t_hello = None;
+                        ev.push(Event::Up);
+                    }
                     OP_BYE => self.go_down(ev),
                     _ => {}
                 }
@@ -358,6 +368,12 @@ impl Link {
             return;
         }
         if !self.up {
+            // 番号付きのフレームが来た = X68000 は UP のまま (zmuxd を起動し直した)。X68000 は 60 秒経つまで HELLO を送らず、
+            // 画面が CON だと誰も線を回さないこともあるので、こちらから HELLO を送って作り直す (1 秒に 1 回まで)
+            if self.t_hello.map_or(true, |t| now.duration_since(t) >= Duration::from_secs(1)) {
+                self.t_hello = Some(now);
+                self.ctl(OP_HELLO, out, now);
+            }
             return;
         }
         self.t_last_rx = now;
