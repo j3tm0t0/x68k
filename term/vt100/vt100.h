@@ -76,6 +76,10 @@ void vt_con_new(void *scr);
 void vt_con_visible(int on);
 void vt_follow(void);                                /* zos.x のペインの枠を見直す (出力が無いときも。ssh.x のキー待ちから) */
 void vt_con_rect(int col, int row, int w, int h);
+extern int vt_nomove;                                /* (zos.x) vt_defer のときスクロールで VRAM を動かさない (既定 1) */
+extern int vt_noras;                                 /* 1: スクロールで TXRASCOPY を使わず CPU で VRAM を動かす (切り分け用) */
+extern int vt_defer;                                 /* (zos.x) 1: vt_write は描かない。描くのは vt_flush_some */
+int vt_flush_some(int maxrows);                      /* (zos.x) 描き直しの要る行を多くて maxrows 行描く。残っていれば 1 */
 /* スクロールバックの置き場 (zos.x が持つ。term/vt100 はセルを 32 ビットの値として渡すだけ。後で Pico の SD に置き換えられる) */
 typedef struct vt_sb vt_sb;
 struct vt_sb {

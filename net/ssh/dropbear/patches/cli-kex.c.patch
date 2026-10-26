@@ -77,7 +77,7 @@
 +#if DROPBEAR_X68K
 +		/* x68k: ~/.ssh が作れない Human68k (TwentyOne が無い) のために置き場を選ぶ (x68k_shim.c の x68k_ssh_dir: SSH_DIR か ~/ssh) */
 +		{
-+			const char *sd = x68k_ssh_dir(homedir);
++			const char *sd = x68k_ssh_dir(homedir, 1);
 +			len = strlen(sd);
 +			filename = m_malloc(len + 18);
 +			snprintf(filename, len+18, "%s/known_hosts", sd);
