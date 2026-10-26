@@ -1121,7 +1121,9 @@ static NOINLINE int flush_n(int maxrows)
     }
   }
   sa_off();
+#ifndef VT_ZOS   /* zos.x は _B_CUROFF を横取りして今のペインに ESC[?25l を送るので、zos.x の中で呼ぶとペインのカーソルが消える */
   _iocs_b_curoff();   /* DOS の出力 (ssh.x のログなど) が Human68k のカーソルを戻すことがあるので、描くたびに消す */
+#endif
   if (cur_vis && csr_ok) { cursor_xor(cx, cy); csr_shown = 1; csr_x = cx; csr_y = cy; }
   sup_leave(s);
   return more;
