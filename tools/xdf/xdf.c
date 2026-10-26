@@ -1,18 +1,23 @@
 /*
  * xdfwrite.x / xdfread.x -- 2HD フロッピーと XDF イメージ (1,261,568 バイト) の間を IOCS で直接読み書きする。
  *
- *   xdfwrite [-v] [-f] [--force] IMAGE.XDF B:   イメージを B: のフロッピーに書き、全トラックを読み返して比べる
+ *   xdfwrite [-v] [-f] [-c CYL] [--force] IMAGE.XDF B:
+ *                                                イメージを B: のフロッピーに書き、全トラックを読み返して比べる
  *                                                (比べるのは書いたときに取ったセクタごとの CRC32。イメージは 1 度だけ読む)
  *                                                -f は先に _B_FORMAT で 2HD (1024 バイト x 8 セクタ) に初期化する。
  *                                                -f が無くても、最初と最後のトラックが 2HD として読めなければ初期化する
  *                                                (DOS/V の 1.44MB や未初期化のディスク)
+ *                                                -c CYL は CYL 番のシリンダから書く (途中で止まったときの続き。初期化しない)
  *                                                A: (起動中のディスク) は --force が無いと断る
  *   xdfread  [-v] B: OUT.XDF                     B: のフロッピーを丸ごと読んでファイルにする (A: も読める)。
  *                                                OUT.XDF が既にあれば断る
  *   xdfwrite -s B: / xdfread -s B:               ドライブの状態 (_B_DRVCHK と _B_DRVSNS) を出すだけ
  *
  * 2HD は 77 シリンダ x 2 ヘッド x 8 セクタ x 1024 バイト。XDF はこの順 (シリンダ、ヘッド、セクタ) に並べたもの。
- * IOCS の _B_READ / _B_WRITE / _B_FORMAT を 1 トラック (8KB) ずつ呼ぶ。DOS を通さないので、
+ * IOCS の _B_READ / _B_WRITE / _B_FORMAT を 1 トラック (8KB) ずつ呼ぶ。失敗したら 1 秒待って 5 回までやり直す。
+ * イメージはメモリに入るだけ (最大 40 シリンダ) まとめて読んでから続けて書く。リモートドライブからの読み込みが遅く、
+ * 1 シリンダずつ読むとその間にドライブのモーターが止まり、次の書き込みで not ready になることがあったため
+ * (実機の XVI で C26 の書き込みが 691a001a で失敗した)。DOS を通さないので、
  * ディスクが無いときや書き込み禁止のときに Human68k のエラーの窓 (中止/再実行/無視) は出ない。
  * 先に _B_DRVCHK でディスクの有無と書き込み禁止を確かめる。
  *
@@ -27,12 +32,18 @@
 #define __IOCS_INLINE__
 #include <x68k/iocs.h>
 
+#ifndef O_BINARY
+#define O_BINARY 0
+#endif
+
 #define CYLS    77
 #define HEADS   2
 #define SECS    8
 #define SECSIZE 1024
 #define TRACK   (SECS * SECSIZE)
-#define XDFSIZE ((long)CYLS * HEADS * TRACK)
+#define CYLSIZE (HEADS * TRACK)
+#define XDFSIZE ((long)CYLS * CYLSIZE)
+#define TRIES   6
 
 /* _B_DRVCHK (d2 = 0、状態を見るだけ) の戻り値。XEiJ で確かめた: 入っている 02、書き込み禁止 0a、無い 0c */
 #define CHK_INSERTED  0x02   /* ディスクが入っている */
@@ -41,7 +52,6 @@
 static int verbose;
 static unsigned char dbuf[TRACK];
 #ifndef XDFREAD
-static unsigned char fbuf[TRACK];
 static unsigned long crcs[CYLS * HEADS * SECS];   /* 書いたセクタの CRC32。読み返しはこれと比べる (C: を 2 度読まない) */
 static unsigned long crctab[256];
 
@@ -56,7 +66,10 @@ static unsigned long crc32(const unsigned char *p, int n)
 static int pda(int unit) { return 0x9070 | (unit << 8); }   /* PDA 9x (2HD) + MFM、再試行あり */
 static int pos(int c, int h, int r) { return 0x03000000 | (c << 16) | (h << 8) | r; }   /* N=3 (1024 バイト) */
 
-/* 戻り値の上位 2 バイトは FDC の ST0 / ST1。ST0 の bit7-6 が 00 なら正常に終わった */
+/* 戻り値は FDC の ST0、ST1、ST2、シリンダ番号の 4 バイト。ST0 の bit7-6 が 00 なら正常に終わった。
+ * XEiJ で確かめた値: 正常 0100001a (装置 1、C26)、書き込み禁止 4102001a、ディスク無し 69000000、セクタが無い ffffffff。
+ * ST0 の bit5 (SE、シーク終わり) が立つのはシークの段階で失敗したときで、2 バイト目は ST1 ではない
+ * (実機の 691a001a は「C26 へのシークでドライブが not ready」。2 バイト目もシリンダ番号) */
 static int failed(int st) { return (st & 0xc0000000) != 0; }
 
 static void explain(int st)
@@ -64,7 +77,10 @@ static void explain(int st)
   fflush(stdout);
   int st0 = (st >> 24) & 0xff, st1 = (st >> 16) & 0xff, st2 = (st >> 8) & 0xff;
   fprintf(stderr, " (status %08x:", st);
-  if (st0 & 0x08) fprintf(stderr, " not ready");
+  if (st == -1) { fprintf(stderr, " sector not found)\n"); return; }
+  if (st0 & 0x08) fprintf(stderr, " drive not ready");
+  if (st0 & 0x10) fprintf(stderr, " equipment check");
+  if (st0 & 0x20) { fprintf(stderr, " at seek)\n"); return; }
   if (st1 & 0x02) fprintf(stderr, " write protected");
   if (st1 & 0x01) fprintf(stderr, " no address mark");
   if (st1 & 0x04) fprintf(stderr, " no data");
@@ -98,35 +114,38 @@ static int check(int unit, int write)
   return 1;
 }
 
-/* 1 トラックを読む / 書く。IOCS の再試行に加えて 3 回までやり直す */
-static int rdtrack(int unit, int c, int h, void *buf)
+static void wait_cs(int cs)   /* 1/100 秒単位で待つ */
 {
-  int st = 0;
-  for (int i = 0; i < 3; i++)
-    if (!failed(st = _iocs_b_read(pda(unit), pos(c, h, 1), TRACK, buf))) return 0;
-  return st ? st : -1;
+  int t0 = _iocs_ontime().sec;
+  while ((unsigned)(_iocs_ontime().sec - t0) < (unsigned)cs)
+    ;
 }
 
-#ifndef XDFREAD
-static int wrtrack(int unit, int c, int h, const void *buf)
-{
-  int st = 0;
-  for (int i = 0; i < 3; i++)
-    if (!failed(st = _iocs_b_write(pda(unit), pos(c, h, 1), TRACK, buf))) return 0;
-  return st ? st : -1;
-}
-
-static int fmttrack(int unit, int c, int h)
+/* 1 トラックの読み・書き・初期化。IOCS の再試行に加えて、失敗したら知らせて 1 秒待ち、tries 回までやり直す */
+enum { RD, WR, FMT };
+static int track(int op, int unit, int c, int h, void *buf, int tries)
 {
   unsigned char id[SECS * 4];
-  for (int r = 0; r < SECS; r++) {
-    id[r*4] = c; id[r*4+1] = h; id[r*4+2] = r + 1; id[r*4+3] = 3;
+  int st = 0;
+  for (int i = 1; ; i++) {
+    switch (op) {
+    case RD: st = _iocs_b_read(pda(unit), pos(c, h, 1), TRACK, buf); break;
+    case WR: st = _iocs_b_write(pda(unit), pos(c, h, 1), TRACK, buf); break;
+    default:
+      for (int r = 0; r < SECS; r++) {
+        id[r*4] = c; id[r*4+1] = h; id[r*4+2] = r + 1; id[r*4+3] = 3;
+      }
+      st = _iocs_b_format(pda(unit), pos(c, h, 1), sizeof id, id);
+    }
+    if (!failed(st)) return 0;
+    if (i >= tries) return st;
+    printf("\n%s C%d H%d failed, retrying (%d/%d)", op == RD ? "read" : op == WR ? "write" : "format", c, h, i, tries - 1);
+    explain(st);
+    wait_cs(100);
   }
-  int st = _iocs_b_format(pda(unit), pos(c, h, 1), sizeof id, id);
-  return failed(st) ? st : 0;
 }
 
-#endif
+static int rdtrack(int unit, int c, int h, void *buf) { return track(RD, unit, c, h, buf, TRIES); }
 
 #ifndef XDFREAD
 /* 2HD (1024 バイト x 8 セクタ) に初期化してあるかを、最初と最後のトラックを読んで見る。
@@ -134,7 +153,7 @@ static int fmttrack(int unit, int c, int h)
 static int is_2hd(int unit)
 {
   int st;
-  if ((st = rdtrack(unit, 0, 0, dbuf)) || (st = rdtrack(unit, CYLS - 1, HEADS - 1, dbuf))) {
+  if ((st = track(RD, unit, 0, 0, dbuf, 1)) || (st = track(RD, unit, CYLS - 1, HEADS - 1, dbuf, 1))) {
     if (verbose) { printf("track check"); explain(st); }
     return 0;
   }
@@ -205,17 +224,22 @@ static int run(int argc, char **argv)
 #else
 static int run(int argc, char **argv)
 {
-  int format = 0, force = 0, unit;
+  int format = 0, force = 0, start = 0, unit;
   for (; argc && argv[0][0] == '-'; argc--, argv++) {
     if (!strcmp(argv[0], "-f")) format = 1;
+    else if (!strcmp(argv[0], "-c") && argc > 1) {
+      start = atoi(argv[1]); argc--, argv++;
+      if (start < 0 || start >= CYLS) argc = -1;
+    }
     else if (!strcmp(argv[0], "-v")) verbose = 1;
     else if (!strcmp(argv[0], "--force")) force = 1;
     else argc = -1;
   }
   if (argc != 2 || (unit = drive(argv[1])) < 0) {
-    fprintf(stderr, "usage: xdfwrite [-v] [-f] [--force] IMAGE.XDF B:\n"
+    fprintf(stderr, "usage: xdfwrite [-v] [-f] [-c CYL] [--force] IMAGE.XDF B:\n"
                     "  writes a 2HD XDF image to the disk and reads it back to compare\n"
                     "  -f       format the disk first (2HD, 1024 bytes x 8 sectors)\n"
+                    "  -c CYL   start writing at cylinder CYL (0-76; resume after a failure, no format)\n"
                     "  --force  allow drive A: (the boot disk)\n"
                     "       xdfwrite -s B:   (show the drive status)\n");
     return 1;
@@ -238,7 +262,8 @@ static int run(int argc, char **argv)
     crctab[i] = c;
   }
 
-  if (!format && !is_2hd(unit)) {
+  if (start) format = 0;
+  else if (!format && !is_2hd(unit)) {
     printf("drive %c: is not X68000 2HD (1024 bytes x 8 sectors); formatting it first\n", 'A' + unit);
     format = 1;
   }
@@ -246,30 +271,47 @@ static int run(int argc, char **argv)
     for (int c = 0; c < CYLS; c++) {
       progress("format", c);
       for (int h = 0; h < HEADS; h++) {
-        int st = fmttrack(unit, c, h);
+        int st = track(FMT, unit, c, h, 0, TRIES);
         if (st) { printf("\nNG: format failed at C%d H%d", c, h); explain(st); return 1; }
       }
     }
     printf("\n");
   }
 
+  /* イメージを入るだけ (最大 40 シリンダ) メモリに読み、まとめて書く */
+  int n = 40;
+  unsigned char *buf;
+  while (!(buf = malloc((long)n * CYLSIZE)))
+    if ((n /= 2) == 0) { fprintf(stderr, "out of memory\n"); return 1; }
+  if (verbose) printf("buffer: %d cylinders\n", n);
   lseek(fd, 0, SEEK_SET);
-  for (int c = 0; c < CYLS; c++) {
-    progress("write", c);
-    for (int h = 0; h < HEADS; h++) {
-      if (read(fd, fbuf, TRACK) != TRACK) { fprintf(stderr, "\nread error on %s\n", argv[0]); return 1; }
-      for (int r = 0; r < SECS; r++)
-        crcs[(c * HEADS + h) * SECS + r] = crc32(fbuf + r * SECSIZE, SECSIZE);
-      int st = wrtrack(unit, c, h, fbuf);
-      if (st) {
-        printf("\nNG: write failed at C%d H%d", c, h);
-        explain(st);
-        if (!format) printf("the disk may not be formatted as X68000 2HD; try again with -f\n");
-        return 1;
+  for (int c0 = 0; c0 < CYLS; c0 += n) {
+    int k = c0 + n < CYLS ? n : CYLS - c0;
+    for (int i = 0; i < k; i++) {
+      unsigned char *p = buf + (long)i * CYLSIZE;
+      progress("load ", c0 + i);
+      if (read(fd, p, CYLSIZE) != CYLSIZE) { fprintf(stderr, "\nread error on %s\n", argv[0]); return 1; }
+      for (int s = 0; s < HEADS * SECS; s++)
+        crcs[(c0 + i) * HEADS * SECS + s] = crc32(p + s * SECSIZE, SECSIZE);
+    }
+    for (int i = 0; i < k; i++) {
+      int c = c0 + i;
+      if (c < start) continue;
+      progress("write", c);
+      for (int h = 0; h < HEADS; h++) {
+        int st = track(WR, unit, c, h, buf + (long)i * CYLSIZE + h * TRACK, TRIES);
+        if (st) {
+          printf("\nNG: write failed at C%d H%d", c, h);
+          explain(st);
+          if (!format && !(st & 0x08000000)) printf("the disk may not be formatted as X68000 2HD; try again with -f\n");
+          printf("to resume: xdfwrite -c %d %s %s\n", c, argv[0], argv[1]);
+          return 1;
+        }
       }
     }
   }
   close(fd);
+  free(buf);
   printf("\n");
 
   for (int c = 0; c < CYLS; c++) {

@@ -142,6 +142,14 @@ def main():
     s = xeij("overwrite", {1: fd1, 2: c2hq, 3: d2hq}, ["xdfwrite -v c:\\R.XDF b:"])
     check("overwrite OK", "OK: 1261568 bytes written and verified" in s)
     check("B: image == R.XDF (overwrite)", open(fd1, "rb").read() == R)
+    check("40 cylinders buffered in 2MB", "buffer: 40 cylinders" in s)
+
+    # 3a. 途中から続きを書く (-c)。C0-C39 だけ書いてあるディスクに -c 40
+    open(fd1, "wb").write(R[:40 * 16384] + bytes(SIZE - 40 * 16384))
+    mk2hq(d2hq, {})
+    s = xeij("resume", {1: fd1, 2: c2hq, 3: d2hq}, ["xdfwrite -c 40 c:\\R.XDF b:"])
+    check("resume OK", "OK: 1261568 bytes written and verified" in s)
+    check("B: image == R.XDF (resume)", open(fd1, "rb").read() == R)
 
     # 3b. DOS/V の 1.44MB (512 バイト x 18 セクタ) のディスクに -f 無しで書く (自動で 2HD に初期化する)
     mk2hq(fd1, {})
