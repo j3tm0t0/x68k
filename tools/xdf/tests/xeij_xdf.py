@@ -15,8 +15,7 @@ top = os.path.abspath(os.path.join(xdf, "../.."))
 tools = os.environ.get("XEIJ_TOOLS", "/Users/moto/Dropbox/src/github.com/j3tm0t0/x68kcli/tools")
 HUMAN = os.path.join(tools, "xeij/HUMAN302.XDF")
 SIZE = 1261568
-run = os.path.abspath(sys.argv[1])
-os.makedirs(run, exist_ok=True)
+run = os.path.abspath(sys.argv[1]) if __name__ == "__main__" else None
 py = [sys.executable, "-I"]
 
 
@@ -108,62 +107,69 @@ def check(name, ok):
     if not ok: fails.append(name)
 
 
-rnd = os.path.join(run, "R.XDF")
-random.seed(26)
-open(rnd, "wb").write(bytes(random.getrandbits(8) for _ in range(SIZE)))
-R = open(rnd, "rb").read()
-small = os.path.join(run, "SMALL.XDF")
-open(small, "wb").write(R[:4096])
-c2hq, d2hq, fd1 = (os.path.join(run, n) for n in ("c.2hq", "d.2hq", "fd1.xdf"))
 
-# 1. 断る場合 (画面は 31 行なので、試験を分けてスクロールで消えないようにする)
-mk2hq(c2hq, {"R.XDF": rnd, "SMALL.XDF": small}); mk2hq(d2hq, {})
-open(fd1, "wb").write(bytes(SIZE))
-s = xeij("refuse", {1: fd1, 2: c2hq, 3: d2hq},
-         ["xdfwrite -s b:", "xdfwrite c:\\R.XDF a:", "xdfwrite c:\\SMALL.XDF b:", "xdfread b: c:\\R.XDF"])
-check("status shows inserted", "(inserted)" in s)
-check("A: refused without --force", "drive A: is the boot disk" in s)
-check("wrong size refused", "SMALL.XDF is 4096 bytes" in s)
-check("xdfread does not overwrite", "R.XDF already exists" in s)
-check("B: untouched", open(fd1, "rb").read() == bytes(SIZE))
+def main():
+    os.makedirs(run, exist_ok=True)
+    rnd = os.path.join(run, "R.XDF")
+    random.seed(26)
+    open(rnd, "wb").write(bytes(random.getrandbits(8) for _ in range(SIZE)))
+    R = open(rnd, "rb").read()
+    small = os.path.join(run, "SMALL.XDF")
+    open(small, "wb").write(R[:4096])
+    c2hq, d2hq, fd1 = (os.path.join(run, n) for n in ("c.2hq", "d.2hq", "fd1.xdf"))
 
-# 2. 0 埋めのディスクに -f (初期化してから書く)、読み返しを D: に
-s = xeij("format", {1: fd1, 2: c2hq, 3: d2hq}, ["xdfwrite -f c:\\R.XDF b:", "xdfread b: d:\\BACK.XDF"])
-check("format + write + verify OK", "OK: 1261568 bytes written and verified" in s)
-check("xdfread OK", "OK: 1261568 bytes\n" in s)
-check("B: image == R.XDF", open(fd1, "rb").read() == R)
-check("D:\\BACK.XDF == R.XDF", get(d2hq, "BACK.XDF") == R)
+    # 1. 断る場合 (画面は 31 行なので、試験を分けてスクロールで消えないようにする)
+    mk2hq(c2hq, {"R.XDF": rnd, "SMALL.XDF": small}); mk2hq(d2hq, {})
+    open(fd1, "wb").write(bytes(SIZE))
+    s = xeij("refuse", {1: fd1, 2: c2hq, 3: d2hq},
+             ["xdfwrite -s b:", "xdfwrite c:\\R.XDF a:", "xdfwrite c:\\SMALL.XDF b:", "xdfread b: c:\\R.XDF"])
+    check("status shows inserted", "(inserted)" in s)
+    check("A: refused without --force", "drive A: is the boot disk" in s)
+    check("wrong size refused", "SMALL.XDF is 4096 bytes" in s)
+    check("xdfread does not overwrite", "R.XDF already exists" in s)
+    check("B: untouched", open(fd1, "rb").read() == bytes(SIZE))
 
-# 3. 中身のあるディスクに (初期化なし) 書く
-shutil.copy(HUMAN, fd1); os.chmod(fd1, 0o644)
-mk2hq(d2hq, {})
-s = xeij("overwrite", {1: fd1, 2: c2hq, 3: d2hq}, ["xdfwrite -v c:\\R.XDF b:"])
-check("overwrite OK", "OK: 1261568 bytes written and verified" in s)
-check("B: image == R.XDF (overwrite)", open(fd1, "rb").read() == R)
+    # 2. 0 埋めのディスクに -f (初期化してから書く)、読み返しを D: に
+    s = xeij("format", {1: fd1, 2: c2hq, 3: d2hq}, ["xdfwrite -f c:\\R.XDF b:", "xdfread b: d:\\BACK.XDF"])
+    check("format + write + verify OK", "OK: 1261568 bytes written and verified" in s)
+    check("xdfread OK", "OK: 1261568 bytes\n" in s)
+    check("B: image == R.XDF", open(fd1, "rb").read() == R)
+    check("D:\\BACK.XDF == R.XDF", get(d2hq, "BACK.XDF") == R)
 
-# 3b. DOS/V の 1.44MB (512 バイト x 18 セクタ) のディスクに -f 無しで書く (自動で 2HD に初期化する)
-mk2hq(fd1, {})
-mk2hq(d2hq, {})
-s = xeij("dosv", {1: fd1, 2: c2hq, 3: d2hq}, ["xdfwrite c:\\R.XDF b:", "xdfread b: d:\\DOSV.XDF"])
-check("DOS/V disk detected", "B: is not X68000 2HD" in s)
-check("DOS/V disk: format + write + verify OK", "OK: 1261568 bytes written and verified" in s)
-check("DOS/V disk: read back == R.XDF", get(d2hq, "DOSV.XDF") == R)
-check("DOS/V disk: B: image == R.XDF", open(fd1, "rb").read() == R)
+    # 3. 中身のあるディスクに (初期化なし) 書く
+    shutil.copy(HUMAN, fd1); os.chmod(fd1, 0o644)
+    mk2hq(d2hq, {})
+    s = xeij("overwrite", {1: fd1, 2: c2hq, 3: d2hq}, ["xdfwrite -v c:\\R.XDF b:"])
+    check("overwrite OK", "OK: 1261568 bytes written and verified" in s)
+    check("B: image == R.XDF (overwrite)", open(fd1, "rb").read() == R)
 
-# 4. 書き込み禁止 (中身は R.XDF。HUMAN302.XDF は XEiJ が読み込むときに消されたファイル 2 つを戻すので、読んだものと一致しない)
-shutil.copy(rnd, fd1); os.chmod(fd1, 0o644)
-mk2hq(d2hq, {})
-s = xeij("protected", {1: fd1 + ":R", 2: c2hq, 3: d2hq},
-         ["xdfwrite -s b:", "xdfwrite c:\\R.XDF b:", "xdfread b: d:\\WP.XDF"])
-check("write protected refused", "the disk in drive B: is write protected" in s)
-check("B: unchanged", open(fd1, "rb").read() == R)
-check("read of protected disk == R.XDF", get(d2hq, "WP.XDF") == R)
+    # 3b. DOS/V の 1.44MB (512 バイト x 18 セクタ) のディスクに -f 無しで書く (自動で 2HD に初期化する)
+    mk2hq(fd1, {})
+    mk2hq(d2hq, {})
+    s = xeij("dosv", {1: fd1, 2: c2hq, 3: d2hq}, ["xdfwrite c:\\R.XDF b:", "xdfread b: d:\\DOSV.XDF"])
+    check("DOS/V disk detected", "B: is not X68000 2HD" in s)
+    check("DOS/V disk: format + write + verify OK", "OK: 1261568 bytes written and verified" in s)
+    check("DOS/V disk: read back == R.XDF", get(d2hq, "DOSV.XDF") == R)
+    check("DOS/V disk: B: image == R.XDF", open(fd1, "rb").read() == R)
 
-# 5. ディスク無し
-mk2hq(d2hq, {})
-s = xeij("empty", {2: c2hq, 3: d2hq}, ["xdfwrite -s b:", "xdfwrite c:\\R.XDF b:", "xdfread b: d:\\NONE.XDF"])
-check("no disk (write)", s.count("no disk in drive B:") == 2)
-check("no file created", get(d2hq, "NONE.XDF") is None)
+    # 4. 書き込み禁止 (中身は R.XDF。HUMAN302.XDF は XEiJ が読み込むときに消されたファイル 2 つを戻すので、読んだものと一致しない)
+    shutil.copy(rnd, fd1); os.chmod(fd1, 0o644)
+    mk2hq(d2hq, {})
+    s = xeij("protected", {1: fd1 + ":R", 2: c2hq, 3: d2hq},
+             ["xdfwrite -s b:", "xdfwrite c:\\R.XDF b:", "xdfread b: d:\\WP.XDF"])
+    check("write protected refused", "the disk in drive B: is write protected" in s)
+    check("B: unchanged", open(fd1, "rb").read() == R)
+    check("read of protected disk == R.XDF", get(d2hq, "WP.XDF") == R)
 
-print("ALL PASS" if not fails else "FAILED: " + ", ".join(fails))
-sys.exit(1 if fails else 0)
+    # 5. ディスク無し
+    mk2hq(d2hq, {})
+    s = xeij("empty", {2: c2hq, 3: d2hq}, ["xdfwrite -s b:", "xdfwrite c:\\R.XDF b:", "xdfread b: d:\\NONE.XDF"])
+    check("no disk (write)", s.count("no disk in drive B:") == 2)
+    check("no file created", get(d2hq, "NONE.XDF") is None)
+
+    print("ALL PASS" if not fails else "FAILED: " + ", ".join(fails))
+    sys.exit(1 if fails else 0)
+
+
+if __name__ == "__main__":
+    main()

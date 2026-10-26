@@ -53,3 +53,20 @@ C: (装置 2) に乱数の XDF を入れた 2HQ、D: (装置 3) に空の 2HQ �
 `_B_DRVCHK` の値 (入っている 02、書き込み禁止 0a、無い 0c) と `_B_FORMAT` は XEiJ で確かめたもので、実機では未確認。
 XEiJ は HUMAN302.XDF を読み込むとき、消されたファイル 2 つ (OPMDRV3.X、DUMP.X) を戻すので、書き込み禁止の試験には乱数のイメージを使う。
 実機ではまず `xdfwrite -s b:` で値を見る。
+
+## XVI の起動フロッピー (xvi/mkboot26.sh)
+
+`xvi/mkboot26.sh HUMAN302.XDF XVIA.XDF BOOT26.XDF` が、Compact XVI の新しい起動フロッピーのイメージを作る。
+
+- 起動セクタ (IPL)、ボリューム名、HUMAN.SYS、COMMAND.X は HUMAN302.XDF (シャープが無償公開した Human68k 3.02 のシステムディスク) から取る。
+- `XVIA.XDF` は XVI の今の A: を `xdfread a: c:\xvia.xdf` で読んだもの。CONFIG.SYS、AUTOEXEC.BAT と、そこから使う SYS・BIN・ETC・HOME のファイルを取る。
+- 入れないもの: A: にあった控え (`*.old`、`*.z6`、`AUTOEXEC.ORG` など)、試験の記録 (`snap*.txt`、`*.out`)、ベンチマーク (`cpuspd.x` など)、
+  CONFIG.SYS と AUTOEXEC.BAT が使っていない古い版 (`zmux.sys`、`ZMUX7.SYS`、`contee.sys`、`BIN\zmux.x`、`BIN\RX.X`、`BIN\ZOSHR.X`)。
+- HUMAN302 の BIN から小さな道具 (FORMAT.X、CHKDSK.X、COPYALL.X、SYS.X など) と、xdfwrite.x / xdfread.x を足す。空きは 62KB。
+
+`xvi/test_boot26.py RUNDIR BOOT26.XDF XVIA.XDF` が XVI と同じ手順を XEiJ で試す。DOS/V の 1.44MB の空ディスクを B: に入れて
+`xdfwrite c:\BOOT26.XDF b:` (自動で初期化) と `chkdsk b:` を打ち、書いたディスクがイメージと一致するかを見る。そのあと、書いたディスクから起動した画面と
+元の A: (XVIA.XDF) から起動した画面が同じかを比べる (CONFIG.SYS の常駐と AUTOEXEC.BAT の `RX`、`ZMUX7`、`TIS -p`、`NPD -m` の表示まで。
+RS-232C の相手が無いので、その先は比べない)。
+
+`tests/xeij_boot.py RUNDIR XDF [秒]` は、起動フロッピーを XEiJ で起動して指定の秒数あとの画面の文字を出す。
