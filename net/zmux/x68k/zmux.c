@@ -48,6 +48,8 @@
 #define CH_KEY   1              /* 入力の注入 (Pi → X68000)。メッセージ = 種類 1 バイト + 中身 (下の IN_*) */
 #define IN_KEY   1              /* キー: 2 バイト (スキャンコード, 文字コード) = _B_KEYINP の値の上位・下位 */
 #define IN_MOUSE 2              /* マウス (予定、まだ処理しない): dx(int8) dy(int8) buttons(bit0 左 bit1 右) の 3 バイト */
+#define IN_SCREEN 3             /* 画面の写しの要求: 9 バイト (scr_start のコメント)。応答はチャネル 4 */
+#define CH_SCR   4              /* 画面の写し (テキスト VRAM / CGROM を PackBits で詰めて送る。X68000 → Pi だけ) */
 #define CH_CTL   15
 #define OP_HELLO     1
 #define OP_HELLO_ACK 2
@@ -72,8 +74,6 @@ struct req_header {
 
 extern void dos_print(const char *);
 
-struct ring { uint16_t head, tail; uint8_t b[RINGSZ]; };
-static struct ring rxr, txr;    /* rxr: Pi → AUX の入力、txr: AUX の出力 → Pi */
 static uint8_t outq[OUTSZ];
 static uint16_t oh, ot;
 
@@ -100,6 +100,13 @@ static int rtx_len, rtx_pos;
 static uint8_t *rd_buf;
 static int rd_max, rd_len, rd_done;
 
+/* チャネル 4: 画面の写し (同時に 1 つ。新しい要求は前のを打ち切る)。行ごとに PackBits で詰めて stage に置き、線の窓が空くたびに送る */
+static uint8_t scr_on, scr_kind, scr_planes, scr_x0, scr_w, scr_plane;
+static int scr_y0, scr_rows, scr_row;
+static const uint8_t *scr_base;         /* CGROM のとき */
+static uint8_t stage[160];
+static int stage_len, stage_pos;
+
 /* 受けているフレーム */
 static uint8_t fr[8 + MAXLEN];
 static int fpos, pstate;        /* pstate: 0 = 外, 1 = 外で DLE, 2 = 中, 3 = 中で DLE */
@@ -109,28 +116,97 @@ static uint16_t crctab[256];
 /* 注入のキー (_B_KEYINP の戻り値と同じ形) */
 #define KEYQ 64
 static uint16_t keyq[KEYQ];
-static uint8_t in_need, in_n, in_buf[4];   /* チャネル 1 のメッセージの途中経過 */
+static uint8_t in_need, in_n, in_type, in_buf[12];   /* チャネル 1 のメッセージの途中経過 */
 static volatile uint8_t kh, kt;
 extern void *old_keysns, *old_keyinp;
 extern void hk_keysns(void), hk_keyinp(void);
 extern long call_orig(void *entry, long num);
 static void zl_poll(void);
 
-static void zl_poll(void);
+struct ring { uint16_t head, tail; uint8_t b[RINGSZ]; };
+static struct ring rxr, txr;    /* rxr: Pi → AUX の入力、txr: AUX の出力 → Pi */
+static int ring_count(struct ring *r) { return (r->head - r->tail) & (RINGSZ - 1); }
+static int ring_free(struct ring *r) { return RINGSZ - 1 - ring_count(r); }
+static void ring_put(struct ring *r, int c) { r->b[r->head] = c; r->head = (r->head + 1) & (RINGSZ - 1); }
+static int ring_get(struct ring *r) { int c = r->b[r->tail]; r->tail = (r->tail + 1) & (RINGSZ - 1); return c; }
+
+/* コンソールが CON か AUX か。最後にコンソールの入力 (デバイスの命令 4/5/6) を読みに来たのが CON デバイスなら 1。
+   1 の間は、チャネル 0 (タブ 0) で来た文字をキー入力として渡し (key_peek / key_get が rxr から取る)、
+   CON に書かれた文字をチャネル 0 に写す (con_before)。AUX を読みに来ると 0 に戻り、これまでと同じ動きになる */
+static volatile uint8_t con_rd;
+static uint8_t con_hooked;              /* CON デバイスを横取りした */
+static uint8_t mirror_off;              /* zmux.x -m off: CON の写しとタブ 0 からのキー入力をやめる */
 static volatile uint32_t kp_n;           /* key_peek の呼ばれた回数 (st.kp に写す) */
+static volatile uint32_t keys_ch0;       /* タブ 0 の文字をキー入力として渡した数 */
+
+/* 文字 1 つ → _B_KEYINP の値 (スキャンコード << 8 | 文字コード)。net/zmux/src/keys.rs の char_code と同じ表 (JIS 配列)。
+   表に無いもの (Shift_JIS の 2 バイト文字など) はスキャンコード 0 */
+static const char kr1[] = "1234567890-^\\", kr1s[] = "!\"#$%&'()", kr2[] = "qwertyuiop@[", kr3[] = "asdfghjkl;:]", kr4[] = "zxcvbnm,./";
+static int krow(const char *r, int c)
+{
+  int i;
+  for (i = 0; r[i]; i++)
+    if (r[i] == c) return i;
+  return -1;
+}
+static long ch_code(int c)
+{
+  int s = 0, lc = (c >= 'A' && c <= 'Z') ? c + 32 : c, i;
+  if (c == 0x1b) s = 0x01;
+  else if (c == 0x08 || c == 0x7f) { s = 0x0f; c = 0x08; }
+  else if (c == '\t') s = 0x10;
+  else if (c == '\r' || c == '\n') { s = 0x1d; c = '\r'; }
+  else if (c == ' ') s = 0x35;
+  else if (c >= 1 && c <= 26) s = ch_code(c + 0x60) >> 8;
+  else if ((i = krow(kr1, c)) >= 0 || (i = krow(kr1s, c)) >= 0) s = 0x02 + i;
+  else if (c == '=') s = 0x0c;
+  else if (c == '~') s = 0x0d;
+  else if (c == '|') s = 0x0e;
+  else if ((i = krow(kr2, lc)) >= 0) s = 0x11 + i;
+  else if (c == '`') s = 0x1b;
+  else if (c == '{') s = 0x1c;
+  else if ((i = krow(kr3, lc)) >= 0) s = 0x1e + i;
+  else if (c == '+') s = 0x27;
+  else if (c == '*') s = 0x28;
+  else if (c == '}') s = 0x29;
+  else if ((i = krow(kr4, lc)) >= 0) s = 0x2a + i;
+  else if (c == '<') s = 0x31;
+  else if (c == '>') s = 0x32;
+  else if (c == '?') s = 0x33;
+  else if (c == '_') s = 0x34;
+  return (s << 8) | (c & 0xff);
+}
+
+/* タブ 0 の文字を 1 つ見る (取らない)。CON のときだけ。0 の文字は捨てる (_B_KEYSNS の 0 は「無い」なので渡せない) */
+static long ch0_peek(void)
+{
+  while (con_rd && !mirror_off && ring_count(&rxr)) {
+    int c = rxr.b[rxr.tail];
+    if (c) return ch_code(c);
+    ring_get(&rxr);
+  }
+  return 0;
+}
+
 long key_peek(void)
 {
   kp_n++;
-  return kh != kt ? keyq[kt] : 0;
+  return kh != kt ? keyq[kt] : ch0_peek();
 }
 
 /* _B_KEYINP: 注入のキーがあれば返す。無ければ本物のキーが押されるか注入が来るまで待つ (待つ間も線を回す) */
 long key_get(void)
 {
   for (;;) {
+    long c;
     if (kh != kt) {
-      long c = keyq[kt];
+      c = keyq[kt];
       kt = (kt + 1) % KEYQ;
+      return c;
+    }
+    if ((c = ch0_peek()) != 0) {
+      ring_get(&rxr);
+      keys_ch0++;
       return c;
     }
     if (call_orig(old_keysns, 1))
@@ -142,7 +218,8 @@ static uint8_t rxbuf[RXBUF];
 
 /* 動作確認用 (メモリダンプで "ZMUXSTAT" の後ろ) */
 static struct { char tag[8]; uint32_t rxf, txf, bad, resend, rawin, rawout, ups, downs, polls, maxgap, lastpoll, gapat, outbytes, outq, refused, win, lockfail, downat, lastrx_at_down, lockat, rxbytes, rxbytes_at_lastrx, tcalls, tcfix,
-  rx0, rx0rej, auxrd, c4, c5, c6, kp, kpoll, busysent, rxrcnt; } st = { "ZMUXSTAT" };
+  rx0, rx0rej, auxrd, c4, c5, c6, kp, kpoll, busysent, rxrcnt,
+  conrd, conwr, mirrored, mirdrop, keys0, conmode, scrreq, scrbytes; } st = { "ZMUXSTAT" };
 static int rawpoll;                     /* 1 = 線が UP でなくても常駐スレッドが線を回す (画面が CON のとき: zmux.x -c) */
 
 /* 線の処理の排他。Human68k はスーパーバイザの間はスレッドを切り替えないが、Z-OS (zos.x) は自前の横取りで
@@ -217,11 +294,6 @@ static uint16_t crc(uint16_t c, const uint8_t *p, int n)
     c = (c << 8) ^ crctab[(c >> 8) ^ *p++];
   return c;
 }
-
-static int ring_count(struct ring *r) { return (r->head - r->tail) & (RINGSZ - 1); }
-static int ring_free(struct ring *r) { return RINGSZ - 1 - ring_count(r); }
-static void ring_put(struct ring *r, int c) { r->b[r->head] = c; r->head = (r->head + 1) & (RINGSZ - 1); }
-static int ring_get(struct ring *r) { int c = r->b[r->tail]; r->tail = (r->tail + 1) & (RINGSZ - 1); return c; }
 
 static int out_free(void) { return OUTSZ - 1 - ((oh - ot) & (OUTSZ - 1)); }
 static void out_put(int c) { outq[oh] = c; oh = (oh + 1) & (OUTSZ - 1); }
@@ -306,6 +378,106 @@ static void go_raw(void)
   t_hello = now() - T_HELLO;    /* すぐ HELLO を送る */
 }
 
+/* 画面の写しの要求 (チャネル 1 の IN_SCREEN の後ろ 9 バイト): 種類 1 + 引数 2 バイト x 4 (上位が先)
+     種類 0 = テキスト VRAM: a = プレーンの組 (bit0〜3)、b = 左端 (バイト) << 8 | 幅 (バイト、0 = 画面の大きさから)、c = 上端 (ラスタ)、d = 行数 (0 = 画面の大きさから)
+     種類 1 = CGROM: a = 0xF00000 からの位置 / 256、b = 長さ / 256
+   応答 (チャネル 4、最後のフレームに F_END):
+     種類 0: 'V' 0 crtmod planes x0 w rows(2) パレット 16 語 (32 バイト) の 40 バイトのあと、プレーンごとに各行を PackBits で詰めたもの
+     種類 1: 'G' 1 長さ/256 (2) の 4 バイトのあと、128 バイトずつ PackBits で詰めたもの
+   PackBits: n < 128 なら続く n + 1 バイトをそのまま、n >= 128 なら次の 1 バイトを n - 126 回 (2〜129) */
+static void scr_start(const uint8_t *q)
+{
+  int a = (q[1] << 8) | q[2], b = (q[3] << 8) | q[4], c = (q[5] << 8) | q[6], dd = (q[7] << 8) | q[8];
+  int i;
+  scr_on = 0;
+  st.scrreq++;
+  scr_kind = q[0];
+  scr_row = 0;
+  scr_plane = 0;
+  stage_len = stage_pos = 0;
+  if (scr_kind == 0) {
+    int mode = _iocs_crtmod(-1) & 0xff, w = 96, h = 512;
+    uint16_t *pal = (uint16_t *)0xe82200;
+    if (mode <= 7 || (mode >= 12 && mode <= 15)) { w = 64; h = 512; }
+    else if (mode <= 11) { w = 32; h = 256; }
+    else if (mode == 17) { w = 128; h = 424; }   /* 1024x424 */
+    else if (mode == 18) { w = 128; h = 848; }
+    else if (mode == 19) { w = 80; h = 480; }    /* 640x480 */
+    scr_planes = a & 15;
+    scr_x0 = b >> 8;
+    scr_w = (b & 255) ? (b & 255) : w;
+    if (scr_x0 + scr_w > 128) scr_w = 128 - scr_x0;
+    scr_y0 = c & 1023;
+    scr_rows = dd ? dd : h;
+    if (scr_y0 + scr_rows > 1024) scr_rows = 1024 - scr_y0;
+    if (!scr_planes || !scr_w || scr_rows <= 0) goto bad;
+    stage[0] = 'V'; stage[1] = 0; stage[2] = mode; stage[3] = scr_planes; stage[4] = scr_x0; stage[5] = scr_w;
+    stage[6] = scr_rows >> 8; stage[7] = scr_rows;
+    for (i = 0; i < 16; i++) { stage[8 + 2 * i] = pal[i] >> 8; stage[9 + 2 * i] = pal[i]; }
+    stage_len = 40;
+    while (!(scr_planes & (1 << scr_plane))) scr_plane++;
+  } else if (scr_kind == 1) {
+    if (a > 0xbff || b == 0 || a + b > 0xc00) goto bad;   /* 0xF00000〜0xFBFFFF の外は読まない */
+    scr_base = (const uint8_t *)(0xf00000 + a * 256);
+    scr_w = 128;
+    scr_rows = b * 2;
+    stage[0] = 'G'; stage[1] = 1; stage[2] = b >> 8; stage[3] = b;
+    stage_len = 4;
+  } else
+    goto bad;
+  scr_on = 1;
+  return;
+bad:                                    /* 'E' 種類 だけを返す */
+  stage[0] = 'E'; stage[1] = scr_kind;
+  stage_len = 2;
+  scr_kind = 2;
+  scr_rows = 0;
+  scr_on = 1;
+}
+
+/* PackBits で 1 行詰める */
+static int packbits(const volatile uint8_t *p, int n, uint8_t *o)
+{
+  int i = 0, k = 0;
+  while (i < n) {
+    int r = 1;
+    while (i + r < n && r < 129 && p[i + r] == p[i]) r++;
+    if (r >= 2) {
+      o[k++] = r + 126;
+      o[k++] = p[i];
+      i += r;
+    } else {
+      int s = i, l = 0;
+      while (i < n && l < 128 && !(i + 1 < n && p[i + 1] == p[i])) { i++; l++; }
+      if (l == 0) { i++; l = 1; }        /* 最後の 1 バイト */
+      o[k++] = l - 1;
+      while (l--) o[k++] = p[s++];
+    }
+  }
+  return k;
+}
+
+/* 次の行を stage に詰める。もう無ければ 0 */
+static int scr_next(void)
+{
+  const volatile uint8_t *p;
+  if (scr_kind == 0) {
+    if (scr_row >= scr_rows) {
+      do scr_plane++; while (scr_plane < 4 && !(scr_planes & (1 << scr_plane)));
+      if (scr_plane >= 4) return 0;
+      scr_row = 0;
+    }
+    p = (const volatile uint8_t *)0xe00000 + scr_plane * 0x20000 + (scr_y0 + scr_row) * 128 + scr_x0;
+  } else {
+    if (scr_row >= scr_rows) return 0;   /* 種類 2 (要求の誤り) は行が無い */
+    p = scr_base + scr_row * 128;
+  }
+  scr_row++;
+  stage_len = packbits(p, scr_w, stage);
+  stage_pos = 0;
+  return 1;
+}
+
 /* 正しいフレームを受けた */
 static void got_frame(void)
 {
@@ -370,13 +542,19 @@ static void got_frame(void)
     for (i = 0; i < len; i++) {
       if (in_need == 0) {               /* 種類のバイト */
         if (d[i] == IN_KEY) in_need = 2;
+        else if (d[i] == IN_SCREEN) in_need = 9;
         else break;
+        in_type = d[i];
         in_n = 0;
       } else {
         in_buf[in_n++] = d[i];
         if (--in_need == 0) {
-          keyq[kh] = (in_buf[0] << 8) | in_buf[1];
-          kh = (kh + 1) % KEYQ;
+          if (in_type == IN_SCREEN) {
+            scr_start(in_buf);
+          } else {
+            keyq[kh] = (in_buf[0] << 8) | in_buf[1];
+            kh = (kh + 1) % KEYQ;
+          }
         }
       }
     }
@@ -485,7 +663,7 @@ static void zl_poll_locked(void)
       }
       /* 新しいデータ: チャネル 0 (コンソール) を先に、次にチャネル 3 (交換のブロック)、次にチャネル 2 (リモートドライブ) */
       while ((uint8_t)(tx_seq - tx_base) < WIN && out_free() > 2 * (MAXLEN + 8) + 4 &&
-             (ring_count(&txr) > 0 || btx_pos < btx_len || rtx_pos < rtx_len)) {
+             (ring_count(&txr) > 0 || btx_pos < btx_len || rtx_pos < rtx_len || scr_on)) {
         int k = tx_seq % WIN, len = 0;
         if (ring_count(&txr) > 0) {
           while (len < MAXLEN && ring_count(&txr) > 0)
@@ -497,11 +675,25 @@ static void zl_poll_locked(void)
             win[k].d[len++] = btx[btx_pos++];
           win[k].chan = CH_NP;
           win[k].flags = btx_pos == btx_len ? F_END : 0;
-        } else {
+        } else if (rtx_pos < rtx_len) {
           while (len < MAXLEN && rtx_pos < rtx_len)
             win[k].d[len++] = rtx[rtx_pos++];
           win[k].chan = CH_RD;
           win[k].flags = rtx_pos == rtx_len ? F_END : 0;
+        } else {                        /* 画面の写し (いちばん後回し) */
+          /* stage は scr_on の間は空にしない (中身の無いデータのフレームを出さないため、終わりは中身のあるフレームに F_END を付ける) */
+          win[k].chan = CH_SCR;
+          win[k].flags = 0;
+          while (len < MAXLEN) {
+            if (stage_pos >= stage_len && !scr_next())
+              break;
+            win[k].d[len++] = stage[stage_pos++];
+          }
+          if (stage_pos >= stage_len && !scr_next()) {
+            win[k].flags = F_END;
+            scr_on = 0;
+          }
+          st.scrbytes += len;
         }
         win[k].len = len;
         if (tx_base == tx_seq)
@@ -532,6 +724,8 @@ static void zl_poll_locked(void)
   st.outq = (oh - ot) & (OUTSZ - 1);
   st.rxrcnt = ring_count(&rxr);
   st.kp = kp_n;
+  st.keys0 = keys_ch0;
+  st.conmode = con_rd | (mirror_off << 1) | (con_hooked << 2);
   st.win = (uint8_t)(tx_seq - tx_base) | (need_ack << 8) | (nak_pending << 9) | (up << 10) | (btx_len - btx_pos) << 16;
 }
 
@@ -541,6 +735,73 @@ static void zl_poll(void)
     return;
   zl_poll_locked();
   unlock();
+}
+
+/* CON デバイスの横取り (zmux.x が組み込む。head.S の con_strat / con_intr が、元の処理の前にここを呼ぶ)。
+   ここでは線を回さない (zl_poll を呼ばない) のが基本: 2f64a05 は IOCS の横取りの中で線を回して実機の AUX の入力を壊した。
+   例外は写しの受け皿 (txr) が一杯のときだけで、そのときも割り込みの中 (IPL が 0 でない) なら回さずに捨てる */
+extern void *old_con_strat, *old_con_intr;
+extern void con_strat(void), con_intr(void);
+static void mirror_put(const uint8_t *p, int n)
+{
+  long t0 = 0;
+  int i;
+  for (i = 0; i < n; i++) {
+    if (ring_free(&txr) == 0) {
+      uint16_t sr;
+      __asm__ volatile ("move.w %%sr,%0" : "=d"(sr));
+      if (sr & 0x0700) { st.mirdrop += n - i; return; }
+      if (!t0) t0 = now();
+      while (ring_free(&txr) == 0 && up && since(t0) < 100)
+        zl_poll();
+      if (ring_free(&txr) == 0 || !up) { st.mirdrop += n - i; return; }
+    }
+    ring_put(&txr, p[i]);
+    st.mirrored++;
+  }
+}
+void con_before(struct req_header *req)
+{
+  switch (req->command) {
+  case 4: case 5: case 6:               /* コンソールの入力を CON に読みに来た: コンソールは CON */
+    st.conrd++;
+    con_rd = 1;
+    break;
+  case 8: case 9:                       /* CON への出力: チャネル 0 に写す (線が UP で、コンソールが CON のとき) */
+    st.conwr++;
+    if (up && con_rd && !mirror_off)
+      mirror_put(req->addr, req->status);
+    break;
+  }
+}
+
+/* デバイスチェインの最初の "CON     " (後から組み込んだものが先) の入口を con_strat / con_intr に替える。戻り値: 1 = 替えた / もう替えてある、0 = 見つからない */
+static int con_hook(void)
+{
+  uint16_t *p;
+  if (con_hooked)
+    return 1;
+  for (p = (uint16_t *)0x6800; p < (uint16_t *)0x68000; p++)
+    if (p[0] == 0x4e55 && p[1] == 0x4c20 && p[2] == 0x2020 && p[3] == 0x2020) {   /* "NUL     " */
+      uint8_t *d = (uint8_t *)p - 14;
+      while (d != (uint8_t *)0xffffffff) {
+        uint32_t *n = (uint32_t *)(d + 14);
+        if (n[0] == 0x434f4e20 && n[1] == 0x20202020) {                          /* "CON     " */
+          uint16_t sr;
+          __asm__ volatile ("move.w %%sr,%0; ori.w #0x0700,%%sr" : "=d"(sr) :: "memory");
+          old_con_strat = *(void **)(d + 6);
+          old_con_intr = *(void **)(d + 10);
+          *(void **)(d + 6) = (void *)con_strat;
+          *(void **)(d + 10) = (void *)con_intr;
+          con_hooked = 1;
+          __asm__ volatile ("move.w %0,%%sr" :: "d"(sr) : "memory");
+          return 1;
+        }
+        d = *(uint8_t **)d;
+      }
+      return 0;
+    }
+  return 0;
 }
 
 static long zmux_call_locked(long cmd, long *a);
@@ -557,6 +818,12 @@ long zmux_call(long cmd, long *a)
   if (cmd == 10) {                      /* 画面が CON: 線が UP でなくても常駐スレッドが線を回す */
     rawpoll = a ? 1 : 0;
     return rawpoll;
+  }
+  if (cmd == 11)                        /* CON デバイスを横取りする (写しとタブ 0 からのキー入力) */
+    return con_hook();
+  if (cmd == 12) {                      /* 写しとタブ 0 からのキー入力: a = 0 で止める、1 で戻す */
+    mirror_off = a ? 0 : 1;
+    return !mirror_off;
   }
   if (cmd == 0) {
     /* 戻り値: bit0 = UP、bit1 = この回に仕事があった (受信・送信・送り直しのどれか)。常駐スレッドは仕事が無ければ眠る。
@@ -684,12 +951,13 @@ long dev_interrupt(struct req_header *req)
     old_keysns = (void *)_iocs_b_intvcs(0x101, hk_keysns);   /* IOCS _B_KEYSNS */
     old_keyinp = (void *)_iocs_b_intvcs(0x100, hk_keyinp);   /* IOCS _B_KEYINP */
     t_hello = now() - T_HELLO;
-    dos_print("zmux.sys 0.2: AUX (CTTY AUX) is multiplexed on RS-232C by zmux\r\n");
+    dos_print("zmux.sys 0.3: AUX (CTTY AUX) is multiplexed on RS-232C by zmux (CON mirror, screen)\r\n");
     req->addr = (uint8_t *)&_end;
     return 0;
   }
   case 4:                               /* 入力: 揃うまで戻らない */
     st.c4++;
+    con_rd = 0;
     for (i = 0; i < req->status; i++) {
       while (ring_count(&rxr) == 0)
         zl_poll();
@@ -699,11 +967,13 @@ long dev_interrupt(struct req_header *req)
     return 0;
   case 5:                               /* 1 文字先読み */
     st.c5++;
+    con_rd = 0;
     zl_poll();
     req->attr = ring_count(&rxr) ? rxr.b[rxr.tail] : 0;
     return 0;
   case 6:                               /* 入力ステータス: 0 = 読める、1 = 無い */
     st.c6++;
+    con_rd = 0;
     zl_poll();
     return ring_count(&rxr) ? 0 : 1;
   case 7:                               /* 入力を捨てる */

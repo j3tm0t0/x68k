@@ -3,6 +3,9 @@
  *
  *   zmux.x      常駐してスレッド "zmux" を作る。スレッドは zmux.sys の入口 (命令 0) を呼んでは _CHANGE_PR で譲る
  *   zmux.x -s   統計を表示する
+ *   zmux.x -m off / -m on   画面が CON のときの写し (CON の出力をタブ 0 へ) とタブ 0 からのキー入力を止める / 戻す
+ * 常駐するときに CON デバイスを横取りする (zmux.sys の命令 11)。コンソールが CON の間 (CON にコンソールの入力を読みに来た後)、
+ * CON に書かれた文字をチャネル 0 (タブ 0) に写し、タブ 0 で打った文字をキー入力として渡す。CTTY AUX の間はこれまでどおり
  *   必要: CONFIG.SYS の DEVICE = \SYS\ZMUX.SYS と PROCESS 指定
  * AUX を読み書きしている間は zmux.sys 自身も線を回すので、このスレッドが無くても CTTY AUX は動く。
  * スレッドは、COMMAND.X が別のプログラムを動かしていて AUX を読まない間も、(UP のときだけ) 線の確認と送り直しを続ける。
@@ -137,6 +140,16 @@ int zmux_main(void)
     a += 2;
     while (*a == ' ') a++;
   }
+  if (a[0] == '-' && (a[1] | 0x20) == 'm') {        /* -m off / -m on */
+    unsigned char *v = a + 2;
+    while (*v == ' ') v++;
+    i = !((v[0] | 0x20) == 'o' && (v[1] | 0x20) == 'f');
+    ssp = _dos_super(0);
+    call_entry(entry, 12, (void *)(long)i);
+    if (ssp > 0) _dos_super(ssp);
+    _dos_print(i ? "zmux: CON mirror on\r\n" : "zmux: CON mirror off\r\n");
+    return 0;
+  }
   if (a[0] == '-' && (a[1] | 0x20) == 'r') {        /* contee.sys が控えた SCC の値 (contee.S のコメント) を出す */
     uint8_t *d;
     int n, k;
@@ -186,9 +199,11 @@ int zmux_main(void)
     _dos_print("tc fixed "); putnum(i); _dos_print("\r\n");
     {
       static const char *n2[] = { "ch0 rx bytes", "ch0 rx rejected (ring full)", "AUX read bytes", "AUX cmd4 (read)", "AUX cmd5 (peek)", "AUX cmd6 (status)",
-                                  "key_peek calls", "(unused)", "busy sent", "rx ring count now" };
+                                  "key_peek calls", "(unused)", "busy sent", "rx ring count now",
+                                  "CON reads", "CON writes", "CON bytes mirrored", "CON bytes dropped", "tab 0 keys", "console (1=CON 2=mirror off 4=CON hooked)",
+                                  "screen requests", "screen bytes" };
       int k;
-      for (k = 0; k < 10; k++) {
+      for (k = 0; k < 18; k++) {
         ssp = _dos_super(0);
         i = s[24 + k];
         if (ssp > 0) _dos_super(ssp);
@@ -197,6 +212,10 @@ int zmux_main(void)
     }
     return 0;
   }
+  ssp = _dos_super(0);
+  i = call_entry(entry, 11, 0);
+  if (ssp > 0) _dos_super(ssp);
+  if (!i) _dos_print("zmux: CON デバイスが見つからない (CON の写しは無し)\r\n");
   prc.length = sizeof mbox;
   prc.buf_ptr = mbox;
   prc.your_id = 0xffff;

@@ -170,6 +170,30 @@ Pi            zmux daemon --port /dev/ttyUSB0 --drive ~/x68k-drive
 - 注入はキーボードの行列を直接読むプログラム (ゲームなど) には届かない。zmux.sys が横取りするのは IOCS の _B_KEYINP / _B_KEYSNS だけ
   (DOS のキー入力もここを通る)。
 
+## 画面が CON のとき (CTTY CON)
+
+zmux.x は常駐するときに CON デバイスを横取りする (zmux.sys 0.3 から)。COMMAND.X が CON にコンソールの入力を読みに来た後は
+「コンソールは CON」とみなし、AUX を読みに来たら「AUX」に戻す (`ctty con` / `ctty aux` を打てばそのまま切り替わる)。CON の間は:
+
+- CON に書かれた文字 (DOS の出力。COMMAND.X の表示、`dir`、`type` など) を、線が UP ならチャネル 0 にも写す。`zmux` のタブ 0 / `zmux attach 0` で見える。
+  IOCS で直接描くもの (ssh.x、Z-OS のペインなど) は写らない。それは下の `zmux screen` で見る。
+- タブ 0 で打った文字を、本体のキー入力 (_B_KEYSNS / _B_KEYINP) として渡す。スキャンコードは `zmux key` と同じ表 (JIS 配列)。
+- 写す先の受け皿 (2KB) が一杯のときは、CON の出力が線の速さ (78125bps で約 7.8KB/s) まで待たされる (1 秒待って空かなければ捨てる)。
+  線が UP でないとき (zmuxd がつながっていないとき) は何もしない。
+- `zmux -m off` で写しとタブ 0 からのキー入力を止める (`-m on` で戻す。止めている間はタブ 0 から打てないので、本体のキーボードで)。
+- AUX の間 (CTTY AUX) の動きはこれまでと同じ。`zmux -s` の `console` が 1 なら CON、`CON bytes mirrored` / `dropped` / `tab 0 keys` が数。
+
+## 画面の写し (`zmux screen`)
+
+`zmux screen -o FILE.png` は X68000 のテキスト VRAM をそのまま PNG にする (ファンクションキーの行、ssh.x や Z-OS が直接描いた画面も写る。グラフィック画面は写らない)。
+`zmux screen -t` は CGROM の字と照らし合わせて文字にする (半角と、全角の 1〜8 区・第 1 水準)。
+
+- 頼み方: チャネル 1 の新しいメッセージ IN_SCREEN (種類 3) で頼み、X68000 は新しいチャネル 4 で返す。行ごとに PackBits で詰め、ほかのチャネルの後回しで送る。
+  形は `x68k/zmux.c` の `scr_start` のコメント。古い zmux.sys は IN_SCREEN を捨てるので、zmuxd は 120 秒で「返事が無い」と答える。
+- 既定はプレーン 0 と 1 (Human68k の文字の色)。`-p 0123` で 4 枚。大きさは CRTMOD から (768x512 なら 96 バイト x 512 ラスタ)。`-y` / `-n` で行の範囲。
+- `-t` は初回だけ X68000 から CGROM (約 140KB) を取り、`~/.cache/zmux/` に置く。
+- XEiJ (19200bps) で: Human68k の画面 4 枚 (192KB) が 21KB に詰まって 13 秒。78125bps ならおよそ 4 分の 1。
+
 ## XEiJ での確認
 
 `test/e2e.py RUNDIR` (Mac、elf2x68k と cargo が要る)。zmuxd と XEiJ の間に、1 バイトあたり 0.03% (`CORRUPT`) でバイトを壊す中継を挟む。
@@ -238,6 +262,12 @@ zos.x の 0xA7 (OPEN → ACCEPT、打った字をそのまま返す、exit)、zr
 `zmux.sys` / `zrmt.sys` のコンパイルは、Ubuntu の `gcc-m68k-linux-gnu` に elf2x68k のヘッダとリンカスクリプトと `elf2x68k.py` を合わせたもので確かめただけ
 (HANDOFF.md)。**`x68k/` の `zmux.sys` / `zmux.x` は前の版のまま**なので、XEiJ や実機で使う前に elf2x68k で `make -C x68k` する (`zrmt.sys` もそこでできる)。
 2 つの試験は raspi5 か Mac で流す: `XEIJ_TOOLS=… HUMAN_XDF=… python3 test/e2e_rdrive.py RUN`、`ZOS_X=… ZOSH_X=… python3 test/e2e_tui.py RUN`。
+
+### 画面が CON のときと画面の写し (`test/e2e_con.py`)
+
+AUTOEXEC.BAT が `ZMUX -c` (CTTY AUX にしない) の起動フロッピーで、タブ 0 から `ver` / 120 文字の `echo` / 記号を打つと CON で動き、答えがタブ 0 に返る。
+`zmux screen -p 0123` でほどいた 4 枚が、XEiJ のエージェントで取ったテキスト VRAM と 1 バイトも違わない。`-t` の文字に ver の答えがある。
+タブ 0 から `ctty aux` → AUX で ver と echo → `ctty con` → また CON で ver。`zmux -m off` でタブ 0 に何も来ない、本体のキーボードで `-m on` で戻る。
 
 ### キーの注入 (`test/e2e_key.py`)
 
