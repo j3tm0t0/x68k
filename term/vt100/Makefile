@@ -27,11 +27,15 @@ vtbench.x: $(SRC) vt100.h kanjitab.h emojitab.h widthtab.h
 vtbnob.x: $(SRC) vt100.h kanjitab.h emojitab.h widthtab.h
 	$(CC) $(CFLAGS) -DVT_PROF -DVT_PROF_NOBLIT -o $@ $(SRC) -s
 
+# XEiJ で Human68k のカーソルが端末の間に戻らないかを見る (tests/xeij_curprobe.sh)
+tests/curprobe.x: tests/curprobe.c vt100.c vt100.h kanjitab.h emojitab.h widthtab.h
+	$(CC) $(CFLAGS) -o $@ tests/curprobe.c vt100.c -s
+
 # Mac 上でパーサ・スクロール・属性だけを pyte と比べる (VRAM/IOCS はスタブ)
 HOSTCC  = cc
 vthost: $(SRC) vt100.h kanjitab.h emojitab.h widthtab.h
 	$(HOSTCC) -O2 -Wall -DVT_HOSTTEST -o $@ $(SRC)
 
 clean:
-	rm -f vtcat.x vtbench.x vtbnob.x *.x.elf* vthost
+	rm -f vtcat.x vtbench.x vtbnob.x tests/curprobe.x *.x.elf* vthost
 .PHONY: all clean

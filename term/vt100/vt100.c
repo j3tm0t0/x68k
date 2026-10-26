@@ -1041,6 +1041,53 @@ static void row_fill(int row, int bg)
   if (~bg & 15) PASS(~bg & 15, row_fill1(v, 0));
 }
 
+/* ---- Human68k (IOCS) のカーソル ----
+ * IPLROM の _B_PUTC・_B_PRINT・_B_LOCATE・_B_CONSOL などは、終わりに元の状態によらず _B_CURON を呼ぶ
+ * (XVI の IPLROM 1.1 も XEiJ の 1.6 も。tests/curprobe.c)。なので _B_CUROFF で消しても、DOS の出力 (ssh.x のログ、
+ * CON への書き込み) や IOCS の出力が 1 回あるとまた点滅する。_OS_CUROF (IOCS $AF) はカーソルを消して
+ * 禁止フラグ ($0993) を立て、フラグが立っている間は _B_CURON / _B_CUROFF が何もしない。端末の間はこれで止めておき、
+ * vt_fini で元に戻す。Z-OS のペインの中 (vt_pane) では使わない (zos.x が _B_CURON / _B_CUROFF を横取りして
+ * 消している。_OS_CURON は横取りされずに zos.x の画面へカーソルを描いてしまう)。
+ * ioc_saved: -1 = 触っていない、それ以外 = vt_init のときの $0992 (bit0: 表示中) と $0993 (bit1: 禁止) */
+static int ioc_saved = -1;
+#define IOC_ON  (*(volatile unsigned char *)0x992)
+#define IOC_PRO (*(volatile unsigned char *)0x993)
+/* スーパーバイザで呼ぶ。誰かが禁止を解いていたら (_OS_CURON、DOS の _CONCTRL 17) 止め直す。
+ * 描く前に呼ぶ (描かれたカーソルの上に字を描いてから XOR で消すと、そこに四角が残る) */
+static void ioc_hide(void)
+{
+#if !defined(VT_HOSTTEST) && !defined(VT_ZOS)
+  if (ioc_saved >= 0 && (!IOC_PRO || IOC_ON)) _iocs_os_curof();
+#endif
+}
+static void ioc_init(void)
+{
+#if !defined(VT_HOSTTEST) && !defined(VT_ZOS)
+  if (!vt_pane && ioc_saved < 0) {
+    ioc_saved = (IOC_ON ? 1 : 0) | (IOC_PRO ? 2 : 0);
+    _iocs_os_curof();
+    return;
+  }
+#endif
+  _iocs_b_curoff();
+}
+static void ioc_fini(void)
+{
+#if !defined(VT_HOSTTEST) && !defined(VT_ZOS)
+  if (ioc_saved >= 0) {
+    /* _OS_CURON はその場でカーソルを描く。このあと ssh.x が画面を潰すとそこに四角が残るので使わず、禁止を解いて
+     * _B_CURON (次の点滅から描く) にする。元は消えていたなら禁止を解くだけ。元から禁止ならそのまま */
+    if (!(ioc_saved & 2)) {
+      IOC_PRO = 0;
+      if (ioc_saved & 1) _iocs_b_curon();   /* COMMAND.X から起動したときはこれ (表示中・禁止なし) */
+    }
+    ioc_saved = -1;
+    return;
+  }
+#endif
+  _iocs_b_curon();
+}
+
 /* vt_write に展開させない (巨大な関数でレジスタが足りず、描画の内側のループで変数がスタックに溢れる) */
 #define NOINLINE __attribute__((noinline))
 /* 描き直しの要る行を、多くて maxrows 行だけ描く。まだ残っていれば 1 (zos.x は描くのを本体のスレッドに回し、
@@ -1057,6 +1104,7 @@ static NOINLINE int flush_n(int maxrows)
   s = sup_enter();
   if (vs_pend) vs_apply();
   if (csr_shown) { cursor_xor(csr_x, csr_y); csr_shown = 0; }   /* 先にカーソルを消す */
+  ioc_hide();
   for (r = 0; r < ROWS; r++) {
     cell_t *lrow, *drow;
     int nd = 0, lo = rlo[r], hi = rhi[r];
@@ -1121,7 +1169,7 @@ static NOINLINE int flush_n(int maxrows)
     }
   }
   sa_off();
-  _iocs_b_curoff();   /* DOS の出力 (ssh.x のログなど) が Human68k のカーソルを戻すことがあるので、描くたびに消す */
+  if (ioc_saved < 0) _iocs_b_curoff();   /* Z-OS のペインの中: zos.x が _B_CUROFF を受ける (描くたびに消す) */
   if (cur_vis && csr_ok) { cursor_xor(cx, cy); csr_shown = 1; csr_x = cx; csr_y = cy; }
   sup_leave(s);
   return more;
@@ -2096,7 +2144,7 @@ void vt_init(int cols, int rows)
   sa_ok = sa_probe();
 #endif
   palette_setup();
-  _iocs_b_curoff();           /* BIOS のカーソルは使わない (自前で描く) */
+  ioc_init();                 /* BIOS のカーソルは使わない (自前で描く) */
   for (r = 0; r < ROWS; r++)
     { for (c = 0; c < COLS; c++) { clear_cell(&cur[r][c]); drawn[r][c] = cur[r][c]; } if (!VT_HIDDEN) row_fill(r, c_bg); }
   for (r = 0; r < MAXROWS; r++) { rlo[r] = MAXCOLS; rhi[r] = 0; }
@@ -2115,7 +2163,7 @@ void vt_fini(void)
   sa_off();
   if (csr_shown) { cursor_xor(csr_x, csr_y); csr_shown = 0; }
   if (pal_saved) for (i = 0; i < 16; i++) TPAL[i] = pal_save[i];
-  _iocs_b_curon();
+  ioc_fini();
   sup_leave(s);
   _dos_breakck(1);
 #ifndef VT_HOSTTEST
