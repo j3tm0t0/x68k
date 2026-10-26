@@ -1049,7 +1049,7 @@ static void row_fill(int row, int bg)
  * vt_fini で元に戻す。Z-OS のペインの中 (vt_pane) では使わない (zos.x が _B_CURON / _B_CUROFF を横取りして
  * 消している。_OS_CURON は横取りされずに zos.x の画面へカーソルを描いてしまう)。
  * ioc_saved: -1 = 触っていない、それ以外 = vt_init のときの $0992 (bit0: 表示中) と $0993 (bit1: 禁止) */
-static int ioc_saved = -1;
+static int ioc_saved __attribute__((unused)) = -1;   /* VT_ZOS・ホスト版では使わない */
 #define IOC_ON  (*(volatile unsigned char *)0x992)
 #define IOC_PRO (*(volatile unsigned char *)0x993)
 /* スーパーバイザで呼ぶ。誰かが禁止を解いていたら (_OS_CURON、DOS の _CONCTRL 17) 止め直す。
