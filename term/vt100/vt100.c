@@ -1169,7 +1169,6 @@ static NOINLINE int flush_n(int maxrows)
     }
   }
   sa_off();
-  if (ioc_saved < 0) _iocs_b_curoff();   /* Z-OS のペインの中: zos.x が _B_CUROFF を受ける (描くたびに消す) */
   if (cur_vis && csr_ok) { cursor_xor(cx, cy); csr_shown = 1; csr_x = cx; csr_y = cy; }
   sup_leave(s);
   return more;
