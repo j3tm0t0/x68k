@@ -79,6 +79,57 @@ static struct passwd *fill_pw(void)
 struct passwd *getpwuid(uid_t uid) { (void)uid; return fill_pw(); }
 struct passwd *getpwnam(const char *name) { (void)name; return fill_pw(); }
 
+
+/* --- ~/.ssh の置き場 ---
+   TwentyOne の無い Human68k (Compact XVI など) は ".ssh" の名前を作れず、known_hosts も鍵も置けない。
+   環境変数 SSH_DIR があればそのディレクトリ、なければ $HOME/.ssh、それが作れなければ $HOME/ssh を使う。
+   cli-kex.c (known_hosts) と、既定の鍵 (~/.ssh/id_dropbear の展開: __wrap_expand_homedir_path) が使う。 */
+#include <sys/stat.h>
+#include <errno.h>
+static int x68k_isdir(const char *p) { struct stat st; return stat(p, &st) == 0 && S_ISDIR(st.st_mode); }
+/* create = 0: 決まっている置き場を返す (SSH_DIR か、known_hosts 側が決めた後はその置き場。まだなら NULL。ディスクには触らない)。create = 1: 作れる名前を探して作る (known_hosts を書く側) */
+const char *x68k_ssh_dir(const char *homedir, int create)
+{
+  static char dir[200];
+  static int done;
+  const char *sd;
+  if (done) return dir;
+  sd = getenv("SSH_DIR");
+  if (sd && *sd) {
+    strncpy(dir, sd, sizeof dir - 1); dir[sizeof dir - 1] = 0;
+    if (create) { mkdir(dir, 0700); done = 1; }
+    return dir;
+  }
+  if (!create)
+    return done ? dir : NULL;     /* まだ決めていない: 呼んだ側は元の ~/.ssh のまま (ディスクに触らない。B: が空だと止まる) */
+  done = 1;
+  snprintf(dir, sizeof dir, "%s/.ssh", homedir);
+  if (mkdir(dir, 0700) == 0 || errno == EEXIST || x68k_isdir(dir))
+    return dir;
+  snprintf(dir, sizeof dir, "%s/ssh", homedir);
+  mkdir(dir, 0700);
+  return dir;
+}
+char *__real_expand_homedir_path(const char *inpath);
+char *__wrap_expand_homedir_path(const char *inpath)
+{
+  if (strncmp(inpath, "~/.ssh/", 7) == 0) {
+    const char *home = getenv("HOME");
+    const char *sd;
+    char *buf;
+    int len;
+    if (!home) home = fill_pw()->pw_dir;
+    sd = x68k_ssh_dir(home, 0);
+    if (!sd)
+      return __real_expand_homedir_path(inpath);
+    len = strlen(sd) + strlen(inpath + 7) + 2;
+    buf = m_malloc(len);
+    snprintf(buf, len, "%s/%s", sd, inpath + 7);
+    return buf;
+  }
+  return __real_expand_homedir_path(inpath);
+}
+
 /* --- 端末 (term/vt100・zterm・仮想コンソール): x68k_vcons.c --- */
 #include "x68k_vcons.c"
 

@@ -1121,6 +1121,7 @@ static NOINLINE int flush_n(int maxrows)
     }
   }
   sa_off();
+  _iocs_b_curoff();   /* DOS の出力 (ssh.x のログなど) が Human68k のカーソルを戻すことがあるので、描くたびに消す */
   if (cur_vis && csr_ok) { cursor_xor(cx, cy); csr_shown = 1; csr_x = cx; csr_y = cy; }
   sup_leave(s);
   return more;
@@ -2037,6 +2038,10 @@ static void pane_probe(void)
   }
 }
 
+/* ファンクションキー行 (最下行の C1 CU CA ... EOF)。VT100 の画面では最下行も端末の行なので、使っている間は消す (_C_FNKMOD 3)。
+   Z-OS のペインの中 (vt_pane) は zos.x の画面なので触らない。vt_fini で元のモードに戻す */
+static int fnk_saved = -1;
+
 void vt_init(int cols, int rows)
 {
   int r, c, s;
@@ -2049,6 +2054,15 @@ void vt_init(int cols, int rows)
   if (cols > SCRCOLS) cols = SCRCOLS;
   if (rows > SCRROWS) rows = SCRROWS;
   pane_probe();
+#ifndef VT_HOSTTEST
+  if (!vt_pane && fnk_saved < 0) {
+    fnk_saved = _dos_c_fnkmod(-1);
+    if (fnk_saved >= 0 && fnk_saved != 3)
+      _dos_c_fnkmod(3);
+    else
+      fnk_saved = -1;
+  }
+#endif
 #if defined(VT_VCONS) && !defined(VT_ZOS)
   if (pane_dynhid) vt_hidden = 1;
 #else
@@ -2104,6 +2118,20 @@ void vt_fini(void)
   _iocs_b_curon();
   sup_leave(s);
   _dos_breakck(1);
+#ifndef VT_HOSTTEST
+  if (fnk_saved >= 0) {
+    /* 最下行に VT100 の字が残っていると、戻したファンクションキー行 (プレーンの一部だけ描き直す) に混ざるので、その 16 ライン分を全プレーン消す */
+    int s2 = sup_enter(), k;
+    volatile unsigned long *p;
+    for (k = 0; k < 4; k++)
+      for (p = (volatile unsigned long *)(TVRAM_PHYS + (unsigned long)k * 0x20000UL + 496UL * VBYTES);
+           p < (volatile unsigned long *)(TVRAM_PHYS + (unsigned long)k * 0x20000UL + 512UL * VBYTES); p++)
+        *p = 0;
+    sup_leave(s2);
+    _dos_c_fnkmod(fnk_saved);
+    fnk_saved = -1;
+  }
+#endif
   vt_up = 0;
 #ifdef VT_VCONS
   vc_inited = 0;

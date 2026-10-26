@@ -147,8 +147,8 @@ fi
 
 # 先に dry-run でリンク行を取っておく (ビルド後だと "up to date" で出ない)
 # -Wl,--wrap=write: ソケットへの write を 4096 バイトずつに切る (xip の不具合よけ、x68k_shim.c の __wrap_write)
-LINK=$(make -n PROGRAMS="dbclient" LIBS="$SRC/x68k_shim.o $EXTRA_OBJ -lsocket -Wl,--wrap=write" 2>/dev/null | grep -E "${CROSS}gcc +-o dbclient " | tail -1)
-make PROGRAMS="dbclient" LIBS="$SRC/x68k_shim.o $EXTRA_OBJ -lsocket -Wl,--wrap=write"
+LINK=$(make -n PROGRAMS="dbclient" LIBS="$SRC/x68k_shim.o $EXTRA_OBJ -lsocket -Wl,--wrap=write -Wl,--wrap=expand_homedir_path" 2>/dev/null | grep -E "${CROSS}gcc +-o dbclient " | tail -1)
+make PROGRAMS="dbclient" LIBS="$SRC/x68k_shim.o $EXTRA_OBJ -lsocket -Wl,--wrap=write -Wl,--wrap=expand_homedir_path"
 # 出力名を .x にして HU 形式に変換 + strip。取っておいたリンク行を再実行する。
 [ -n "$LINK" ] || { echo "build: link 行が取れない" >&2; exit 1; }
 sh -c "$(echo "$LINK" | sed "s|-o dbclient |-o '$OUT' -s |")"
