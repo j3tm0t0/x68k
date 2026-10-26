@@ -67,7 +67,8 @@ build/picosim-echo: picosim.c netpipe.c lan_slirp.c bootwait.c picosim.h build/l
 
 build/libslirp.tar.gz:
 	mkdir -p build
-	curl -fsSL -o $@.tmp https://gitlab.freedesktop.org/slirp/libslirp/-/archive/v$(SLIRP_VER)/libslirp-v$(SLIRP_VER).tar.gz
+	if [ -f "$(CI_ARTIFACTS)/libslirp-v$(SLIRP_VER).tar.gz" ]; then cp "$(CI_ARTIFACTS)/libslirp-v$(SLIRP_VER).tar.gz" $@.tmp; else \
+	curl -fsSL -o $@.tmp https://gitlab.freedesktop.org/slirp/libslirp/-/archive/v$(SLIRP_VER)/libslirp-v$(SLIRP_VER).tar.gz; fi
 	[ "$$(shasum -a 256 $@.tmp | cut -c1-64)" = "$(SLIRP_SHA)" ] || { echo "libslirp sha256 mismatch"; exit 1; }
 	mv $@.tmp $@
 

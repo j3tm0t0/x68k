@@ -21,6 +21,7 @@
  * 描画は実機と同じ blit を通るので、vt_host_vram を PNG にすれば実機の画面と同じ絵になる。 */
 static int _dos_super(int x) { (void)x; return 0; }
 static void _dos_breakck(int x) { (void)x; }
+static void _dos_change_pr(void) {}
 static void _iocs_b_curon(void) {}
 static void _iocs_b_curoff(void) {}
 #ifdef VT_HOSTKEYS   /* キーは試験が渡す (net/ssh/dropbear/tests/vcshim.c) */
@@ -822,11 +823,17 @@ static void cursor_xor(int col, int row)
  * 下方向 (dst>src) は重なるので後ろのラスタから: d3 の bit15 を立てると 1 ラスタごとに src/dst を 1 ずつ減らす
  * (IPLROM の _TXRASCPY = $FF781A を逆アセンブルして確認: tst.w d3 / bpl で増分 $0101 と $FEFF を切り替える)。
  * このとき d1 は最後 (いちばん下) のラスタ番号を渡す。それ以外は 32bit 転送 (画面の COLS バイトだけ)。 */
+/* 1: スクロールで IOCS の TXRASCOPY (ハードのラスタコピー) を使わず、CPU の 32bit 転送で VRAM を動かす (実機の Z で、ラスタコピーが
+ * 重なって全行が同じ行になった疑いの切り分け用。遅い: 1 画面で 70ms ほど)。zos.x の ZOS_NORAS=1 / -N */
+int vt_noras;
 static void vram_move_lines(int dst_line, int src_line, int nlines)
 {
   int p, y, k, nl = (COLS + 3) / 4;   /* 1 ラインのうち画面の COLS バイトだけ (128 のうち 96) 動かす */
 #if !defined(VT_HOSTTEST) || defined(VT_SIM_TXRAS)
-  if (!vt_pane && (dst_line & 3) == 0 && (src_line & 3) == 0 && (nlines & 3) == 0 && dst_line != src_line) {
+  /* 全幅の枠 (zos.x の全幅のペイン) も、ラスタ単位の転送なので TXRASCOPY が使える (枠の上端 pane_py ぶん足す) */
+  if ((!vt_pane || (pane_x == 0 && pane_w >= SCRCOLS)) && !vt_noras && (dst_line & 3) == 0 && (src_line & 3) == 0 && (nlines & 3) == 0 && dst_line != src_line) {
+    int o = vt_pane ? pane_py : 0;
+    dst_line += o; src_line += o;
     if (dst_line < src_line)
       _iocs_txrascpy(((src_line / 4) << 8) | (dst_line / 4), nlines / 4, 0x000f);
     else
@@ -905,10 +912,15 @@ static void rotate_rows(cell_t **t, unsigned char *lo, unsigned char *hi, int a,
  * 行数をためておき (vs_pend)、次に VRAM に描く前 (flush の頭など) にまとめて 1 回だけ写す。論理画面と drawn は
  * その場で回し、空いた行の drawn は「分からない」にする (まとめて写した後のそこの絵は 1 行ずつ写した場合と違うので)。 */
 static int vs_pend, vs_top, vs_bot;
+#ifdef VT_ZOS
+extern int vt_defer, vt_nomove;
+#endif
 static void vs_apply(void)
 {
   int n = vs_pend, h = vs_bot - vs_top + 1;
   vs_pend = 0;
+  /* XOR のカーソルが残っていると、VRAM と一緒に動いて別の行に残り、後で消すとき元の位置の別の字を反転してしまう */
+  if (csr_shown && !VT_HIDDEN) { cursor_xor(csr_x, csr_y); csr_shown = 0; }
   if (n > 0 && n < h) vram_move_lines(vs_top * vch, (vs_top + n) * vch, (h - n) * vch);
 }
 
@@ -946,6 +958,21 @@ static void scroll(int n)
     }
     return;
   }
+#ifdef VT_ZOS
+  if (vt_defer && vt_nomove) {   /* zos.x が後で描く: VRAM は動かさず論理画面だけ回し、領域の全部の行を描き直しにする。
+                                  * flush は前の絵 (drawn = VRAM) と違うセルだけ描くので、流れ続ける出力は最後の画面だけ、
+                                  * 少しずつ (vt_flush_some) 描ける。VRAM を写す (1 ペインで 70ms ほど、途中で譲れない) より軽い */
+    if (vs_pend) vs_apply();
+    rotate_rows(cur, rlo, rhi, top, bot, n);
+    for (r = 0; r < m; r++) {
+      int rr = n > 0 ? bot - m + 1 + r : top + r;
+      cell_u32 *l = (cell_u32 *)cur[rr];
+      for (col = 0; col < COLS; col++) l[col] = clr_cell;
+    }
+    for (r = top; r <= bot; r++) TOUCH(r);
+    return;
+  }
+#endif
   if (vs_pend && (n < 0 || vs_top != top || vs_bot != bot)) vs_apply();
   if (vt_pane && n > 0 && keep > 0) {   /* 枠の中の上スクロール: VRAM は後でまとめて (vs_apply) */
     cell_t z;
@@ -1014,24 +1041,76 @@ static void row_fill(int row, int bg)
   if (~bg & 15) PASS(~bg & 15, row_fill1(v, 0));
 }
 
+/* ---- Human68k (IOCS) のカーソル ----
+ * IPLROM の _B_PUTC・_B_PRINT・_B_LOCATE・_B_CONSOL などは、終わりに元の状態によらず _B_CURON を呼ぶ
+ * (XVI の IPLROM 1.1 も XEiJ の 1.6 も。tests/curprobe.c)。なので _B_CUROFF で消しても、DOS の出力 (ssh.x のログ、
+ * CON への書き込み) や IOCS の出力が 1 回あるとまた点滅する。_OS_CUROF (IOCS $AF) はカーソルを消して
+ * 禁止フラグ ($0993) を立て、フラグが立っている間は _B_CURON / _B_CUROFF が何もしない。端末の間はこれで止めておき、
+ * vt_fini で元に戻す。Z-OS のペインの中 (vt_pane) では使わない (zos.x が _B_CURON / _B_CUROFF を横取りして
+ * 消している。_OS_CURON は横取りされずに zos.x の画面へカーソルを描いてしまう)。
+ * ioc_saved: -1 = 触っていない、それ以外 = vt_init のときの $0992 (bit0: 表示中) と $0993 (bit1: 禁止) */
+static int ioc_saved __attribute__((unused)) = -1;   /* VT_ZOS・ホスト版では使わない */
+#define IOC_ON  (*(volatile unsigned char *)0x992)
+#define IOC_PRO (*(volatile unsigned char *)0x993)
+/* スーパーバイザで呼ぶ。誰かが禁止を解いていたら (_OS_CURON、DOS の _CONCTRL 17) 止め直す。
+ * 描く前に呼ぶ (描かれたカーソルの上に字を描いてから XOR で消すと、そこに四角が残る) */
+static void ioc_hide(void)
+{
+#if !defined(VT_HOSTTEST) && !defined(VT_ZOS)
+  if (ioc_saved >= 0 && (!IOC_PRO || IOC_ON)) _iocs_os_curof();
+#endif
+}
+static void ioc_init(void)
+{
+#if !defined(VT_HOSTTEST) && !defined(VT_ZOS)
+  if (!vt_pane && ioc_saved < 0) {
+    ioc_saved = (IOC_ON ? 1 : 0) | (IOC_PRO ? 2 : 0);
+    _iocs_os_curof();
+    return;
+  }
+#endif
+  _iocs_b_curoff();
+}
+static void ioc_fini(void)
+{
+#if !defined(VT_HOSTTEST) && !defined(VT_ZOS)
+  if (ioc_saved >= 0) {
+    /* _OS_CURON はその場でカーソルを描く。このあと ssh.x が画面を潰すとそこに四角が残るので使わず、禁止を解いて
+     * _B_CURON (次の点滅から描く) にする。元は消えていたなら禁止を解くだけ。元から禁止ならそのまま */
+    if (!(ioc_saved & 2)) {
+      IOC_PRO = 0;
+      if (ioc_saved & 1) _iocs_b_curon();   /* COMMAND.X から起動したときはこれ (表示中・禁止なし) */
+    }
+    ioc_saved = -1;
+    return;
+  }
+#endif
+  _iocs_b_curon();
+}
+
 /* vt_write に展開させない (巨大な関数でレジスタが足りず、描画の内側のループで変数がスタックに溢れる) */
 #define NOINLINE __attribute__((noinline))
-static NOINLINE void flush(void)
+/* 描き直しの要る行を、多くて maxrows 行だけ描く。まだ残っていれば 1 (zos.x は描くのを本体のスレッドに回し、
+ * 少しずつ描いては譲る: ペインの出力の IOCS の中 (スーパーバイザ、DOS の CON の中) で描くと、その間ほかのスレッドが回らない) */
+static NOINLINE int flush_n(int maxrows)
 {
-  int r, c, s, i;
+  int r, c, s, i, rows = 0, more = 0;
   static unsigned char diff[MAXCOLS];
-  if (VT_HIDDEN) return;   /* 裏の端末は描かない (表に出すとき vt_con_visible が全面を描く) */
+  if (VT_HIDDEN) return 0;   /* 裏の端末は描かない (表に出すとき vt_con_visible が全面を描く) */
 #ifdef VT_VCONS
-  if (view_off) return;   /* さかのぼって見ている間は描かない (書き換え範囲は残す。戻ったときに描く) */
+  if (view_off) return 0;   /* さかのぼって見ている間は描かない (書き換え範囲は残す。戻ったときに描く) */
 #endif
   PROF(4, 1);
   s = sup_enter();
   if (vs_pend) vs_apply();
   if (csr_shown) { cursor_xor(csr_x, csr_y); csr_shown = 0; }   /* 先にカーソルを消す */
+  ioc_hide();
   for (r = 0; r < ROWS; r++) {
     cell_t *lrow, *drow;
     int nd = 0, lo = rlo[r], hi = rhi[r];
     if (lo > hi) continue;
+    if (rows >= maxrows) { more = 1; break; }
+    rows++;
     rlo[r] = MAXCOLS; rhi[r] = 0;
     if (hi >= COLS) hi = COLS - 1;
     lrow = cur[r]; drow = drawn[r];
@@ -1092,7 +1171,14 @@ static NOINLINE void flush(void)
   sa_off();
   if (cur_vis && csr_ok) { cursor_xor(cx, cy); csr_shown = 1; csr_x = cx; csr_y = cy; }
   sup_leave(s);
+  return more;
 }
+static void flush(void) { flush_n(MAXROWS); }
+#ifdef VT_ZOS
+int vt_nomove = 1;   /* vt_defer のとき、スクロールで VRAM を動かさない (0: 動かす。ssh.x の _B_DOWN_S は自分の絵を動かしてほしい) */
+int vt_defer;   /* 1: vt_write は描かない (論理画面と書き換え範囲だけ。描くのは vt_flush_some) */
+int vt_flush_some(int maxrows) { return flush_n(maxrows); }
+#endif
 
 /* ================= 文字の書き込み ================= */
 /* 属性 (c_fg/c_bg/bold/reverse/underline) が変わったら呼ぶ: 字を置く属性語 cur_at と消去セル clr_cell を作り直す */
@@ -1817,7 +1903,7 @@ void vt_follow(void)
   sup_leave(s);
 }
 #endif
-void vt_write(const unsigned char *p, int n)
+static void vt_write1(const unsigned char *p, int n, int draw)
 {
   int i, sup;
   PROF(5, 1);
@@ -1887,8 +1973,41 @@ void vt_write(const unsigned char *p, int n)
       default: state = S_GROUND; break;
     }
   }
-  flush();
+  if (draw) flush();
   sup_leave(sup);
+}
+void vt_write(const unsigned char *p, int n)
+{
+#ifdef VT_ZOS
+  vt_write1(p, n, !vt_defer);
+#elif defined(VT_VCONS)
+  /* Z-OS のペインの中 (ssh.x など): 大きな出力は 512 バイトずつ解析し、その間に譲る (_CHANGE_PR)。
+   * 全部をスーパーバイザで一気に処理すると、その間ほかのスレッド (npd.x のネットワークなど) が回らない。描くのは最後に 1 回 */
+  if (!vt_pane) { vt_write1(p, n, 1); return; }
+  while (n > 512) {
+    vt_write1(p, 512, 0);
+    p += 512; n -= 512;
+    _dos_change_pr();
+  }
+  vt_write1(p, n, 0);
+  if (vs_pend > 0 && !VT_HIDDEN) {   /* ためたスクロール (上へ) の VRAM の移動も 64 ラインずつ譲りながら (1 ペインで 70ms ほどかかる) */
+    int k = vs_pend, h = vs_bot - vs_top + 1, y, nl;
+    vs_pend = 0;
+    if (csr_shown) { int s = sup_enter(); cursor_xor(csr_x, csr_y); csr_shown = 0; sup_leave(s); }
+    if (k < h) {
+      nl = (h - k) * vch;
+      for (y = 0; y < nl; y += 64) {
+        int s = sup_enter();
+        vram_move_lines(vs_top * vch + y, (vs_top + k) * vch + y, nl - y < 64 ? nl - y : 64);
+        sup_leave(s);
+        _dos_change_pr();
+      }
+    }
+  }
+  while (flush_n(8)) _dos_change_pr();   /* 描くのも 8 行ずつ譲りながら */
+#else
+  vt_write1(p, n, 1);
+#endif
 }
 
 /* ================= 初期化・終了 ================= */
@@ -1966,6 +2085,10 @@ static void pane_probe(void)
   }
 }
 
+/* ファンクションキー行 (最下行の C1 CU CA ... EOF)。VT100 の画面では最下行も端末の行なので、使っている間は消す (_C_FNKMOD 3)。
+   Z-OS のペインの中 (vt_pane) は zos.x の画面なので触らない。vt_fini で元のモードに戻す */
+static int fnk_saved = -1;
+
 void vt_init(int cols, int rows)
 {
   int r, c, s;
@@ -1978,6 +2101,15 @@ void vt_init(int cols, int rows)
   if (cols > SCRCOLS) cols = SCRCOLS;
   if (rows > SCRROWS) rows = SCRROWS;
   pane_probe();
+#ifndef VT_HOSTTEST
+  if (!vt_pane && fnk_saved < 0) {
+    fnk_saved = _dos_c_fnkmod(-1);
+    if (fnk_saved >= 0 && fnk_saved != 3)
+      _dos_c_fnkmod(3);
+    else
+      fnk_saved = -1;
+  }
+#endif
 #if defined(VT_VCONS) && !defined(VT_ZOS)
   if (pane_dynhid) vt_hidden = 1;
 #else
@@ -2011,7 +2143,7 @@ void vt_init(int cols, int rows)
   sa_ok = sa_probe();
 #endif
   palette_setup();
-  _iocs_b_curoff();           /* BIOS のカーソルは使わない (自前で描く) */
+  ioc_init();                 /* BIOS のカーソルは使わない (自前で描く) */
   for (r = 0; r < ROWS; r++)
     { for (c = 0; c < COLS; c++) { clear_cell(&cur[r][c]); drawn[r][c] = cur[r][c]; } if (!VT_HIDDEN) row_fill(r, c_bg); }
   for (r = 0; r < MAXROWS; r++) { rlo[r] = MAXCOLS; rhi[r] = 0; }
@@ -2030,9 +2162,23 @@ void vt_fini(void)
   sa_off();
   if (csr_shown) { cursor_xor(csr_x, csr_y); csr_shown = 0; }
   if (pal_saved) for (i = 0; i < 16; i++) TPAL[i] = pal_save[i];
-  _iocs_b_curon();
+  ioc_fini();
   sup_leave(s);
   _dos_breakck(1);
+#ifndef VT_HOSTTEST
+  if (fnk_saved >= 0) {
+    /* 最下行に VT100 の字が残っていると、戻したファンクションキー行 (プレーンの一部だけ描き直す) に混ざるので、その 16 ライン分を全プレーン消す */
+    int s2 = sup_enter(), k;
+    volatile unsigned long *p;
+    for (k = 0; k < 4; k++)
+      for (p = (volatile unsigned long *)(TVRAM_PHYS + (unsigned long)k * 0x20000UL + 496UL * VBYTES);
+           p < (volatile unsigned long *)(TVRAM_PHYS + (unsigned long)k * 0x20000UL + 512UL * VBYTES); p++)
+        *p = 0;
+    sup_leave(s2);
+    _dos_c_fnkmod(fnk_saved);
+    fnk_saved = -1;
+  }
+#endif
   vt_up = 0;
 #ifdef VT_VCONS
   vc_inited = 0;
@@ -2131,7 +2277,7 @@ unsigned long vt_emoji_cp(int idx) { return (idx >= 0 && idx < EMOJITAB_N) ? emo
  *   大域変数のまま)。画面 2 面のセル (24 KB) は写さず、入れ物の行ポインタ表がそれぞれの置き場を指す。
  * ・裏の端末 (vt_hidden) は解析と論理画面だけ: flush と scroll の VRAM・drawn は触らない。drawn は表の VRAM の控えのまま。
  * ・カーソルの描画状態 (csr_*) も端末ごと。裏に回すとき csr_shown を 0 にする (表に出すとき全面を描き直すので消さなくてよい)。
- * ・グリフ表・pm_tab・cp_kind の控え・同時アクセス・パレットの退避・drawn・rlo/rhi は共通。 */
+ * ・グリフ表・pm_tab・cp_kind の控え・同時アクセス・パレットの退避・drawn は共通。 */
 #ifdef VT_VCONS
 #include <string.h>
 #define VC_VARS X(cx) X(cy) X(pend_wrap) X(top) X(bot) X(c_fg) X(c_bg) X(a_bold) X(a_uline) X(a_reverse) X(cur_at) X(clr_cell) \
@@ -2139,7 +2285,7 @@ unsigned long vt_emoji_cp(int idx) { return (idx >= 0 && idx < EMOJITAB_N) ? emo
   X(sv_sp0) X(sv_sp1) X(sv_gl) X(csr_shown) X(csr_x) X(csr_y) X(state) X(csi_priv) X(csi_inter) X(nparam) X(str_kind) \
   X(str_esc) X(str_len) X(cs_which) X(u_cp) X(u_need) X(outq_len) X(vt_hidden) \
   X(vt_base) X(COLS) X(ROWS) X(vt_pane) X(pane_x) X(pane_y) X(pane_w) X(pane_h) X(pane_px) X(pane_py) X(csr_ok) X(sb) X(view_off)
-#define VC_ARRS X(g_special) X(tabstop) X(param) X(str_buf) X(outq) X(rows_main) X(rows_alt) X(drawn)
+#define VC_ARRS X(g_special) X(tabstop) X(param) X(str_buf) X(outq) X(rows_main) X(rows_alt) X(drawn) X(rlo) X(rhi)
 typedef struct {
 #define X(v) __typeof__(v) v;
   VC_VARS VC_ARRS

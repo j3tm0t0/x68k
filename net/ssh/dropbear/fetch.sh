@@ -12,6 +12,9 @@ URL2="https://github.com/mkj/dropbear/releases/download/DROPBEAR_$VER/$TARBALL"
 
 mkdir -p "$WORK"
 cd "$WORK"
+if [ ! -f "$TARBALL" ] && [ -f "${CI_ARTIFACTS:-/nonexistent}/$TARBALL" ]; then
+  cp "$CI_ARTIFACTS/$TARBALL" "$TARBALL"   # CI: 非公開 S3 のミラー
+fi
 if [ ! -f "$TARBALL" ]; then
   curl -fsSL -o "$TARBALL" "$URL1" || curl -fsSL -o "$TARBALL" "$URL2"
 fi

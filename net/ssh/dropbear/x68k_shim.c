@@ -87,19 +87,22 @@ struct passwd *getpwnam(const char *name) { (void)name; return fill_pw(); }
 #include <sys/stat.h>
 #include <errno.h>
 static int x68k_isdir(const char *p) { struct stat st; return stat(p, &st) == 0 && S_ISDIR(st.st_mode); }
-const char *x68k_ssh_dir(const char *homedir)
+/* create = 0: 決まっている置き場を返す (SSH_DIR か、known_hosts 側が決めた後はその置き場。まだなら NULL。ディスクには触らない)。create = 1: 作れる名前を探して作る (known_hosts を書く側) */
+const char *x68k_ssh_dir(const char *homedir, int create)
 {
   static char dir[200];
   static int done;
   const char *sd;
   if (done) return dir;
-  done = 1;
   sd = getenv("SSH_DIR");
   if (sd && *sd) {
     strncpy(dir, sd, sizeof dir - 1); dir[sizeof dir - 1] = 0;
-    mkdir(dir, 0700);
+    if (create) { mkdir(dir, 0700); done = 1; }
     return dir;
   }
+  if (!create)
+    return done ? dir : NULL;     /* まだ決めていない: 呼んだ側は元の ~/.ssh のまま (ディスクに触らない。B: が空だと止まる) */
+  done = 1;
   snprintf(dir, sizeof dir, "%s/.ssh", homedir);
   if (mkdir(dir, 0700) == 0 || errno == EEXIST || x68k_isdir(dir))
     return dir;
@@ -116,7 +119,9 @@ char *__wrap_expand_homedir_path(const char *inpath)
     char *buf;
     int len;
     if (!home) home = fill_pw()->pw_dir;
-    sd = x68k_ssh_dir(home);
+    sd = x68k_ssh_dir(home, 0);
+    if (!sd)
+      return __real_expand_homedir_path(inpath);
     len = strlen(sd) + strlen(inpath + 7) + 2;
     buf = m_malloc(len);
     snprintf(buf, len, "%s/%s", sd, inpath + 7);

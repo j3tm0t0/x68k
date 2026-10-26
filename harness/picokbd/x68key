@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+# x68key [-t 宛先] <コマンド...> : X68000 Z に挿した Pico (USB キーボード機能) に UDP 6869 で命令を送る
+#   x68key key esc / x68key combo ctrl f11 del / x68key type 'ver' / x68key status
+#   宛先: -t 名前か IP。名前は ~/.x68key の「名前 IP」の行で付ける (例: z 192.168.1.4)。
+#         -t が無ければ環境変数 PICOKBD、それも無ければ ~/.x68key の default 行、無ければ LAN のブロードキャスト。
+#   ブロードキャストのときは、答えた Pico を全部 (IP 付きで) 表示する。1 台だけなら今まで通りの表示。
+#   終わると "ok" を表示する。PICOKBD_TIMEOUT で待ち時間 (秒) を変えられる
+import os, socket, sys, time
+BCAST = "192.168.1.255"
+def hosts():
+    m = {}
+    try:
+        for l in open(os.path.expanduser("~/.x68key")):
+            f = l.split("#")[0].split()
+            if len(f) >= 2: m[f[0]] = f[1]
+    except OSError: pass
+    return m
+args = sys.argv[1:]
+H = hosts()
+# 配列: 既定は JIS (Z は JIS 配列で運用)。-l us|jp、環境変数 X68KEY_LAYOUT、~/.x68key の「layout us」行で変える。
+# Pico の type / key は US 配列の文字で HID を送り、Z はキーの位置で JIS の文字にする。
+# 望みの JIS の文字を出せる US の文字に置き換える。US の文字では押せない位置のキー (円記号 \ と | と _) は今の Pico のファームでは打てない
+LAYOUT = H.pop("layout", None) or os.environ.get("X68KEY_LAYOUT") or "jp"
+if len(args) >= 2 and args[0] == "-l":
+    LAYOUT = args[1]; args = args[2:]
+JP2US = {'"': '@', "&": '^', "'": '&', "(": '*', ")": '(', "=": '_', "^": '=', "~": '+', "@": '[', "`": '{',
+         "[": ']', "{": '}', "]": '\\', "}": '|', "+": ':', ":": "'", "*": '"'}
+YENRO = {'\\': 'key yen', '|': 'combo shift yen', '_': 'combo shift ro'}   # US の文字では押せない円記号・ro のキー (ファーム 0054 以降)
+def conv(t):
+    return "".join(JP2US.get(c, c) for c in t) if LAYOUT in ("jp", "jis") else t
+target = None
+if len(args) >= 2 and args[0] == "-t":
+    target = args[1]; args = args[2:]
+target = target or os.environ.get("PICOKBD") or H.get("default") or BCAST
+host = H.get(target, target)
+host = H.get(host, host)                      # default が名前を指していてもよい
+names = {ip: n for n, ip in H.items() if n != "default"}
+tmo = float(os.environ.get("PICOKBD_TIMEOUT", "10"))
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+cmds = [" ".join(args)]
+if LAYOUT in ("jp", "jis") and args:
+    if args[0] == "type":
+        cmds = []; buf = ""
+        for ch in " ".join(args[1:]):
+            if ch in YENRO:
+                if buf: cmds.append("type " + conv(buf)); buf = ""
+                cmds.append(YENRO[ch])
+            else: buf += ch
+        if buf or not cmds: cmds.append("type " + conv(buf))
+    elif args[0] == "key" and len(args) == 2 and len(args[1]) == 1:
+        cmds = [YENRO[args[1]] if args[1] in YENRO else "key " + conv(args[1])]
+bcast = host.endswith(".255")
+for ci, cmd in enumerate(cmds):
+    s.sendto(cmd.encode(), (host, 6869))
+    replies = []
+    end = time.time() + tmo
+    while time.time() < end:
+        s.settimeout(max(0.05, end - time.time()))
+        try:
+            r, a = s.recvfrom(1500)
+        except socket.timeout:
+            break
+        replies.append((a[0], r.decode(errors="replace")))
+        if not bcast: break
+        end = min(end, time.time() + 1.0)         # 最初の返事から 1 秒だけ他の Pico を待つ
+    if not replies:
+        print("timeout"); sys.exit(2)
+    if not all(r.startswith("ok") for _, r in replies): break
+if len(replies) == 1:
+    print(replies[0][1])
+else:
+    for ip, r in replies:
+        tag = f"{names[ip]} {ip}" if ip in names else ip
+        print(f"[{tag}] {r}")
+sys.exit(0 if all(r.startswith("ok") for _, r in replies) else 1)

@@ -1,7 +1,10 @@
 #!/bin/bash
 # 仮想コンソール (x68k_vcons.c) のホスト試験を組んで流す (tests/vcshim.c)。ASan/UBSan 付き。
 #   要: term/zterm/server の cargo build --release (フレーム列を作る)
+#   Linux の ASan は終了時に解放していないメモリも数える (Mac では数えない)。仮想コンソールの画面は終わるまで持つものなので、
+#   それは見ない (detect_leaks=0)。
 set -eu
+export ASAN_OPTIONS="${ASAN_OPTIONS:-}${ASAN_OPTIONS:+:}detect_leaks=0"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 TERM_="$HERE/../../../../term"
 VT="$TERM_/vt100"; ZC="$TERM_/zterm/client"; Z="$TERM_/zterm/server/target/release/zterm"
