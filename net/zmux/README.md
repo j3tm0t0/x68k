@@ -192,6 +192,7 @@ zmux.x は常駐するときに CON デバイスを横取りする (zmux.sys 0.3
   形は `x68k/zmux.c` の `scr_start` のコメント。古い zmux.sys は IN_SCREEN を捨てるので、zmuxd は 120 秒で「返事が無い」と答える。
 - 既定はプレーン 0 と 1 (Human68k の文字の色)。`-p 0123` で 4 枚。大きさは CRTMOD から (768x512 なら 96 バイト x 512 ラスタ)。`-y` / `-n` で行の範囲。
 - `-t` は初回だけ X68000 から CGROM (約 140KB) を取り、`~/.cache/zmux/` に置く。
+- `-t` は反転した字と強調 (太字) の字も引く。Human68k のエラーの箱 (白地に太字) も文字になる (「、」など一部の記号は `?` になる)。
 - XEiJ (19200bps) で: Human68k の画面 4 枚 (192KB) が 21KB に詰まって 13 秒。78125bps ならおよそ 4 分の 1。
 
 ## XEiJ での確認
@@ -268,6 +269,8 @@ zos.x の 0xA7 (OPEN → ACCEPT、打った字をそのまま返す、exit)、zr
 AUTOEXEC.BAT が `ZMUX -c` (CTTY AUX にしない) の起動フロッピーで、タブ 0 から `ver` / 120 文字の `echo` / 記号を打つと CON で動き、答えがタブ 0 に返る。
 `zmux screen -p 0123` でほどいた 4 枚が、XEiJ のエージェントで取ったテキスト VRAM と 1 バイトも違わない。`-t` の文字に ver の答えがある。
 タブ 0 から `ctty aux` → AUX で ver と echo → `ctty con` → また CON で ver。`zmux -m off` でタブ 0 に何も来ない、本体のキーボードで `-m on` で戻る。
+Human68k のエラーの箱 (空のドライブ B: の「ディスクが入っていません」と、`test/buserr.c` の「バスエラーが発生しました」) が、箱がキーを待っている間に `zmux screen -t` で読め、
+タブ 0 (CON のとき) か `zmux key a` (AUX のとき) で中止できる。
 
 ### キーの注入 (`test/e2e_key.py`)
 

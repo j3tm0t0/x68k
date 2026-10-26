@@ -42,6 +42,10 @@ def mkfloppy():
     sh("cp", os.path.join(zm, "x68k", "zmux.sys"), os.path.join(t, "SYS", "ZMUX.SYS"))
     sh("cp", os.path.join(zm, "x68k", "zmux.x"), os.path.join(t, "ZMUX.X"))
     sh("cp", os.path.join(serial, "rx.x"), os.path.join(t, "RX.X"))
+    bx = os.path.join(here, "buserr.x")
+    if not os.path.exists(bx) or os.path.getmtime(bx) < os.path.getmtime(os.path.join(here, "buserr.c")):
+        sh("m68k-xelf-gcc", "-m68000", "-O2", "-o", bx, os.path.join(here, "buserr.c"))
+    sh("cp", bx, os.path.join(t, "BUSERR.X"))
     open(os.path.join(t, "CONFIG.SYS"), "wb").write(
         b"FILES     = 30\r\nBUFFERS   = 20 1024\r\nPROCESS   = 8 10 20\r\n"
         b"DEVICE    = \\SYS\\RSDRV.SYS\r\nDEVICE    = \\SYS\\ZMUX.SYS\r\n")
@@ -223,6 +227,44 @@ try:
     check("zmux -m on typed on the X68000 keyboard", "CON mirror on" in s, s[-200:])
     out = a.cmd("ver")
     check("after -m on: ver from tab 0 again", out is not None and "Human68k version 3.02" in out, repr(out)[-100:] if out else "")
+    # Human68k のエラーの箱 (中止<A> 再実行<R> 無視<I>) は VRAM に直接描かれ、本体のキーを待つ。空のドライブ B: で出す。
+    # zmux screen で箱が読めて、タブ 0 (CON のとき) / zmux key (AUX のとき) の A で中止できる
+    def errbox(how, line="dir b:", want="無視"):
+        a.buf.clear()
+        a.send(line + "\r")
+        txt = ""
+        t0 = time.time()
+        for _ in range(6):
+            time.sleep(3)
+            r, t = zmux_screen("-t", "-p", "0123", "-o", os.path.join(run, "box-%s.png" % how), "-r", os.path.join(run, "box-%s.raw" % how))
+            txt = r.stdout.decode("utf-8", "replace")
+            if "中止" in txt:
+                break
+        box = [l for l in txt.splitlines() if "中止" in l or "ディスク" in l or "エラー" in l]
+        check("%s: zmux screen -t shows the Human68k error box while it waits for a key" % how, "中止" in txt and want in txt,
+              " / ".join(box)[:200] if box else txt[-300:])
+        print("e2e: error box (%s, %.1fs):\n%s" % (how, time.time() - t0, "\n".join(box)))
+        return txt
+
+    errbox("CON")
+    a.buf.clear()
+    a.send("a")
+    out = a.wait("A>", 30)
+    check("CON: A typed in tab 0 answers the box (中止) and the prompt comes back", out is not None, repr(bytes(a.buf[-120:])))
+    out = a.cmd("ctty aux", 30)
+    time.sleep(1)
+    errbox("AUX")
+    a.buf.clear()
+    subprocess.run([ZBIN, "key", "a"], env=env, capture_output=True)
+    out = a.wait("A>", 30)
+    check("AUX: zmux key a answers the box and the AUX prompt comes back", out is not None, repr(bytes(a.buf[-120:])))
+    errbox("AUX bus error", "buserr", "バスエラー")
+    a.buf.clear()
+    subprocess.run([ZBIN, "key", "a"], env=env, capture_output=True)
+    out = a.wait("A>", 30)
+    check("AUX: zmux key a answers the bus error box", out is not None, repr(bytes(a.buf[-120:])))
+    out = a.cmd("ver")
+    check("AUX: ver after the error box", out is not None and "Human68k version 3.02" in out, repr(out)[-80:] if out else "")
     print("e2e: " + status())
     a.close()
     print("ZMUX CON E2E %s (%d failures)" % ("PASS" if not fails else "FAIL", len(fails)))

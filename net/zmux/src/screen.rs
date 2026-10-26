@@ -158,6 +158,7 @@ impl Vram {
             g.copy_from_slice(&ank[c as usize * 16..c as usize * 16 + 16]);
             let ch = if c < 0x80 { char::from_u32(c).unwrap() } else { char::from_u32(0xff61 + c - 0xa1).unwrap() };
             glyph.entry(g).or_insert(ch);
+            glyph.entry(g.map(|b| b | b >> 1)).or_insert(ch);   // 強調 (太字: 1 ドット右に重ねる)
         }
         // 全角: ((区-1)*94 + (点-1))*32、16 区以降は区から 7 を引く (CGROM は 9〜15 区を飛ばして詰めてある)。左右 8 ドットずつに分けて引く
         let mut kg: HashMap<([u8; 16], [u8; 16]), char> = HashMap::new();
@@ -181,6 +182,15 @@ impl Vram {
                 if !bad {
                     if let Some(ch) = s.chars().next() {
                         kg.entry((l, r)).or_insert(ch);
+                        // 強調 (太字)。Human68k のエラーの箱は太字を反転して描く
+                        let (mut bl, mut br) = ([0u8; 16], [0u8; 16]);
+                        for s in 0..16 {
+                            let v = ((l[s] as u16) << 8) | r[s] as u16;
+                            let v = v | v >> 1;
+                            bl[s] = (v >> 8) as u8;
+                            br[s] = v as u8;
+                        }
+                        kg.entry((bl, br)).or_insert(ch);
                     }
                 }
             }
@@ -194,7 +204,14 @@ impl Vram {
             let mut c = 0;
             while c < cols {
                 if c + 1 < cols {
-                    let hit = tries.iter().find_map(|&m| kg.get(&(self.cell(row, c, m), self.cell(row, c + 1, m))));
+                    // 反転した字 (Human68k のエラーの箱は白地に黒) も引く
+                    // 空白と反転した空白 (塗りつぶし) は全角の字にしない (■ と区別できず、全角の切れ目がずれる)
+                    let flat = |g: &[u8; 16]| g.iter().all(|&b| b == 0) || g.iter().all(|&b| b == 0xff);
+                    let hit = tries.iter().find_map(|&m| {
+                        let (l, r) = (self.cell(row, c, m), self.cell(row, c + 1, m));
+                        if flat(&l) || flat(&r) { return None; }
+                        kg.get(&(l, r)).or_else(|| kg.get(&(l.map(|b| !b), r.map(|b| !b))))
+                    });
                     if let Some(&ch) = hit {
                         line.push(ch);
                         c += 2;
@@ -204,7 +221,7 @@ impl Vram {
                 let mut ch = ' ';
                 for &m in &tries {
                     let g = self.cell(row, c, m);
-                    if g.iter().all(|&b| b == 0) {
+                    if g.iter().all(|&b| b == 0) || g.iter().all(|&b| b == 0xff) {
                         continue;
                     }
                     let inv = g.map(|b| !b);
@@ -308,6 +325,7 @@ fn cgrom(name: &str, off: u16, len: u16) -> Result<Vec<u8>, String> {
 pub fn run(args: &[String]) {
     let mut out: Option<String> = None;
     let mut rawout: Option<String> = None;
+    let mut rawin: Option<String> = None;
     let mut text = false;
     let mut planes = 0x3u16;
     let (mut y0, mut rows) = (0u16, 0u16);
@@ -317,7 +335,8 @@ pub fn run(args: &[String]) {
         match args[i].as_str() {
             "-o" => { out = v; i += 1; }
             "-t" | "--text" => text = true,
-            "-r" => { rawout = v; i += 1; }   // 試験用: ほどいたプレーンをそのまま (プレーンの順に w * rows バイトずつ)
+            "-r" => { rawout = v; i += 1; }
+            "--raw-in" => { rawin = v; i += 1; }   // 試験用: -r で書いたものを読み直す (768x512、-p と同じプレーンの組)   // 試験用: ほどいたプレーンをそのまま (プレーンの順に w * rows バイトずつ)
             "-p" => {
                 planes = v.as_deref().unwrap_or("").bytes().filter(|b| (b'0'..=b'3').contains(b)).fold(0, |m, b| m | 1 << (b - b'0'));
                 i += 1;
@@ -332,8 +351,21 @@ pub fn run(args: &[String]) {
         crate::die("screen: -p にプレーンの番号 (0〜3) が要る");
     }
     let t0 = std::time::Instant::now();
-    let raw = fetch(0, planes, 0, y0, rows).unwrap_or_else(|e| crate::die(&format!("screen: {}", e)));
-    let v = parse_vram(&raw).unwrap_or_else(|e| crate::die(&format!("screen: {}", e)));
+    let (v, raw) = if let Some(f) = &rawin {
+        let d = std::fs::read(f).unwrap_or_else(|e| crate::die(&format!("{}: {}", f, e)));
+        let mut v = Vram { mode: 16, planes: planes as u8, w: 96, rows: 512, pal: [0xffff; 16], plane: Default::default() };
+        let mut o = 0;
+        for k in 0..4 {
+            if planes & (1 << k) != 0 && o + 96 * 512 <= d.len() {
+                v.plane[k] = Some(d[o..o + 96 * 512].to_vec());
+                o += 96 * 512;
+            }
+        }
+        (v, d)
+    } else {
+        let raw = fetch(0, planes, 0, y0, rows).unwrap_or_else(|e| crate::die(&format!("screen: {}", e)));
+        (parse_vram(&raw).unwrap_or_else(|e| crate::die(&format!("screen: {}", e))), raw)
+    };
     eprintln!("zmux screen: {}x{} (CRTMOD {}) {} バイトで {:.1} 秒", v.w * 8, v.rows, v.mode, raw.len(), t0.elapsed().as_secs_f64());
     if text {
         let ank = cgrom("cgrom-ank.bin", 0x3a8, 16).unwrap_or_else(|e| crate::die(&format!("screen: {}", e)));
