@@ -2016,6 +2016,7 @@ void vt_set_small(int on) { vt_small = on ? 1 : 0; vch = vt_small ? 12 : 16; }
 void vt_default_size(int *cols, int *rows) { if (cols) *cols = SCRCOLS; if (rows) *rows = SCRROWS; }
 static int vt_up;   /* vt_init 済み (vt_fini で 0) */
 static void pane_probe(void);
+static void con_full(int *cols, int *rows);
 /* vt_init の前 (ssh.x の pty 要求は画面を切り替える前) は、これから描く枠の大きさを返す */
 void vt_get_size(int *cols, int *rows)
 {
@@ -2023,6 +2024,12 @@ void vt_get_size(int *cols, int *rows)
     pane_probe();
     if (cols) *cols = vt_pane ? pane_w : SCRCOLS;
     if (rows) *rows = vt_pane ? pane_h : SCRROWS;
+    if (!vt_pane && !vt_small) {   /* 画面が 96x32 より小さいモード (640x480 など) では、見える分だけ */
+      int fc, fr;
+      con_full(&fc, &fr);
+      if (cols && *cols > fc) *cols = fc;
+      if (rows && *rows > fr) *rows = fr;
+    }
     return;
   }
   if (cols) *cols = COLS;
@@ -2030,6 +2037,27 @@ void vt_get_size(int *cols, int *rows)
 }
 void vt_get_origin(int *col, int *row) { if (col) *col = vt_pane ? pane_x : 0; if (row) *row = vt_pane ? pane_y : 0; }
 void vt_get_origin_px(int *x, int *y) { if (x) *x = vt_pane ? pane_px : 0; if (y) *y = vt_pane ? pane_py : 0; }
+
+/* 今の画面モード (_CRTMOD) の画面全体の桁数・行数 (8x16 の字で)。Human68k の素のコンソールの枠がこれと同じ幅で原点にあれば、
+ * それは zos.x のペインではなく画面全体 (crtmode.x で 640x480 (モード 19) にすると、_B_CONSOL の枠は 80 桁 x 29 行になる。
+ * 前はこれをペインと見て、ファンクションキー行と Human68k のカーソルを消さなかった)。分からないモードは 96x32 */
+#ifdef VT_HOSTTEST
+static int host_crtmode = 16;
+void vt_host_crtmode(int m) { host_crtmode = m; }
+#endif
+static void con_full(int *cols, int *rows)
+{
+  int m;
+#ifdef VT_HOSTTEST
+  m = host_crtmode;
+#else
+  m = _iocs_crtmod(-1) & 0xff;
+#endif
+  *cols = 96; *rows = 32;
+  if (m == 19) { *cols = 80; *rows = 30; }                         /* 640x480 */
+  else if (m <= 7 || (m >= 12 && m <= 15)) { *cols = 64; *rows = 32; }   /* 512x512 */
+  else if (m <= 11) { *cols = 32; *rows = 16; }                    /* 256x256 */
+}
 
 #ifdef VT_HOSTTEST
 static int host_pane_x = -1, host_pane_y, host_pane_w, host_pane_h;
@@ -2067,6 +2095,11 @@ static int pane_read(int *px, int *py, int *pw, int *ph)
     return 0;
   }
   x = (org >> 16) & 0xffff; y = org & 0xffff;   /* ドット */
+  {
+    int fc, fr;
+    con_full(&fc, &fr);
+    if (x == 0 && y == 0 && w >= fc) return 0;   /* 原点から画面の幅いっぱい: 画面全体 (素のコンソール) */
+  }
   if (w < 96 || x != 0 || y != 0) {   /* zos.x のペインはいちばん上の行 (タブの列) より下 */
     /* 枠らしいものだけ (左端が 16 ドットの倍数 = 偶数バイト、画面に収まる) */
     if ((x & 15) == 0 && w >= 8 && h >= 4 && x / CW + w <= 96 && y + h * CH <= 512) {
@@ -2116,6 +2149,12 @@ void vt_init(int cols, int rows)
   pane_dyn = pane_dynhid = 0;
 #endif
   vt_base = TVRAM_PHYS;
+  if (!vt_pane && !vt_small) {
+    int fc, fr;
+    con_full(&fc, &fr);
+    if (cols > fc) cols = fc;
+    if (rows > fr) rows = fr;
+  }
   if (vt_pane) {
     vt_base = TVRAM_PHYS + (unsigned long)pane_py * VBYTES + pane_px / 8;   /* ssh.x などは 8x16 だけ。行はドットで */
     if (cols > pane_w) cols = pane_w;
