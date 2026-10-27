@@ -94,6 +94,32 @@ jobs:
       - name: chacha68k (Musashi の csim、dropbear の chachapoly.o、RFC 8439)
         run: PY=$RUNNER_TEMP/venv/bin/python .github/ci/chacha68k.sh
 
+  zmux:
+    name: net/zmux (cargo test、zmux.sys のビルド、にせの X68000 の e2e)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/elf2x68k
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            net/zmux/target
+          key: cargo-zmux-${{ runner.os }}-${{ hashFiles('net/zmux/Cargo.lock') }}
+      - name: python venv (pyte)
+        run: python3 -m venv "$RUNNER_TEMP/venv" && "$RUNNER_TEMP/venv/bin/pip" install -q -r .github/ci/requirements.txt
+      - name: cargo build / test
+        working-directory: net/zmux
+        run: |
+          cargo build --release --locked
+          cargo test --release --locked
+      - name: zmux.sys / zmux.x / zrmt.sys (elf2x68k)
+        run: make -s -C net/zmux/x68k clean all && ls -l net/zmux/x68k/zmux.sys net/zmux/x68k/zmux.x net/zmux/x68k/zrmt.sys
+      - name: test/e2e_fake.py (XEiJ なし)
+        run: $RUNNER_TEMP/venv/bin/python net/zmux/test/e2e_fake.py
+
   picosim:
     name: harness/picosim (make test-host)
     runs-on: ubuntu-24.04

@@ -13,6 +13,8 @@
  *   中身の先頭が ZSS_MARK (0xA7) のレコードは Pico の zsshd と zos.x (x68k-zos) の間の端末のセッション (zss.h)。
  *   TSP と同じ形で、zos.x が預けた入口 (ETD 命令 28) を ZSS_NP_OUT / ZSS_NP_IN で呼ぶ。
  *
+ *   npd.x -m a.b.c.d    : SCSI ID 6 の代わりに zmux (net/zmux) の線のチャネル 3 で交換する (実機 X68000 と Raspberry Pi の
+ *                         RS-232C)。zmux.sys と zmux.x が要る。送るものが無いときは交換せず、Pi の KICK で交換する
  *   npd.x [-iN] a.b.c.d : 常駐してスレッド "npd" を作る (2 回目以降は受信の受け入れを再開するだけ)。a.b.c.d は Z の
  *                         IP アドレス。xip.x の設定 (ifconfig / inetdconf) が済んでから起動する
  *   必要: CONFIG.SYS の DEVICE = \SYS\npd.sys と PROCESS 指定、netpipe 入りの Pico W のファーム
@@ -34,6 +36,7 @@ extern char *mem_ptr;
 extern unsigned char *cmd_line;
 
 static void *etd;                       /* npd.sys の ETD 入口 */
+static void *mux;                       /* -m: zmux.sys の入口 (d0 = 命令, a0 = 引数。call_etd で呼べる) */
 static void *tis;                       /* tis.x -p の入口 (交換のたびに npd.sys から取り直す)、0 = 居ない */
 static int tsp_more;                    /* Pico の TSP 応答に続きがある */
 static void *zss;                       /* zos.x の 0xA7 の入口 (交換のたびに取り直す)、0 = 居ない */
@@ -105,6 +108,23 @@ static void tap(int dir, const uint8_t *p, int len)
   ztap.e[k].len = len;
   for (i = 0; i < 28; i++)
     ztap.e[k].b[i] = i < len ? p[i] : 0;
+}
+
+/* デバイスチェインから zmux.sys ("AUX     " + "ZMUX") を探す。入口はヘッダ +0x1a */
+static void *find_zmux(void)
+{
+  uint16_t *p;
+  for (p = (uint16_t *)0x6800; p < (uint16_t *)0x68000; p++)
+    if (p[0] == 0x4e55 && p[1] == 0x4c20 && p[2] == 0x2020 && p[3] == 0x2020) {   /* "NUL     " */
+      uint8_t *d = (uint8_t *)p - 14;
+      while (d != (uint8_t *)0xffffffff) {
+        if (memeq(d + 14, "AUX     ", 8) && memeq(d + 22, "ZMUX", 4))
+          return d + 26;
+        d = *(uint8_t **)d;
+      }
+      return 0;
+    }
+  return 0;
 }
 
 /* netpipe: Pico W の SCSI ID 6 で運ぶ。応答を読む位置は毎回 8 ずつ下げる (X68000 Z 側でディスクの読み込みが
@@ -328,6 +348,46 @@ static int ticks(void)
   return _iocs_ontime().sec;            /* 1/100 秒 (0 時に戻る) */
 }
 
+static int ticks(void);
+
+/* -m: zmux の線のチャネル 3 で 1 回交換する。要求のブロック (見出し 16 + レコード) をそのまま送り、応答のブロックを待つ。
+   戻り値は zxchg と同じ (受信データ長、失敗なら -1) */
+static int mxchg(int txlen, int *more)
+{
+  struct zhdr *q = (struct zhdr *)zreq, *r = (struct zhdr *)zres;
+  long a[2];
+  int t0 = ticks(), n;
+  q->magic = ZMAGIC;
+  q->seq = ++zseq;
+  q->len = txlen;
+  q->more = ZDATA;
+  q->stat = zmyip;
+  a[0] = (long)zreq;
+  a[1] = 16 + txlen;
+  while (call_etd(mux, 2, a) < 0) {      /* 線が UP でない / 前の要求を送りかけ */
+    if ((unsigned)(ticks() - t0) > 1000) { zerr.wr++; return -1; }
+    _dos_change_pr();
+  }
+  a[0] = (long)zres;
+  a[1] = sizeof zres;
+  for (;;) {
+    n = call_etd(mux, 3, a);
+    if (n > 0)
+      break;
+    /* 19200bps では 4KB の要求と 4KB の応答で 4 秒余りかかる */
+    if (n < 0 || (unsigned)(ticks() - t0) > 1500) { zerr.rd++; return -1; }
+    _dos_change_pr();
+  }
+  if (n < 16 || r->magic != q->magic || r->seq != zseq || r->len > ZDATA || 16 + r->len > n) {
+    zerr.len++;
+    return -1;
+  }
+  zstat.xchg++;
+  zstat.drops = r->stat;
+  *more = r->more;
+  return r->len;
+}
+
 static void zthread(void)
 {
   int last = 0, hot = 0, act = 0, zfails = 0;
@@ -365,7 +425,12 @@ static void zthread(void)
       zurg = a[2];
     }
     now = ticks();
-    if (n == 0 && hot == 0 && !turg && !zurg && (unsigned)(now - last) < ((unsigned)(now - act) < 200 ? zidle : ZIDLE2)) {
+    /* -m: 線を空回りさせない。送るものも急ぎも無ければ、Pi の KICK か 2 秒に 1 回だけ交換する */
+    if (mux && n == 0 && hot == 0 && !turg && !zurg && !call_etd(mux, 4, 0) && (unsigned)(now - last) < 200) {
+      _dos_sleep_pr(1);                  /* 10ms 眠る (譲るだけだと空回りして CPU の大半を使う) */
+      continue;
+    }
+    if (!mux && n == 0 && hot == 0 && !turg && !zurg && (unsigned)(now - last) < ((unsigned)(now - act) < 200 ? zidle : ZIDLE2)) {
       _dos_change_pr();
       continue;
     }
@@ -416,7 +481,7 @@ static void zthread(void)
       }
     }
     tsp_more = 0;
-    r = zxchg(n, &more, (unsigned)(now - act) < 20 ? ZSECTS : 1);
+    r = mux ? mxchg(n, &more) : zxchg(n, &more, (unsigned)(now - act) < 20 ? ZSECTS : 1);
     if (r < 0) {
       /* 送るはずだったレコードは失われる (TCP が再送する)。続けて失敗したときだけ 1 秒待つ
          (Pico が居ない・つながらない、"X6NR" を知らない古いファーム) */
@@ -453,7 +518,10 @@ int npd_main(void)
   {
     unsigned char *p = cmd_line + 1;     /* 先頭 1 バイトは長さ */
     for (; *p; p++)
-      if (p[0] == '-' && (p[1] | 0x20) == 'i' && p[2] >= '0' && p[2] <= '9') {
+      if (p[0] == '-' && (p[1] | 0x20) == 'm') {
+        mux = (void *)1;                 /* 下で zmux.sys を探す */
+        p++;
+      } else if (p[0] == '-' && (p[1] | 0x20) == 'i' && p[2] >= '0' && p[2] <= '9') {
         /* -i N: やり取りの直後の問い合わせ間隔 (1/100 秒)。短いほど応答は速いが、空の交換が CPU を食う */
         zidle = 0;
         for (p += 2; *p >= '0' && *p <= '9'; p++)
@@ -479,11 +547,16 @@ int npd_main(void)
       }
   }
   if (!zmyip) {
-    _dos_print("usage: npd.x [-iN] a.b.c.d   (a.b.c.d = Z の IP アドレス)\r\n");
+    _dos_print("usage: npd.x [-m] [-iN] a.b.c.d   (a.b.c.d = Z の IP アドレス、-m = zmux の線で)\r\n");
     return 1;
   }
   ssp = _dos_super(0);
   etd = find_npd();
+  if (mux && !(mux = find_zmux())) {
+    if (ssp > 0) _dos_super(ssp);
+    _dos_print("npd: zmux.sys が組み込まれていません\r\n");
+    return 1;
+  }
   if (!etd) {
     if (ssp > 0) _dos_super(ssp);
     _dos_print("npd: npd.sys (/dev/ep0) が組み込まれていません\r\n");
@@ -502,7 +575,7 @@ int npd_main(void)
     zseq = h;
     zsect = ZRLBA + (h >> 8) % (ZRSPAN / 8) * 8;
   }
-  {
+  if (!mux) {
     /* SCSI の入口にフックを挟む (zio を参照)。スレッドを作る前に、スーパーバイザで */
     extern void scsi_hook(void);
     extern uint32_t scsi_old;
@@ -511,7 +584,7 @@ int npd_main(void)
     *vec = (uint32_t)scsi_hook;
   }
   if (ssp > 0) _dos_super(ssp);
-  {
+  if (!mux) {
     /* 簡易プロファイラ (start.S の prof_vdisp、zprof.x で使う)。垂直同期の割り込みが空いていなければ使わない */
     extern void prof_vdisp(void);
     _iocs_vdispst(prof_vdisp, 0, 1);
@@ -537,7 +610,7 @@ int npd_main(void)
     if (r < 0)
       _dos_print("npd: スレッドを起こせません\r\n");
   }
-  _dos_print("npd: netpipe thread started (Pico W, SCSI ID 6, bridge)\r\n");
+  _dos_print(mux ? "npd: netpipe thread started (zmux line, channel 3)\r\n" : "npd: netpipe thread started (Pico W, SCSI ID 6, bridge)\r\n");
   {
     /* 常駐する大きさは BSS (スレッドのスタック) まで含める */
     extern char _end;
