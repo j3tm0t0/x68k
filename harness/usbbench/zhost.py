@@ -250,9 +250,15 @@ stop.set()
 for th in threads:
     th.join(1)
 # Linux のドライバ (usb-storage / usbhid) に返す: もう一度バスリセットすると付き直す
+usb.util.dispose_resources(dev)
+for intf in cfg0:                        # 外した usb-storage / usbhid を付け直す (付け直さないと /dev/sdX ができない)
+    try:
+        dev.attach_kernel_driver(intf.bInterfaceNumber)
+    except usb.core.USBError:
+        pass
 if not args.no_reset:
     try:
-        usb.util.dispose_resources(dev); dev.reset()
+        dev.reset()
     except usb.core.USBError:
         pass
 

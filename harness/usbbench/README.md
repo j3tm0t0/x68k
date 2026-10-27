@@ -13,6 +13,28 @@ Z の中の Linux は見られないので、Z が何を送るかは **Pico の�
 | `zhost.py [-p p.json] [--speed N] [-t 秒]` | raspi3 (sudo、`~/venv-usbbench` の pyusb) | バスリセット → profile の列挙 → HID の IN を bInterval ごとに読み続けながら MSC (BOT) を時刻どおりに。どれかの転送が `-t` 秒を超えたら **HANG** (終了コード 2)、STALL や記録との違いは ERRORS (1)、問題なしは OK (0)。最後にバスリセットして Linux のドライバに返す |
 | `profiles/z-guess.json` | | 記録が無いときの推測 (Linux 風の列挙と起動の読み込み) |
 
+## 公開前の試験一式 (release-check.sh)
+
+raspi3 で `cd ~/usbbench && [USBMON=1] [PCAP=1] [POLL=0] bash release-check.sh <elf> [ケース...]`。p2w は scratchpad/p2wlock を取ってから。
+
+| ケース | すること |
+|---|---|
+| idle | 起動して 60 秒なにもしない |
+| replay | Z で採った USB の使い方 (profiles/z-fork.json) を zhost.py で送り直す |
+| vfat-boot | HDS が開く前 (大きさが仮の 0xfffffe00) に vfat でマウントして読み書き |
+| vfat | 落ち着いてから vfat で読み書き (zfat.py、元の HDS と比べる) |
+| smb-late | SMB を止めたまま起動し、45 秒後に戻す (raspi3 の iptables で 445 番を DROP) |
+| smb-lost | 読み書きの途中で SMB を 45 秒止める |
+| soak | 10 分、ゆっくり (2 回/秒) 読み書き |
+
+- 合格: PANIC / Out of memory が UART に出ない、USB が勝手に消えない、読み戻しと SMB の実ファイルが一致、10 秒を超える止まりが無い。
+- SMB を止めた区間 (戻してから 15 秒まで) の長い待ちは正しい動きとして数えない。
+- 約 30 秒の止まり (#38: Linux の USB リセットで終わる、UART に `msc: no callback for >=28000 ms`、445 番は無通信、`usb: stall` / NOT READY / MEDIUM ERROR が無い) は、1 ケースに 1 回までなら「known bench artefact (#38)」で合格 (stallclass.py)。raspi3 の USB ホストで起き、実機の Z では出ていない。
+- 各ケースに時間の上限があり、Pico が USB から消えたら SWD リセットとハブのポートの入れ直しで立て直す。
+- 結果は `~/release-check/<elf>-poll<0|1>-<時刻>/` (summary.txt、ケースごとの .log / .uart / .dmesg / .pcap / .usbmon.pcap)。
+- Mac から流す版: `mac-soak.sh` (p2w の USB を Mac に挿し替えて、raspi3 の USB ホストと Pico の TinyUSB を分ける)。
+- raspi3 のスクリプトを差し替えるときは、別名で置いてから `mv` で付け替える (動いている bash が読みかけのファイルを上書きしない)。
+
 ## 使い方 (p2w)
 
 ```sh
