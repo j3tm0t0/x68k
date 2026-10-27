@@ -85,6 +85,7 @@ int main(int argc, char **argv)
 #ifdef VT_HOSTTEST
     else if (!strcmp(argv[i], "-V")) verify = 1;
     else if (!strcmp(argv[i], "-F")) vt_set_small(1);   /* 小さい字 (6x12、128x42) */
+    else if (!strcmp(argv[i], "-M") && i + 1 < argc) { extern void vt_host_crtmode(int); vt_host_crtmode(atoi(argv[++i])); }   /* 画面モード (_CRTMOD) のまね */
     else if (!strcmp(argv[i], "-P") && i + 1 < argc) {   /* Z-OS のペインのまね: -P 桁,行,幅,高さ (_B_CONSOL の代わり) */
       int px, py, pw, ph;
       if (sscanf(argv[++i], "%d,%d,%d,%d", &px, &py, &pw, &ph) == 4) vt_host_pane(px, py, pw, ph);

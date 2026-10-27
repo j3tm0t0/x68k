@@ -114,6 +114,16 @@ for spec in "shell 48 0 48 31" "app_vimjp 48 0 48 31" "app_lessu8 0 0 47 31" "ap
   elif ! msg=$(./vthost ${CGOPT[@]+"${CGOPT[@]}"} -V -c 64 -P $px,$py,$pw,$ph -s 96x32 "$rec" /dev/null 2>&1); then fail "pane $name (VRAM != 論理画面)"; echo "$msg" | head -5
   else pass "pane $name ($pw x $ph @ $px,$py)"; fi
 done
+# ---- 7b. 640x480 (モード 19、crtmode.x) の素のコンソール: _B_CONSOL の枠は原点から 80 桁 x 29 行。これはペインではなく画面全体なので、
+#          全面 80x30 で描いたものと同じになる (前はペインと見て、ファンクションキー行と Human68k のカーソルを消さなかった)。
+#          モード 16 で同じ枠ならペインのまま ----
+rec=tests/fixtures/shell.rec
+./vthost -s 80x30 "$rec" "$OUT/m19_full.txt" > /dev/null 2>&1
+./vthost -M 19 -P 0,0,80,29 -s 96x32 "$rec" "$OUT/m19_con.txt" > /dev/null 2>&1
+./vthost -M 16 -P 0,0,80,29 -s 96x32 "$rec" "$OUT/m16_pane.txt" > /dev/null 2>&1
+if ! cmp -s "$OUT/m19_full.txt" "$OUT/m19_con.txt"; then fail "mode 19 console (80x29 @ 0,0) should be the whole screen (80x30), not a pane"
+elif [ "$(wc -l < "$OUT/m16_pane.txt")" -ne 29 ]; then fail "mode 16, 80x29 @ 0,0 should stay a pane (29 rows)"
+else pass "mode 19 console = whole screen 80x30, mode 16 same window = pane"; fi
 # ---- 8. 表の端末を何枚も並べる (vt_con_rect、zos.x のペイン): 4 枚に混ぜて流し、途中で枠を入れ替え、最後の VRAM が
 #         各フィクスチャを単独で流した VRAM を枠に置いたものと同じか (tests/mptest.c、tests/mpcmp.py) ----
 if cc -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=undefined -DVT_HOSTTEST -DVT_VCONS -I. -o "$OUT/mptest" tests/mptest.c vt100.c 2>/dev/null ||
