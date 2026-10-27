@@ -1,6 +1,11 @@
 10 int fi,fo,fw,c,k,n,s,q,t,u
 20 dim char d(90):dim int v(255)
-30 for c=48 to 57:v(c)=c-48:next:for c=65 to 70:v(c)=c-55:next
+30 for c=48 to 57
+31 v(c)=c-48
+32 next
+33 for c=65 to 70
+34 v(c)=c-55
+35 next
 40 fi=fopen("AUX","r"):fo=fopen("AUX","w"):fw=fopen("RX.X","c"):fputc(35,fo)
 100 c=fgetc(fi):if c<>58 then goto 100
 110 n=0:s=0

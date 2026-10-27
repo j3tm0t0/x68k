@@ -21,6 +21,7 @@
   sx.py stage4 [--prune]   SLIP (xip.x + slip.sys + slipd.x) と rcmd.x を入れ、起動時に SLIP になるようにする
   sx.py mode console|slip  起動時の動き (CTTY AUX か SLIP) を切り替える
   sx.py stats              rx.x の受信の統計
+  sx.py writefd IMG.XDF B: フォーマット済みのフロッピーに XDF をセクタ単位で書き、読み返して確かめる
   sx.py term               端末として打ち込む (Ctrl+] で終わる)
 """
 import argparse, os, select, socket, sys, time
@@ -94,11 +95,24 @@ class Link:
         at[1] = 0                                   # oflag
         at[2] = t.CS8 | t.CREAD | t.CLOCAL          # cflag: 8N1、モデム信号は見ない
         at[3] = 0                                   # lflag: raw
-        sp = getattr(t, "B%d" % b)
-        at[4] = at[5] = sp
+        if os.environ.get("SX_RTSCTS"):
+            at[2] |= getattr(t, "CRTSCTS", 0o20000000000)
+        sp = getattr(t, "B%d" % b, None)
+        at[4] = at[5] = sp if sp is not None else t.B38400
         at[6][t.VMIN] = 0
         at[6][t.VTIME] = 0
         t.tcsetattr(self.fd, t.TCSANOW, at)
+        if sp is None:
+            # 表に無い速さ (78125 など): termios2 の BOTHER で直接指定する (Linux)
+            import fcntl, struct, array
+            TCGETS2, TCSETS2 = 0x802C542A, 0x402C542B
+            buf = array.array("B", bytes(44))
+            fcntl.ioctl(self.fd, TCGETS2, buf, True)
+            f = list(struct.unpack("4I", buf[:16].tobytes()))
+            f[2] = (f[2] & ~0o10017) | 0o10000
+            struct.pack_into("4I", buf, 0, *f)
+            struct.pack_into("2I", buf, 36, b, b)
+            fcntl.ioctl(self.fd, TCSETS2, buf)
         t.tcflush(self.fd, t.TCIOFLUSH)
 
     def _fill(self, timeout):
@@ -256,11 +270,13 @@ def stage1(L, a):
         input()
     for line in bas.split(b"\r\n"):
         if line:
-            L.write(line + b"\r\n")
-            time.sleep(0.02)
+            for ch in line + b"\r\n":
+                L.write(bytes([ch]))
+                time.sleep(0.02)
+            time.sleep(0.5)
     L.write(b"\x1a")
     if not a.manual:
-        if L.expect(b"A>", 15) is None:
+        if L.expect(b">", 15) is None:
             raise SystemExit("sx: COPY did not finish")
         say("RX.BAS sent (%d bytes, %.1fs); BASIC RX" % (len(bas), time.time() - t0))
         console_cmd(L, "BASIC RX", wait=None)
@@ -304,7 +320,7 @@ def stage1(L, a):
     want = sum(rxx) & 0xffff
     if got != want:
         raise SystemExit("sx: RX.X checksum mismatch: X68000 %04X, here %04X" % (got, want))
-    if L.expect(b"A>", 20) is None and not a.manual:
+    if L.expect(b">", 20) is None and not a.manual:
         raise SystemExit("sx: BASIC did not exit")
     say("RX.X ok: %d bytes, sum %04X, %d resends, %.1fs (hex part %.1fs)%s" %
         (len(rxx), got, retries, time.time() - t0, time.time() - t1,
@@ -417,6 +433,15 @@ class RX:
         return rc, out
 
     def speed(self, bps):
+        if bps not in SPEEDS:
+            # SCC の時定数を直接: 5MHz / (32 * (tc + 2))。78125 なら tc=0
+            tc = round(5000000 / (32 * bps)) - 2
+            self.call("T", tc.to_bytes(2, "big") + bytes([1 if os.environ.get("SX_RTSCTS") else 0]))
+            time.sleep(0.3)
+            self.L.setbaud(bps)
+            time.sleep(0.2)
+            self.L.drain(0.2)
+            return self.hello()
         mode = 0x4C00 | SPEEDS.index(bps)
         self.call("B", mode.to_bytes(2, "big"))
         time.sleep(0.3)
@@ -735,6 +760,45 @@ def main():
         r.quit()
     elif c == "hello":
         print(r.hello())
+    elif c == "writefd":
+        # sx.py writefd IMAGE.XDF B:  -- X68000 のフロッピー (フォーマット済み) に XDF をセクタ単位で書き、読み返して CRC で確かめる
+        data = open(a.args[0], "rb").read()
+        drv = ord(a.args[1][0].upper()) - ord("A") + 1
+        if len(data) % 1024:
+            ap.error("image size is not a multiple of 1024")
+        nsec = len(data) // 1024
+        t0 = time.time()
+        for sec in range(0, nsec, 3):
+            n = min(3, nsec - sec)
+            r.call("D", bytes([drv, sec >> 8, sec & 255]) + data[sec * 1024:(sec + n) * 1024], timeout=20)
+            if sys.stderr.isatty():
+                el = time.time() - t0
+                sys.stderr.write("\rsx: write %d/%d sectors %.0fs (rest %.0fs) " % (sec + n, nsec, el, el / (sec + n) * (nsec - sec - n)))
+        say("written %d sectors in %.0fs; verifying" % (nsec, time.time() - t0))
+        bad = 0
+        for sec in range(0, nsec, 3):
+            n = min(3, nsec - sec)
+            got = int.from_bytes(r.call("V", bytes([drv, sec >> 8, sec & 255, n]), timeout=20), "big")
+            if got != crc16(data[sec * 1024:(sec + n) * 1024]):
+                bad += 1
+                say("sector %d-%d differs" % (sec, sec + n - 1))
+        say("verify: %s (%.0fs in all)" % ("ok" if not bad else "%d groups differ" % bad, time.time() - t0))
+        sys.exit(1 if bad else 0)
+    elif c == "readfd":
+        # sx.py readfd B: OUT.XDF [セクタ数]  -- X68000 のフロッピーをセクタ単位で読み、XDF (1024 バイト/セクタ) に保存する。2HD は 1232
+        drv = ord(a.args[0][0].upper()) - ord("A") + 1
+        out = a.args[1]
+        nsec = int(a.args[2]) if len(a.args) > 2 else 1232
+        t0 = time.time()
+        with open(out + ".part", "wb") as f:
+            for sec in range(0, nsec, 3):
+                n = min(3, nsec - sec)
+                f.write(r.call("G", bytes([drv, sec >> 8, sec & 255, n]), timeout=20))
+                if sys.stderr.isatty():
+                    el = time.time() - t0
+                    sys.stderr.write("\rsx: read %d/%d sectors %.0fs (rest %.0fs) " % (sec + n, nsec, el, el / (sec + n) * (nsec - sec - n)))
+        os.replace(out + ".part", out)
+        say("read %d sectors into %s in %.0fs" % (nsec, out, time.time() - t0))
     elif c == "stats":
         st = r.call("S")
         print("max bytes waiting in the receive buffer %d, bad frames %d" %
