@@ -1,0 +1,411 @@
+From e77cfe2f60764b38fbb5700064d2775bcebb425a Mon Sep 17 00:00:00 2001
+From: moto <j3tm0t0@gmail.com>
+Date: Tue, 27 Oct 2026 03:26:19 +0900
+Subject: [PATCH] away: settings for use outside home from the SD card
+ (x68000z/away.txt), chosen at boot when the home SSID is not seen
+
+AWAY: auto|always|off, own Wi-Fi SSID/password (63 chars), other items override the flash settings in RAM. SMB2_SERVER empty: no SMB, SD units ready at once, Wi-Fi retried in the background without remote_sem. WPA2 and WPA2/WPA3 tried in turn for the away Wi-Fi. status shows away=1.
+---
+ CMakeLists.txt     |   1 +
+ src/away.c         | 137 +++++++++++++++++++++++++++++++++++++++++++++
+ src/away.h         |  20 +++++++
+ src/connect.c      |  38 +++++++++++--
+ src/hidkbd.c       |   5 +-
+ src/main.c         |   2 +
+ src/sdhds.c        |  20 +++++++
+ src/sdhds.h        |   2 +
+ src/virtual_disk.c |   7 ++-
+ 9 files changed, 224 insertions(+), 8 deletions(-)
+ create mode 100644 src/away.c
+ create mode 100644 src/away.h
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 6da1576..8744de0 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -62,6 +62,7 @@ add_executable(
+         src/config_file.c
+         src/netpipe.c
+         src/sdhds.c
++        src/away.c
+         src/sdfs.c
+         src/usb_descriptors.c
+         x68kserremote/service/remoteserv.c
+diff --git a/src/away.c b/src/away.c
+new file mode 100644
+index 0000000..67a2b75
+--- /dev/null
++++ b/src/away.c
+@@ -0,0 +1,137 @@
++/*
++ * away.c -- 外出用の設定 (家の外で SD カードから起動し、スマートフォンのテザリングにつなぐ)
++ *
++ * SD カードに AWAY_FILE (CONFIG.TXT と同じ「項目: 値」の行) があれば、起動時に Wi-Fi をスキャンして家の SSID
++ * (フラッシュの WIFI_SSID) を探す。見つからなければ、そのファイルの項目でメモリ上の設定を上書きする。
++ * Z が HDS を読みに来る (電源投入から約 35 秒) より前に決めるので、起動の途中で HDS を差し替えない。
++ *
++ *   AWAY: auto | always | off      auto (既定): 家の SSID が見えないときだけ / always: いつも (試験用) / off: 使わない
++ *   WIFI_SSID: / WIFI_PASSWORD:    外でつなぐ Wi-Fi (パスワードは 63 文字まで。フラッシュの欄は 15 文字なので別に持つ)
++ *   ほかの項目 (HDS0:、IPADDR:、SMB2_SERVER: など): 書いた項目だけ上書き。空欄も空欄で上書きする
++ *     (IPADDR: 空欄 = DHCP、SMB2_SERVER: 空欄 = SMB を使わない)
++ *
++ * SSID とパスワードは表示しない (UART のログにも出さない)。
++ */
++#include <stdio.h>
++#include <string.h>
++#include <strings.h>
++#include "pico/cyw43_arch.h"
++#include "FreeRTOS.h"
++#include "task.h"
++#include "config_file.h"
++#include "vd_command.h"
++#include "sdhds.h"
++#include "away.h"
++
++bool away;
++bool away_nosmb;
++
++static char wifi_ssid[33];
++static char wifi_passwd[64];
++static char text[2048];
++static volatile bool home_seen;
++
++static int scan_cb(void *env, const cyw43_ev_scan_result_t *r)
++{
++    if (r != NULL && r->ssid_len > 0 && r->ssid_len == strlen(config.wifi_ssid) &&
++        memcmp(r->ssid, config.wifi_ssid, r->ssid_len) == 0)
++        home_seen = true;
++    return 0;
++}
++
++/* 家の SSID が見えるか。1 回のスキャンは数秒。見落としを避けて 2 回まで */
++static bool home_visible(void)
++{
++    if (config.wifi_ssid[0] == '\0')
++        return false;
++    home_seen = false;
++    for (int n = 0; n < 2 && !home_seen; n++) {
++        cyw43_wifi_scan_options_t opt = {0};
++        if (cyw43_wifi_scan(&cyw43_state, &opt, NULL, scan_cb) != 0) {
++            printf("away: scan failed\n");
++            return true;                /* 分からないときは家の設定のまま */
++        }
++        for (int i = 0; i < 50 && cyw43_wifi_scan_active(&cyw43_state); i++)
++            vTaskDelay(pdMS_TO_TICKS(200));
++    }
++    return home_seen;
++}
++
++/* "ITEM:" の行の値を dst に取り出し、行を消す (config_parse に渡さない) */
++static bool take(const char *item, char *dst, size_t size)
++{
++    size_t n = strlen(item);
++    for (char *p = text; *p != '\0'; ) {
++        char *e = p + strcspn(p, "\r\n");
++        if (strncasecmp(p, item, n) == 0) {
++            char *v = p + n;
++            while (*v == ' ' || *v == '\t')
++                v++;
++            size_t len = e - v;
++            while (len > 0 && (v[len - 1] == ' ' || v[len - 1] == '\t'))
++                len--;
++            if (dst != NULL) {
++                if (len >= size)
++                    len = size - 1;
++                memcpy(dst, v, len);
++                dst[len] = '\0';
++            }
++            memset(p, ' ', e - p);      /* 行を空白にする (config_parse はどの項目にも当たらない行を飛ばす) */
++            *p = '#';
++            return true;
++        }
++        p = *e != '\0' ? e + 1 : e;
++    }
++    return false;
++}
++
++void away_check(void)
++{
++    char mode[16] = "auto";
++
++    sdc_init();
++    if (sdc_read_file(AWAY_FILE, text, sizeof text) < 0)
++        return;
++    take("AWAY:", mode, sizeof mode);
++    if (strcasecmp(mode, "off") == 0) {
++        printf("away: off\n");
++        return;
++    }
++    if (strcasecmp(mode, "always") != 0 && home_visible()) {
++        printf("away: home Wi-Fi seen, normal settings\n");
++        return;
++    }
++    take("WIFI_SSID:", wifi_ssid, sizeof wifi_ssid);
++    take("WIFI_PASSWORD:", wifi_passwd, sizeof wifi_passwd);
++    /* "#" の行は空白にする (config_parse は行の途中の漢字で止まり、その後ろの「項目:」を拾うことがある) */
++    for (char *p = text; *p != '\0'; ) {
++        char *e = p + strcspn(p, "\r\n");
++        if (*p == '#')
++            memset(p, ' ', e - p);
++        p = *e != '\0' ? e + 1 : e;
++    }
++    config_parse((uint8_t *)text);
++    away = true;
++    away_nosmb = config.smb2_server[0] == '\0';
++    printf("away: on (%s)%s%s, HDS0 %s, %s\n", mode,
++           wifi_ssid[0] ? ", own Wi-Fi" : "", away_nosmb ? ", no SMB" : "",
++           config.hds[0], config.ipaddr[0] ? config.ipaddr : "DHCP");
++}
++
++const char *away_wifi_ssid(void)
++{
++    return away && wifi_ssid[0] ? wifi_ssid : config.wifi_ssid;
++}
++
++const char *away_wifi_passwd(void)
++{
++    return away && wifi_ssid[0] ? wifi_passwd : config.wifi_passwd;
++}
++
++/* 家の Wi-Fi は今までどおり WPA2。外 (スマートフォン) は WPA3 だけのこともあるので、WPA2 と WPA2/WPA3 を交互に */
++uint32_t away_wifi_auth(int attempt)
++{
++    if (!(away && wifi_ssid[0]) || (attempt & 1) == 0)
++        return CYW43_AUTH_WPA2_AES_PSK;
++    return CYW43_AUTH_WPA3_WPA2_AES_PSK;
++}
+diff --git a/src/away.h b/src/away.h
+new file mode 100644
+index 0000000..6d5634d
+--- /dev/null
++++ b/src/away.h
+@@ -0,0 +1,20 @@
++#ifndef _AWAY_H_
++#define _AWAY_H_
++
++#include <stdbool.h>
++#include <stdint.h>
++
++/* 外出用の設定 (SD カードの AWAY_FILE)。家の SSID が見えないとき、起動時にメモリ上の設定を上書きする (フラッシュには書かない) */
++#define AWAY_FILE   "/x68000z/away.txt"
++
++extern bool away;                       /* 外出用の設定で動いている */
++extern bool away_nosmb;                 /* 外出用の設定で SMB2_SERVER が空欄: SMB を使わない */
++
++/* main_task で Wi-Fi の初期化のあと、net_setup と vd_init の前に 1 回 */
++void away_check(void);
++/* つなぐ Wi-Fi (外出中なら away.txt の SSID / パスワード) */
++const char *away_wifi_ssid(void);
++const char *away_wifi_passwd(void);
++uint32_t away_wifi_auth(int attempt);
++
++#endif  /* _AWAY_H_ */
+diff --git a/src/connect.c b/src/connect.c
+index dbebc63..0389677 100644
+--- a/src/connect.c
++++ b/src/connect.c
+@@ -57,6 +57,7 @@
+ #include "config_file.h"
+ #include "msclog.h"
+ #include "bootwait.h"
++#include "away.h"
+ 
+ //****************************************************************************
+ // Global variables
+@@ -138,15 +139,16 @@ void net_setup(void)
+ 
+ static void connection(int mode)
+ {
++    static int attempt;
+     switch (mode) {
+     case CONNECT_WIFI:
+         printf("Connecting to WiFi...\n");
+ 
+         sysstatus = STAT_WIFI_CONNECTING;
+ 
+-        if (strlen(config.wifi_ssid) == 0 ||
+-            cyw43_arch_wifi_connect_timeout_ms(config.wifi_ssid, config.wifi_passwd,
+-                                               CYW43_AUTH_WPA2_AES_PSK, 30000)) {
++        if (strlen(away_wifi_ssid()) == 0 ||
++            cyw43_arch_wifi_connect_timeout_ms(away_wifi_ssid(), away_wifi_passwd(),
++                                               away_wifi_auth(attempt++), 30000)) {
+             sysstatus = STAT_WIFI_DISCONNECTED;
+             printf("Failed to connect.\n");
+             msclog_mark("wifi failed");
+@@ -162,7 +164,7 @@ static void connection(int mode)
+ 
+         ip4_addr_t *address = &(cyw43_state.netif[0].ip_addr);
+         printf("Connected to %s as %d.%d.%d.%d as host %s\n",
+-               config.wifi_ssid,
++               away ? "(away Wi-Fi)" : config.wifi_ssid,
+                ip4_addr1_16(address), ip4_addr2_16(address), ip4_addr3_16(address), ip4_addr4_16(address),
+                cyw43_state.netif[0].hostname);
+ 
+@@ -351,10 +353,38 @@ static void sd_fetch_once(void)
+ // WiFi connection task
+ //****************************************************************************
+ 
++/* 外出用の設定で SMB を使わないとき: HDS とリモートドライブは SD カードだけ (vd_init で用意してある)。
++   Wi-Fi は tis.x -p や x68key のためだけなので、remote_sem を持たずに、つながるまで (切れたらまた) 裏でつなぎにいく */
++static void connect_away(void)
++{
++    sysstatus = STAT_WIFI_DISCONNECTED;
++#if HID_KEYBOARD
++    connect_finished = true;
++#endif
++    xTaskNotify(main_th, 1, eSetBits);
++    NEXT_SET(UINT32_MAX);
++    while (1) {
++        if (cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA) != CYW43_LINK_UP) {
++            if (sysstatus >= STAT_WIFI_CONNECTED)
++                printf("away: Wi-Fi lost\n");
++            connection(CONNECT_WIFI);
++            if (sysstatus < STAT_WIFI_CONNECTED) {
++                vTaskDelay(pdMS_TO_TICKS(2000));
++                continue;
++            }
++        }
++        sysstatus = STAT_WIFI_CONNECTED;
++        vTaskDelay(pdMS_TO_TICKS(5000));
++    }
++}
++
+ void connect_task(void *params)
+ {
+     /* Set up WiFi connection */
+ 
++    if (away_nosmb)
++        connect_away();
++
+     xSemaphoreTake(remote_sem, portMAX_DELAY);
+     /* 電源を入れた直後は Wi-Fi や SMB2 サーバへの接続が一度で通らないことがある。通らないまま
+        USB 側に知らせると、Z は HDS の無いディスクを読んで「ディスクから起動できません」になり、
+diff --git a/src/hidkbd.c b/src/hidkbd.c
+index b4f136d..15e34a7 100644
+--- a/src/hidkbd.c
++++ b/src/hidkbd.c
+@@ -40,6 +40,7 @@
+ #include "hidkbd_cmd.h"
+ #include "hidkbd.h"
+ #include "sdhds.h"
++#include "away.h"
+ 
+ #define HIDKBD_PORT     6869
+ #define READY_TIMEOUT   1000            /* Z が HID を読みに来ないまま (ms) なら諦める */
+@@ -168,7 +169,9 @@ static int status_line(char *s, int size)
+         if (cyw43_wifi_get_rssi(&cyw43_state, &rssi) == 0)
+             n += snprintf(s + n, size - n, " rssi=%ld", (long)rssi);
+     }
+-    n += snprintf(s + n, size - n, " smb=%s", smb_state());
++    n += snprintf(s + n, size - n, " smb=%s", away_nosmb ? "none" : smb_state());
++    if (away)
++        n += snprintf(s + n, size - n, " away=1");
+     int id = atoi(config.remoteboot) ? 1 : 0;   /* connect.c の vd_mount と同じ数え方 */
+     for (int i = 0; i < countof(config.hds); i++, id++)
+         if (config.hds[i][0] != '\0' && n < size)
+diff --git a/src/main.c b/src/main.c
+index 5b781ba..b5f2141 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -36,6 +36,7 @@
+ #include "tusb.h"
+ 
+ #include "main.h"
++#include "away.h"
+ #include "vd_command.h"
+ #include "virtual_disk.h"
+ #include "config_file.h"
+@@ -90,6 +91,7 @@ static void main_task(void *params)
+     }
+ 
+     cyw43_arch_enable_sta_mode();
++    away_check();                       /* 外出用の設定 (SD の away.txt) を使うか。net_setup (固定 IP / DHCP) の前 */
+     net_setup();
+ 
+     remote_sem = xSemaphoreCreateBinary();
+diff --git a/src/sdhds.c b/src/sdhds.c
+index 1843556..a479d54 100644
+--- a/src/sdhds.c
++++ b/src/sdhds.c
+@@ -151,6 +151,25 @@ int sdhds_write(void *handle, uint32_t lba, const uint8_t *buf, int nsect)
+     return r;
+ }
+ 
++int sdc_read_file(const char *path, char *buf, int max)
++{
++    FIL f;
++    UINT br;
++    int r = -1;
++    if (!sdc_mount())
++        return -1;
++    sdc_lock();
++    if (f_open(&f, path, FA_READ) == FR_OK) {
++        if (f_read(&f, buf, max - 1, &br) == FR_OK) {
++            buf[br] = '\0';
++            r = br;
++        }
++        f_close(&f);
++    }
++    sdc_unlock();
++    return r;
++}
++
+ #else   /* !SD_CARD: SD カードの無いビルド。呼ぶ側を変えずに済むように何もしない版 */
+ 
+ void sdc_init(void) {}
+@@ -162,6 +181,7 @@ int64_t sdhds_open(const char *path, void **handle) { (void)path; (void)handle;
+ bool sdhds_in_use(const char *sdpath) { (void)sdpath; return false; }
+ int sdhds_read(void *handle, uint32_t lba, uint8_t *buf, int nsect) { return -1; }
+ int sdhds_write(void *handle, uint32_t lba, const uint8_t *buf, int nsect) { return -1; }
++int sdc_read_file(const char *path, char *buf, int max) { return -1; }
+ #endif  /* SD_CARD */
+ 
+ #if SD_CARD && !PICO_RP2040
+diff --git a/src/sdhds.h b/src/sdhds.h
+index 7215652..3a2f4c5 100644
+--- a/src/sdhds.h
++++ b/src/sdhds.h
+@@ -25,6 +25,8 @@ int64_t sdhds_fetch(struct smb2_context *smb2, const char *smbpath, const char *
+ int64_t sdhds_open(const char *path, void **handle);
+ int sdhds_read(void *handle, uint32_t lba, uint8_t *buf, int nsect);
+ int sdhds_write(void *handle, uint32_t lba, const uint8_t *buf, int nsect);
++/* カードの小さなファイル (path は "/..."、"sd:" は付けない) を buf に読み、終わりに 0 を置く。読んだバイト数 / -1 (無い・カードが無い) */
++int sdc_read_file(const char *path, char *buf, int max);
+ 
+ /* UDP 6869 の sdcopy <共有名/パス> <sd-path> (hidkbd.c から) */
+ void sdcopy_init(void);
+diff --git a/src/virtual_disk.c b/src/virtual_disk.c
+index 243c37e..27a5672 100644
+--- a/src/virtual_disk.c
++++ b/src/virtual_disk.c
+@@ -48,6 +48,7 @@
+ #include "bootloader.inc"
+ #include "hdsboot.inc"
+ #include "sdhds.h"
++#include "away.h"
+ #include "sdfs.h"
+ #include "settingui.inc"
+ 
+@@ -225,7 +226,7 @@ int vd_init(void)
+     remoteboot = atoi(config.remoteboot);
+     fastconnect = atoi(config.fastconnect);
+ 
+-    if (strlen(config.wifi_ssid) == 0 || strlen(config.smb2_server) == 0) {
++    if (!away_nosmb && (strlen(config.wifi_ssid) == 0 || strlen(config.smb2_server) == 0)) {
+         /* not configured */
+         for (int i = 0; i < 6; i++) {
+             diskinfo[i].type = DTYPE_REMOTEBOOT;
+@@ -759,8 +760,8 @@ int vd_write_block(uint32_t lba, uint8_t *buf)
+                 cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
+                 if ((rsize = vd_command(vdbuf_write, vdbuf_read)) < 0) {
+ #if BOOTWAIT
+-                    if (sysstatus < STAT_CONFIGURED)
+-                        rsize = -1;             /* リモートドライブ (B:) はまだ使えない */
++                    if (sysstatus < STAT_CONFIGURED && !away_nosmb)
++                        rsize = -1;             /* リモートドライブ (B:) はまだ使えない (SMB を使わない外出用の設定なら SD のユニットはすぐ使える) */
+                     else
+ #endif
+                     rsize = remote_serv(vdbuf_write, vdbuf_read);
+-- 
+2.54.0 (Apple Git-157)
+
