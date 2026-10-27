@@ -2215,6 +2215,30 @@ void vt_fini(void)
         *p = 0;
     sup_leave(s2);
     _dos_c_fnkmod(fnk_saved);
+    {
+      /* 32 行より少ない画面 (crtmode.x の 640x480 = 30 行) では、_C_FNKMOD がファンクションキー行を 32 行目 (画面の外) に描き、
+       * コンソールの枠も 96x32 の画面の分に戻してしまう (XVI で確認)。crtmode.x -k と同じく、枠をそのモードの分に戻し、
+       * ファンクションキー行を見える最下行に写す。_B_CONSOL はカーソルを左上に動かすので、位置を覚えて戻す */
+      int fc, fr, on = fnk_saved != 2, cx, cy, k, y, x;
+      con_full(&fc, &fr);
+      if (fr < 32) {
+        volatile unsigned char *v;
+        s2 = sup_enter();
+        cx = ((volatile unsigned short *)0x974)[0]; cy = ((volatile unsigned short *)0x974)[1];
+        sup_leave(s2);
+        _iocs_b_consol(0, 0, fc - 1, fr - 1 - on);
+        s2 = sup_enter();
+        for (k = 0; k < 4; k++)
+          for (y = 0; y < 16; y++) {
+            v = (volatile unsigned char *)TVRAM_PHYS + (unsigned long)k * 0x20000UL;
+            for (x = 0; x < fc; x++)
+              v[(unsigned long)((fr - 1) * 16 + y) * VBYTES + x] = on ? v[(unsigned long)(31 * 16 + y) * VBYTES + x] : 0;
+          }
+        sup_leave(s2);
+        if (cy > fr - 1 - on) cy = fr - 1 - on;
+        _iocs_b_locate(cx, cy);
+      }
+    }
     fnk_saved = -1;
   }
 #endif
