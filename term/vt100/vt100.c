@@ -455,6 +455,9 @@ static void sa_mask(int m)
   sa_cur = m;
 }
 static void sa_off(void) { if (sa_cur) { CRTC_R21 = 0; sa_cur = 0; } }
+/* 始めたときの R21 (IOCS の _CRTMOD は 0x0033 にする)。終わるときに戻す。0 のまま返すと Human68k のコンソールの
+ * スクロール (ラスタコピー、プレーン 0/1) が何も写さなくなり、画面が流れずに最下行に上書きされる (Z 実機で確認) */
+static int r21_saved = -1;
 /* 画面外のライン 1020 で同時アクセスを試す: プレーン 1-3 を選んでプレーン 0 の位置に書き、プレーン 0 は変わらず
  * 1-3 に入れば使える (バイトと 32bit の両方)。書いた所は元に戻す。スーパーバイザで呼ぶ。 */
 static int sa_probe(void)
@@ -2175,6 +2178,7 @@ void vt_init(int cols, int rows)
   csr_shown = 0;
   for (c = 0; c < MAXCOLS; c++) tabstop[c] = (c % 8 == 0) ? 1 : 0;
   s = sup_enter();
+  if (r21_saved < 0) r21_saved = CRTC_R21;   /* sa_probe より前 (R21 を書く) */
   sa_cur = 0;
 #ifdef VT_NO_SA
   sa_ok = 0;              /* -DVT_NO_SA: 同時アクセスを使わない (プレーンごとに書く) */
@@ -2199,6 +2203,7 @@ void vt_fini(void)
   int s, i;
   s = sup_enter();
   sa_off();
+  if (r21_saved >= 0) { CRTC_R21 = (unsigned short)r21_saved; r21_saved = -1; }
   if (csr_shown) { cursor_xor(csr_x, csr_y); csr_shown = 0; }
   if (pal_saved) for (i = 0; i < 16; i++) TPAL[i] = pal_save[i];
   ioc_fini();
