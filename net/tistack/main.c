@@ -315,7 +315,7 @@ int tis_main(void)
         return 1;
       }
     }
-    _dos_print(pico ? "tis.x: TCP/IP via Pico (npd.x), loopback 127.0.0.0/8" : "tis.x: TCP/IP loopback stack (127.0.0.0/8");
+    _dos_print(pico ? "tis.x: TCP/IP via Pico (npd.x), loopback (127.0.0.0/8" : "tis.x: TCP/IP loopback stack (127.0.0.0/8");
     if (own) {
       char b[24];
       fmt_addr(b, own, 0)[-2] = 0;
