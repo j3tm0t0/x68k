@@ -244,6 +244,15 @@ GREP.X -c apple IN.TXT
 JOIN.X J1.TXT J2.TXT
 1 a x
 2 b y
+== join_blanks
+JOIN.X J3.TXT J4.TXT
+1 日 x 本
+2 b y
+== uniq_f
+UNIQ.X -c -f 1 UF.TXT
+      2 a 1
+      1   c	1
+      1 日 2
 == comm
 COMM.X -12 S.TXT S.TXT
 a
