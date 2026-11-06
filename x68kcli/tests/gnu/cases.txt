@@ -433,3 +433,14 @@ ENV.X TZ=UTC0 DATE.X -r TZ.TXT +%Y%m%d%H%M%S
 == ls_l_date
 ENV.X TZ=UTC0 LS.X -l --time-style=+%Y%m%d%H%M TZ.TXT
 ~-rw-rw-rw- 1 \S+ \S+ 0 200203040506 TZ.TXT
+== touch_jst
+ENV.X TZ=JST-9 TOUCH.X -d "2002-03-04 05:06:08" TZJ.TXT
+== date_jst
+ENV.X TZ=JST-9 DATE.X -r TZJ.TXT +%Y%m%d%H%M%S
+20020304050608
+== ls_l_exec
+LS.X -l LS.X
+~-rwxrwxrwx 1 \S+ \S+ \d+ .* LS.X
+== find_perm_x
+FIND.X LS.X S.TXT -perm -111
+LS.X
