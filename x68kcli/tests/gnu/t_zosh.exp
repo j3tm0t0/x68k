@@ -17,4 +17,9 @@ x-007
 1970
 sdiff rc=1
 sdiff same rc=0
+b c:d
+status=0
+status=256
+x 
+status=0
 end

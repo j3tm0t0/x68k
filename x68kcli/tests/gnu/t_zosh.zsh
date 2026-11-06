@@ -22,4 +22,9 @@ sdiff -s s1.txt s3.txt > /dev/null
 echo "sdiff rc=$?"
 sdiff -s s1.txt s1.txt > /dev/null
 echo "sdiff same rc=$?"
+export SHELL=A:/ZOSH.X
+popen_t "printf '%s|%s\n' 'b c' d | tr '|' ':'"
+popen_t false
+unset SHELL
+popen_t "echo x"
 echo end

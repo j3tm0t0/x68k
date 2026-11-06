@@ -10,7 +10,10 @@ ZOSH=${ZOSH:-$X/../../x68k-zos/shell/src/zosh.x}
 OUT=${OUT:-${TMPDIR:-/tmp}/x68kcli-gnu-zosh}; rm -rf "$OUT"; mkdir -p "$OUT/in"
 printf 'banana 3\r\napple 10\r\ncherry 2\r\napple 10\r\n' > "$OUT/in/in.txt"
 cp t_zosh.zsh "$OUT/in/T.ZSH"
-XEIJCOMMAND=$X/tools/xeij/data/COMMAND.X   # popen (sdiff・diff3) が COMMAND.X /C を使う (起動の A:\ にも XEiJ のものがある)
-FILES="$(ls "$X"/build/x/gnu/*.x | tr '\n' ' ') $ZOSH $XEIJCOMMAND $OUT/in/T.ZSH $OUT/in/in.txt" OUT=$OUT TIMEOUT=${TIMEOUT:-300} \
+XEIJCOMMAND=$X/tools/xeij/data/COMMAND.X   # SHELL が無いときの popen は COMMAND.X /C を使う (起動の A:\ にも XEiJ のものがある)
+# popen の試験の小さいプログラム (GNU の道具と同じ shim と包み方で組む)
+m68k-xelf-gcc -Os -I"$X/src/xshim/include" -Wl,--gc-sections $(grep -o -- '-Wl,--wrap=[a-z]*' "$X/scripts/xbuild.sh" | tr '\n' ' ') \
+  -o "$OUT/in/popen_t.x" popen_t.c "$X/work/xbuild/x68shim.o" && rm -f "$OUT/in/popen_t.x.elf"
+FILES="$(ls "$X"/build/x/gnu/*.x | tr '\n' ' ') $ZOSH $XEIJCOMMAND $OUT/in/popen_t.x $OUT/in/T.ZSH $OUT/in/in.txt" OUT=$OUT TIMEOUT=${TIMEOUT:-300} \
   "$X/tests/xeij_hfs.sh" 'ZOSH.X T.ZSH > OUT.TXT' > "$OUT/run.log" 2>&1 || cat "$OUT/run.log"
 if diff <(tr -d '\r' < "$OUT/boot/OUT.TXT") t_zosh.exp > "$OUT/diff.txt"; then echo PASS; else echo FAIL; cat "$OUT/diff.txt"; exit 1; fi
