@@ -438,10 +438,12 @@ int __wrap_fstat(int fd, struct stat *st)
    (-Wl,--wrap=close。終了時に Human68k が後始末する) */
 int __real_close(int);
 static int dirfd_close(int fd);
+static void fd_forget(int fd);
 int __wrap_close(int fd)
 {
     if (fd >= 0 && fd <= 4) return 0;
     if (fd == 3000) return 0;   /* /dev/tty の仮の番号 (TTYFD) */
+    fd_forget(fd);
     if (dirfd_close(fd) == 0) return 0;
     return __real_close(fd);
 }
@@ -778,12 +780,32 @@ void __wrap_exit(int st)
 
 /* 仮のディレクトリの番号を read したら EISDIR (cat DIR が "Is a directory" と出す) (-Wl,--wrap=read) */
 ssize_t __real_read(int, void *, size_t);
+/* 番号ごとの isatty の控え (DOS の _IOCTRL を毎回呼ばない)。close で忘れる */
+static signed char isatty_cache[64];   /* 0 = まだ、1 = 端末でない、2 = 端末 */
+static int fd_isatty(int fd)
+{
+    if (!isatty_cache[fd]) isatty_cache[fd] = isatty(fd) ? 2 : 1;
+    return isatty_cache[fd] == 2;
+}
+static void fd_forget(int fd) { if (fd >= 0 && fd < 64) isatty_cache[fd] = 0; }
 static ssize_t tty_read(void *b, size_t n);
 static unsigned char tty_raw[3];   /* tcsetattr で ICANON を外した標準入力 (vim などはこれを生で読む) */
 ssize_t __wrap_read(int fd, void *b, size_t n)
 {
     if (dirfd_path(fd)) { errno = EISDIR; return -1; }
     if (fd == TTYFD || (fd >= 0 && fd <= 2 && tty_raw[fd])) return tty_read(b, n);
+    if (fd >= 0 && fd < 64 && n > 0 && !(__fd_list[fd].flags & O_BINARY) && !fd_isatty(fd)) {
+        /* テキストのファイル・パイプ: libx68k は CR と ^Z を 1 バイトずつ抜き、要った分を満たすまで小さい _READ を
+           くり返し、そのたびに isatty を呼ぶ。ここでは 1 回読んで抜くだけにする (抜いて空になったら次を読む) */
+        char *p = b;
+        for (;;) {
+            int r = _dos_read(fd, p, n), i, k;
+            if (r < 0) { errno = EIO; return -1; }
+            if (r == 0) return 0;
+            for (i = k = 0; i < r; i++) if (p[i] != '\r' && p[i] != 0x1a) p[k++] = p[i];
+            if (k) return k;
+        }
+    }
     return __real_read(fd, b, n);
 }
 
@@ -821,6 +843,20 @@ ssize_t __real_write(int, const void *, size_t);
 ssize_t __wrap_write(int fd, const void *b, size_t n)
 {
     if (fd == 3000) return tty_write(b, n);   /* TTYFD */
+    if (fd >= 0 && fd < 64 && n > 0 && !(__fd_list[fd].flags & O_BINARY) && !fd_isatty(fd)) {
+        /* テキストのファイル・パイプ: LF の前に CR を足す。libx68k は 256 バイトずつ _WRITE するので、4KB ずつにする */
+        static char buf[4096 + 2];
+        const char *p = b;
+        size_t i = 0;
+        while (i < n) {
+            int k = 0, r;
+            while (i < n && k < 4096) { if (p[i] == '\n') buf[k++] = '\r'; buf[k++] = p[i++]; }
+            r = _dos_write(fd, buf, k);
+            if (r < 0) { errno = r == -23 ? ENOSPC : EIO; return -1; }   /* -23: ディスクがいっぱい */
+            if (r < k) { errno = ENOSPC; return -1; }
+        }
+        return n;
+    }
     return __real_write(fd, b, n);
 }
 static unsigned char ttyq[8];
@@ -1152,4 +1188,66 @@ int rename(const char *from, const char *to)
     }
     _dos_delete(tmp);
     return 0;
+}
+
+/* 64 ビットの割り算 (__udivdi3 など) の速い道。68000 には 64 ビットの割り算が無く、libgcc の版は値が小さくても遅い。
+   newlib の printf は %d でも 1 桁ごとに 64 ビットで /10 と %10 をするので、sprintf("%d") 1 回に約 4ms かかっていた (XEiJ)。
+   両方が 32 ビットに収まるときは 32 ビットの割り算 (libgcc の __udivsi3。小さい数は divu で速い) に、割る数が 16 ビットに
+   収まるときは 68000 の divu を 4 回に、それ以外は 1 ビットずつ引く */
+static inline unsigned long divu_step(unsigned long n, unsigned short d)   /* n の上位 16 ビット < d のとき: 下位 16 ビット = 商、上位 = 余り */
+{
+    __asm__("divu.w %1,%0" : "+d"(n) : "d"(d) : "cc");
+    return n;
+}
+static unsigned long long udivmod64(unsigned long long n, unsigned long long d, unsigned long long *rem)
+{
+    unsigned long long q = 0, r = 0;
+    int i;
+    if (!(n >> 32) && !(d >> 32)) {   /* 32 ビットどうし: libgcc の __udivsi3 (小さい数を divu で割る) に任せる */
+        unsigned long nn = n, dd = d, qq = nn / dd;
+        if (rem) *rem = nn - qq * dd;
+        return qq;
+    }
+    if (!(d >> 16)) {   /* 16 ビットで割る: 上から 16 ビットずつ */
+        unsigned long rr = 0, x;
+        int sh;
+        for (sh = 48; sh >= 0; sh -= 16) {
+            x = divu_step((rr << 16) | (unsigned long)((n >> sh) & 0xffff), d);
+            q |= (unsigned long long)(x & 0xffff) << sh;
+            rr = x >> 16;
+        }
+        if (rem) *rem = rr;
+        return q;
+    }
+    for (i = 63; i >= 0; i--) {
+        r = (r << 1) | ((n >> i) & 1);
+        if (r >= d) { r -= d; q |= 1ULL << i; }
+    }
+    if (rem) *rem = r;
+    return q;
+}
+unsigned long long __udivdi3(unsigned long long n, unsigned long long d) { return udivmod64(n, d, NULL); }
+unsigned long long __umoddi3(unsigned long long n, unsigned long long d) { unsigned long long r; udivmod64(n, d, &r); return r; }
+long long __divdi3(long long a, long long b)
+{
+    int neg = (a < 0) ^ (b < 0);
+    unsigned long long q = udivmod64(a < 0 ? -(unsigned long long)a : a, b < 0 ? -(unsigned long long)b : b, NULL);
+    return neg ? -(long long)q : (long long)q;
+}
+long long __moddi3(long long a, long long b)
+{
+    unsigned long long r;
+    udivmod64(a < 0 ? -(unsigned long long)a : a, b < 0 ? -(unsigned long long)b : b, &r);
+    return a < 0 ? -(long long)r : (long long)r;
+}
+
+/* 標準出力の溜め方: newlib は stdout をはじめから「行ごとに書く」にしている (ファイルやパイプへ向けても)。
+   GNU の道具は 1 行ずつ書くので、1 行ごとに DOS の _WRITE が走り、sort や uniq が 4000 行で 6〜12 秒かかっていた (XEiJ)。
+   端末でなければ、main の前にまとめて書く (4KB) にする。constructor は使えない (--gc-sections で crtbegin の .init が
+   消え、__INIT_SECTION__ が空になる) ので、-Wl,--wrap=main で main を包む */
+int __real_main(int, char **, char **);
+int __wrap_main(int argc, char **argv, char **envp)
+{
+    if (!isatty(1)) setvbuf(stdout, NULL, _IOFBF, 4096);
+    return __real_main(argc, argv, envp);
 }

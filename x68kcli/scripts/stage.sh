@@ -3,7 +3,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 chmod -R u+rwX stage work 2>/dev/null || true   # tar 展開物に書き込み不可のディレクトリがある
-rm -rf stage work
+rm -rf stage
+# work/xbuild (scripts/xbuild.sh の組み立ての途中) は残す (消すと次の xbuild.sh が全部組み直す)
+if [ -d work ]; then find work -mindepth 1 -maxdepth 1 ! -name xbuild -exec rm -rf {} +; fi
 mkdir -p stage/USR/BIN stage/USR/DOC stage/ETC stage/HOME stage/TMP work
 
 x() { # x ARCHIVE DIR : アーカイブを work/DIR に展開
