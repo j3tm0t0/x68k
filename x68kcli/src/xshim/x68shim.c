@@ -888,8 +888,17 @@ int select(int n, fd_set *r, fd_set *w, fd_set *e, struct timeval *tv)
 {
     long left = tv ? tv->tv_sec * 1000L + tv->tv_usec / 1000 : -1;
     fd_set rr;
-    int fd, cnt, tty = 0;
+    int fd, cnt, tty = 0, any = 0;
+    if (n > FD_SETSIZE) n = FD_SETSIZE;
     if (e) FD_ZERO(e);
+    for (fd = 0; fd < n; fd++) if ((r && FD_ISSET(fd, r)) || (w && FD_ISSET(fd, w))) any = 1;
+    if (!any) {   /* 見る番号が無ければ、時間だけ待つ (sleep の代わりに select を使うもの) */
+        if (left >= 1000) sleep(left / 1000);
+        if (left > 0) usleep((left % 1000) * 1000L);
+        if (r) FD_ZERO(r);
+        if (w) FD_ZERO(w);
+        return 0;
+    }
     for (;;) {
         cnt = 0;
         FD_ZERO(&rr);
