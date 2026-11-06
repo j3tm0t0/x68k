@@ -228,7 +228,7 @@ int setresuid(uid_t r, uid_t e, uid_t s) { (void)r; (void)e; (void)s; return 0; 
 int setresgid(gid_t r, gid_t e, gid_t s) { (void)r; (void)e; (void)s; return 0; }
 long pathconf(const char *p, int n) { (void)p; (void)n; return 255; }
 long fpathconf(int fd, int n) { (void)fd; (void)n; return 255; }
-int select(int n, fd_set *r, fd_set *w, fd_set *e, struct timeval *t) { (void)n; (void)r; (void)w; (void)e; (void)t; errno = ENOSYS; return -1; }
+/* select は下 (端末の節) にある */
 
 /* スレッドは使わない (sort は CPU 1 つなので作らない。作ろうとしたら断る) */
 #include <pthread.h>
@@ -779,10 +779,11 @@ void __wrap_exit(int st)
 /* 仮のディレクトリの番号を read したら EISDIR (cat DIR が "Is a directory" と出す) (-Wl,--wrap=read) */
 ssize_t __real_read(int, void *, size_t);
 static ssize_t tty_read(void *b, size_t n);
+static unsigned char tty_raw[3];   /* tcsetattr で ICANON を外した標準入力 (vim などはこれを生で読む) */
 ssize_t __wrap_read(int fd, void *b, size_t n)
 {
     if (dirfd_path(fd)) { errno = EISDIR; return -1; }
-    if (fd == TTYFD) return tty_read(b, n);
+    if (fd == TTYFD || (fd >= 0 && fd <= 2 && tty_raw[fd])) return tty_read(b, n);
     return __real_read(fd, b, n);
 }
 
@@ -865,7 +866,65 @@ int tcgetattr(int fd, struct termios *t)
     t->c_ospeed = t->c_ispeed = B38400;
     return 0;
 }
-int tcsetattr(int fd, int act, const struct termios *t) { (void)fd; (void)act; (void)t; return 0; }
+/* ICANON を外すと、その番号 (0〜2 で端末のもの) の read を tty_read (生のキー) にする。戻すと DOS の行入力に戻る */
+int tcsetattr(int fd, int act, const struct termios *t)
+{
+    (void)act;
+    if (fd >= 0 && fd <= 2 && isatty(fd)) { tty_raw[fd] = !(t->c_lflag & ICANON); if (tty_raw[fd]) tty_opened(); }
+    return 0;
+}
+/* キーが来ているか (読み残し、DOS のキーの列、IOCS のキーの列) */
+static int tty_avail(void)
+{
+    long p;
+    if (ttyqi < ttyqn) return 1;
+    p = _iocs_b_lpeek((const void *)0x12406);
+    if (p >= 0x1240a && p < 0x1242a && _iocs_b_bpeek((const void *)p) && _dos_keysns()) return 1;
+    return _iocs_b_keysns() != 0;
+}
+static int is_ttyfd(int fd) { return fd == TTYFD || (fd >= 0 && fd <= 2 && tty_raw[fd]); }
+/* select / poll: 端末の番号は tty_avail で見て、来ていなければ時間まで 10ms ずつ待つ。ほかの番号はいつも「読める・書ける」 */
+int select(int n, fd_set *r, fd_set *w, fd_set *e, struct timeval *tv)
+{
+    long left = tv ? tv->tv_sec * 1000L + tv->tv_usec / 1000 : -1;
+    fd_set rr;
+    int fd, cnt, tty = 0;
+    if (e) FD_ZERO(e);
+    for (;;) {
+        cnt = 0;
+        FD_ZERO(&rr);
+        if (r) for (fd = 0; fd < n; fd++) if (FD_ISSET(fd, r)) {
+            if (is_ttyfd(fd)) { tty = 1; if (tty_avail()) { FD_SET(fd, &rr); cnt++; } }
+            else { FD_SET(fd, &rr); cnt++; }
+        }
+        if (w) for (fd = 0; fd < n; fd++) if (FD_ISSET(fd, w)) cnt++;
+        if (cnt || !tty || left == 0) break;
+        usleep(10000);
+        if (left > 0) left = left > 10 ? left - 10 : 0;
+    }
+    if (r) *r = rr;
+    return cnt;
+}
+#include <poll.h>
+int __wrap_poll(struct pollfd *fds, nfds_t nf, int ms)
+{
+    long left = ms;
+    nfds_t i;
+    int cnt, tty;
+    for (;;) {
+        cnt = tty = 0;
+        for (i = 0; i < nf; i++) {
+            fds[i].revents = 0;
+            if (fds[i].fd < 0) continue;
+            if (is_ttyfd(fds[i].fd)) { tty = 1; if ((fds[i].events & POLLIN) && tty_avail()) fds[i].revents = POLLIN; }
+            else fds[i].revents = fds[i].events & (POLLIN | POLLOUT);
+            if (fds[i].revents) cnt++;
+        }
+        if (cnt || !tty || left == 0) return cnt;
+        usleep(10000);
+        if (left > 0) left = left > 10 ? left - 10 : 0;
+    }
+}
 speed_t cfgetospeed(const struct termios *t) { return t->c_ospeed; }
 speed_t cfgetispeed(const struct termios *t) { return t->c_ispeed; }
 int cfsetospeed(struct termios *t, speed_t s) { t->c_ospeed = s; return 0; }

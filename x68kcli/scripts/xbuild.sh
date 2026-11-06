@@ -18,7 +18,7 @@ rm -f "$W/lib/libx68shim.a"; m68k-xelf-ar rcs "$W/lib/libx68shim.a" "$W/x68shim.
 XCPP="-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -I$R/src/xshim/include -DSUPPORT_NON_GREG_CALENDARS_IN_STRFTIME=false -DDT_BLK=6 -DDT_CHR=2 -DDT_FIFO=1 -DDT_LNK=10 -DDT_SOCK=12 -DFNM_EXTMATCH=32 -D_POSIX_OPEN_MAX=20 -D_POSIX_ARG_MAX=4096 -DSA_RESTART=0"
 CONF=(--host=m68k-elf --disable-nls CC=m68k-xelf-gcc AR=m68k-xelf-ar RANLIB=m68k-xelf-ranlib
       "CFLAGS=-Os -ffunction-sections -fdata-sections -Wframe-larger-than=40000" "CPPFLAGS=$XCPP"
-      "LDFLAGS=-L$W/lib -Wl,--gc-sections -Wl,--wrap=stat -Wl,--wrap=fstat -Wl,--wrap=close -Wl,--wrap=strtold -Wl,--wrap=getcwd -Wl,--wrap=open -Wl,--wrap=dup -Wl,--wrap=opendir -Wl,--wrap=closedir -Wl,--wrap=readdir -Wl,--wrap=rewinddir -Wl,--wrap=chdir -Wl,--wrap=exit -Wl,--wrap=read -Wl,--wrap=write" "LIBS=$W/x68shim.o"
+      "LDFLAGS=-L$W/lib -Wl,--gc-sections -Wl,--wrap=stat -Wl,--wrap=fstat -Wl,--wrap=close -Wl,--wrap=strtold -Wl,--wrap=getcwd -Wl,--wrap=open -Wl,--wrap=dup -Wl,--wrap=opendir -Wl,--wrap=closedir -Wl,--wrap=readdir -Wl,--wrap=rewinddir -Wl,--wrap=chdir -Wl,--wrap=exit -Wl,--wrap=read -Wl,--wrap=write -Wl,--wrap=poll" "LIBS=$W/x68shim.o"
       # newlib の printf は C99 の大きさ指定・%a・inf/nan・%n に対応している (XEiJ で確かめた)。クロスでは試せず
       # gnulib が「無い」と見て自前の vasnprintf (15KB) を入れるので、あると答える (%b と C23 の %w は使われない前提)
       gl_cv_func_printf_sizes_c99=yes gl_cv_func_printf_sizes_c23=yes gl_cv_func_printf_directive_a=yes
@@ -37,7 +37,7 @@ CONF=(--host=m68k-elf --disable-nls CC=m68k-xelf-gcc AR=m68k-xelf-ar RANLIB=m68k
       ac_cv_func_fork_works=no ac_cv_func_vfork_works=no ac_cv_func_fork=no ac_cv_func_vfork=no)
 gbuild() {  # gbuild NAME TARBALL "configure の追加" 出力 (ソース木からの相対パス) ...
   local n=$1 tb=$2 extra=$3 d=$W/$1 o missing=0; shift 3
-  for o in "$@"; do [ -s "build/x/gnu/$(basename "$o")" ] || missing=1; done
+  for o in "$@"; do [ -s "build/x/gnu/$(basename "$o")" ] || [ -s "build/x/gnu/${GALIAS:-none}" ] || missing=1; done
   [ $missing = 1 ] || return 0
   rm -rf "$d"; mkdir -p "$d"; tar xf "$tb" -C "$d" --strip-components=1
   python3 -I scripts/gnulib_x68k.py pre "$d"
@@ -84,6 +84,18 @@ fi
 GEXTRA=("CPPFLAGS=$XCPP -I$W/regex" "LIBS=-Wl,--whole-archive,$W/lib/libx68shim.a,--no-whole-archive $W/grep/lib/libgreputils.a")
 gbuild file dl/gnu/file-5.46.tar.gz "--disable-shared --enable-static --disable-zlib --disable-bzlib --disable-xzlib --disable-zstdlib --disable-lzlib --disable-libseccomp --without-pic --datadir=A:/usr/share" src/file.x
 GEXTRA=()
+# vim 9 (tiny)。端末は src/xshim の termcap と、tcsetattr で生にした標準入力 (select / poll でキーを待つ)。
+# クロスでは configure が試せない項目を答えておく。:! は fork が無いので system() (src/xshim の $SHELL 版) で動かす
+GEXTRA=(vim_cv_toupper_broken=no vim_cv_terminfo=no vim_cv_tgetent=zero vim_cv_getcwd_broken=no
+        vim_cv_stat_ignores_slash=no vim_cv_memmove_handles_overlap=yes vim_cv_bcopy_handles_overlap=yes
+        vim_cv_memcpy_handles_overlap=no vim_cv_tty_group=world vim_cv_tty_mode=0620
+        ac_cv_sizeof_int=4 ac_cv_sizeof_long=4 ac_cv_sizeof_time_t=8 ac_cv_sizeof_off_t=4 ac_cv_small_wchar_t=no
+        vim_cv_timer_create=no vim_cv_timer_create_with_lrt=no
+        vim_cv_uname_output=Human68k vim_cv_uname_r_output=3.02 vim_cv_uname_m_output=m68k)
+GALIAS=vim9.x gbuild vim dl/gnu/vim-9.2.1302.tar.gz "--with-features=tiny --disable-gui --without-x --with-tlib=termcap --disable-nls --disable-acl --disable-gpm --disable-sysmouse --disable-channel --disable-netbeans --disable-terminal --disable-libsodium --disable-xattr --disable-selinux --disable-smack --disable-canberra --enable-multibyte --disable-darwin --datadir=/usr/share" src/vim.x
+GEXTRA=()
+# vi / vim は vim 3.0 (stage.sh) なので、こちらは vim9.x の名前で置く
+[ -s build/x/gnu/vim.x ] && mv build/x/gnu/vim.x build/x/gnu/vim9.x
 # slip.sys (ESP/X 用 SLIP ドライバ, ../net/slip)
 make -s -C ../net/slip slip.sys >/dev/null && cp ../net/slip/slip.sys build/x/slip.sys && echo "xbuild: build/x/slip.sys"
 m68k-xelf-gcc -O2 ../net/rsspeed/rsspeed.c -o build/x/rsspeed.x && rm -f build/x/rsspeed.x.elf && echo "xbuild: build/x/rsspeed.x"

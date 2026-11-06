@@ -105,6 +105,11 @@ x dl/vim/vim3x687.lzh vim
 cp work/vim/vim.x work/vim/vim.hlp stage/USR/BIN/
 # vim は vim.x と同じディレクトリの vimrc を読む ($VIM68_EXECDIR/vimrc)。8+3 の予備の名前と、TERM によらず内蔵の端末の設定
 crlf templates/vimrc stage/USR/BIN/vimrc
+# vim 9 (tiny、scripts/xbuild.sh が作る vim9.x) の既定。vi / vim は vim 3.0 のまま (vim 9 は起動に 5 秒かかる)
+if [ -s build/x/gnu/vim9.x ]; then
+  mkdir -p stage/USR/SHARE/VIM/VIM92
+  crlf templates/vim92/defaults.vim stage/USR/SHARE/VIM/VIM92/defaults.vim
+fi
 mkdir -p stage/USR/DOC/VIM && cp work/vim/VimX68K.doc work/vim/README stage/USR/DOC/VIM/
 
 # --- GNU tools ---
