@@ -307,3 +307,6 @@ ed('src/mbyte.c', '#if defined(MSWIN) || defined(WIN32UNIX) || defined(MACOS_X)'
 # ほかは -Os のまま (-O2 にすると .x が 5〜20% 大きくなり、読み込みが遅くなる)
 for f in ('src/sort.c', 'src/join.c'):
     ed(f, '#include <config.h>\n', '#pragma GCC optimize ("O2")\n#include <config.h>\n', guard='#pragma GCC optimize')
+# sort -n: 比べるたびに free (NULL) を呼んでいた (gnulib の rpl_free を通る)。数の比べ (strnumcmp) も -O2 に
+ed('src/sort.c', '          free (allocated);\n        }\n      else if (ignore)', '          if (allocated)\n            free (allocated);\n        }\n      else if (ignore)', guard='if (allocated)')
+ed('lib/strnumcmp.c', '#include <config.h>\n', '#pragma GCC optimize ("O2")\n#include <config.h>\n', guard='#pragma GCC optimize')
