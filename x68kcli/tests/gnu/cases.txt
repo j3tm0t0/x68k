@@ -254,3 +254,87 @@ a   b
 SLEEP.X 0.2
 == true
 TRUE.X
+== find_name
+FIND.X DIR1 -name A.TXT
+DIR1/A.TXT
+== find_sjis
+FIND.X DIR1 -name ソ.TXT
+DIR1/ソ.TXT
+== find_type
+FIND.X DIR1 -type f | SORT.X
+DIR1/A.TXT
+DIR1/ソ.TXT
+DIR1/表.TXT
+== find_exec
+FIND.X DIR1 -name A.TXT -exec CAT.X {} ;
+a
+== xargs
+FIND.X DIR1 -name A.TXT | XARGS.X CAT.X
+a
+== xargs_many
+SEQ.X 200 | XARGS.X ECHO.X | WC.X -w
+200
+== xargs_split
+SEQ.X 200 | XARGS.X ECHO.X | WC.X -l
+~[2-9]
+== diff
+DIFF.X S.TXT S3.TXT
+2d1
+< a
+== diff_q
+DIFF.X -q S.TXT S3.TXT
+Files S.TXT and S3.TXT differ
+== cmp
+CMP.X S.TXT S3.TXT
+S.TXT S3.TXT differ: char 3, line 2
+== gzip_c
+GZIP.X -c BIN.DAT > B.GZ
+== gunzip_od
+GZIP.X -dc B.GZ | OD.X -An -tx1
+ 00 0d 0a ff
+== gzip_text
+GZIP.X -c IN.TXT > I.GZ
+== zcat_wc
+ZCAT.X I.GZ | WC.X -c
+40
+== gzip_file
+GZIP.X G.TXT
+== gunzip_file
+GUNZIP.X G.TXT.GZ
+== gunzip_cat
+CAT.X G.TXT
+gz
+== cp_r
+CP.X -r DIR1 DIR2
+== ls_r
+LS.X -R DIR2
+DIR2:
+A.TXT
+ソ.TXT
+表.TXT
+== du_a
+DU.X -a DIR2 | SORT.X -k2
+~[0-9]+\tDIR2
+~[0-9]+\tDIR2/A.TXT
+~[0-9]+\tDIR2/ソ.TXT
+~[0-9]+\tDIR2/表.TXT
+== rm_r
+RM.X -r DIR2
+== ls_gone
+LS.X -d DIR2
+== mkdir_empty
+MKDIR.X -p EMP/SUB
+== find_empty
+FIND.X EMP
+EMP
+EMP/SUB
+== ls_empty
+LS.X EMP/SUB
+== du_empty
+DU.X EMP
+~[0-9]+\tEMP/SUB
+~[0-9]+\tEMP
+== rm_empty
+RM.X -r EMP
+== ls_empty_gone
+LS.X -d EMP

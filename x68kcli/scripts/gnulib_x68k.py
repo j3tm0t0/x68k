@@ -12,6 +12,13 @@ stage, d = sys.argv[1], sys.argv[2]
 
 def ed(p, old, new, count=1, guard=None):
     # guard: 直したあとにだけ現れる文字列 (元の文字列が直したあとにも残る場合に、2 度当てないため)
+    # gnulib は lib/ のほか gl/lib/ (findutils) に置く包みもあるので両方に当てる
+    if p.startswith('lib/'):
+        ed1('gl/' + p, old, new, count, guard)
+    ed1(p, old, new, count, guard)
+
+
+def ed1(p, old, new, count=1, guard=None):
     p = os.path.join(d, p)
     if not os.path.exists(p):
         return
@@ -105,3 +112,118 @@ ed('src/df.c', '  if (!force_fsu && ! IS_ABSOLUTE_FILE_NAME (mount_point))',
 # df FILE: Human68k ではディレクトリを open できないので、開けなければいつも stat で見る
 ed('src/df.c', '      if (errno == ENOENT || errno == ENOTDIR)\n        return errno;\n      return stat (file, st) == 0 ? 0 : errno;',
    '      return stat (file, st) == 0 ? 0 : errno;')
+
+# --- findutils: fork が無いので、xargs と find -exec はコマンドを _EXEC で子として動かして待つ (src/xshim の x68_spawnvp) ---
+ed('xargs/xargs.c', '      wait_for_proc (false, 0u);\n\n      if (pipe (fd))', '''      wait_for_proc (false, 0u);
+
+#ifdef __human68k__
+      {
+        extern int x68_spawnvp (const char *, char *const []);
+        int r = bc_args_exceed_testing_limit (argv) ? (errno = E2BIG, -1) : x68_spawnvp (argv[0], argv);
+        if (r < 0)
+          {
+            if (errno == E2BIG)
+              return 0;         /* コマンドラインが 255 バイトを超えた。引数を減らしてやり直してもらう */
+            error (0, errno, _("failed to run command %s"),
+                   quotearg_n_style (0, locale_quoting_style, argv[0]));
+            exit (errno == ENOENT ? XARGS_EXIT_COMMAND_NOT_FOUND : XARGS_EXIT_COMMAND_CANNOT_BE_RUN);
+          }
+        if (r == 255)
+          {
+            error (0, 0, _("%s: exited with status 255; aborting"),
+                   quotearg_n_style (0, locale_quoting_style, argv[0]));
+            exit (XARGS_EXIT_CLIENT_EXIT_255);
+          }
+        if (r != 0)
+          child_error = XARGS_EXIT_CLIENT_EXIT_NONZERO;
+        return 1;
+      }
+#endif
+      if (pipe (fd))''')
+ed('find/exec.c', '  child_pid = fork ();\n  if (child_pid == -1)', '''#ifdef __human68k__
+  {
+    extern int x68_spawnvp (const char *, char *const []);
+    int r = bc_args_exceed_testing_limit (argv) ? (errno = E2BIG, -1) : x68_spawnvp (argv[0], argv);
+    if (r < 0)
+      {
+        error (0, errno, "%s", safely_quote_err_filename (0, argv[0]));
+        r = 1;
+      }
+    execp->last_child_status = r << 8;  /* wait の形 (WEXITSTATUS で r) */
+    child_pid = 1;                      /* 下の「子の側」と waitpid を通らないように */
+  }
+#else
+  child_pid = fork ();
+#endif
+  if (child_pid == -1)''')
+W = '''  while (waitpid (child_pid, &(execp->last_child_status), 0) == (pid_t) -1)
+    {
+      if (errno != EINTR)
+        {
+          error (0, errno, _("error waiting for the command we executed for %s"),
+                 safely_quote_err_filename (0, argv[0]));
+          state.exit_status = EXIT_FAILURE;
+          return 0;             /* FAIL */
+        }
+    }
+'''
+ed('find/exec.c', W, '#ifndef __human68k__\n' + W + '#endif\n', guard='#ifndef __human68k__\n  while (waitpid')
+# xargs の大きさの見積り: Human68k の環境は別の領域なのでコマンドラインに数えない (上限は x68_spawnvp が見る 255 バイト)
+ed('lib/buildcmd.c', '  size_t len = 0u;\n  char **envp = environ;\n',
+   '  size_t len = 0u;\n  char **envp = environ;\n#ifdef __human68k__\n  return 0;\n#endif\n')
+
+# --- gzip: 名前で gunzip / zcat の動きを選ぶので、A:\USR\BIN\GUNZIP.X から "gunzip" を作る ---
+ed('gzip.c', '    program_name = gzip_base_name (argv[0]);',
+   '#ifdef __human68k__\n    {\n      extern const char *x68_progname (const char *);\n      program_name = (char *) x68_progname (argv[0]);\n    }\n#else\n    program_name = gzip_base_name (argv[0]);\n#endif')
+# gzip: gunzip・zcat の名前で動きを変える (GNU_STANDARD=0) のと、標準入出力をバイナリにする
+ed('gzip.c', '#ifndef GNU_STANDARD\n# define GNU_STANDARD 1\n#endif', '#ifndef GNU_STANDARD\n# ifdef __human68k__\n#  define GNU_STANDARD 0\n# else\n#  define GNU_STANDARD 1\n# endif\n#endif')
+ed('tailor.h', '#ifndef SET_BINARY_MODE\n#  define SET_BINARY_MODE(fd)\n#endif',
+   '#if !defined SET_BINARY_MODE && defined __human68k__\n   extern int setmode (int, int);\n#  define SET_BINARY_MODE(fd) setmode(fd, O_BINARY)\n#endif\n#ifndef SET_BINARY_MODE\n#  define SET_BINARY_MODE(fd)\n#endif')
+
+# fnmatch (find -name など): Shift_JIS の 2 バイト目の 5C (\)・5B ([)・5D (]) を、パターンの記号ではなく文字として扱う。
+# 1 バイト目 (81-9F, E0-FC) の直後のそれらに \ を足してから本来の fnmatch に渡す (C ロケールのまま)
+ed('lib/fnmatch.c', '\nint\nfnmatch (const char *pattern, const char *string, int flags)\n{\n', '''
+#ifdef __human68k__
+static int fnmatch_sjis (const char *pattern, const char *string, int flags);
+int
+fnmatch (const char *pattern, const char *string, int flags)
+{
+  const unsigned char *p;
+  size_t extra = 0;
+  if (!(flags & FNM_NOESCAPE))
+    for (p = (const unsigned char *) pattern; *p; p++)
+      if (((*p >= 0x81 && *p <= 0x9f) || (*p >= 0xe0 && *p <= 0xfc)) && p[1])
+        {
+          if (p[1] == '\\\\' || p[1] == '[' || p[1] == ']')
+            extra++;
+          p++;
+        }
+  if (!extra)
+    return fnmatch_sjis (pattern, string, flags);
+  char *q = malloc (strlen (pattern) + extra + 1), *o = q;
+  if (!q)
+    return -1;
+  for (p = (const unsigned char *) pattern; *p; p++)
+    {
+      *o++ = *p;
+      if (((*p >= 0x81 && *p <= 0x9f) || (*p >= 0xe0 && *p <= 0xfc)) && p[1])
+        {
+          p++;
+          if (*p == '\\\\' || *p == '[' || *p == ']')
+            *o++ = '\\\\';
+          *o++ = *p;
+        }
+    }
+  *o = 0;
+  int r = fnmatch_sjis (q, string, flags);
+  free (q);
+  return r;
+}
+# undef fnmatch
+# define fnmatch fnmatch_sjis
+static
+#endif
+int
+fnmatch (const char *pattern, const char *string, int flags)
+{
+''', guard='fnmatch_sjis')

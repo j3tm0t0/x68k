@@ -10,10 +10,10 @@ R=$PWD; W=$R/work/xbuild; mkdir -p "$W" build/x build/x/gnu
 m68k-xelf-gcc -Os -ffunction-sections -fdata-sections -Wall -I"$R/src/xshim/include" -c src/xshim/x68shim.c -o "$W/x68shim.o"
 # -fexec-charset は elf2x68k の gcc が後ろに cp932 を足すので変えられない (UTF-8 の文字列を持つ部分は外す)
 # Human68k に無い dirent の型と fnmatch の拡張は数だけ合わせる
-XCPP="-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -I$R/src/xshim/include -DSUPPORT_NON_GREG_CALENDARS_IN_STRFTIME=false -DDT_BLK=6 -DDT_CHR=2 -DDT_FIFO=1 -DDT_LNK=10 -DDT_SOCK=12 -DFNM_EXTMATCH=32"
+XCPP="-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -I$R/src/xshim/include -DSUPPORT_NON_GREG_CALENDARS_IN_STRFTIME=false -DDT_BLK=6 -DDT_CHR=2 -DDT_FIFO=1 -DDT_LNK=10 -DDT_SOCK=12 -DFNM_EXTMATCH=32 -D_POSIX_OPEN_MAX=20 -D_POSIX_ARG_MAX=4096 -DSA_RESTART=0"
 CONF=(--host=m68k-elf --disable-nls CC=m68k-xelf-gcc AR=m68k-xelf-ar RANLIB=m68k-xelf-ranlib
       "CFLAGS=-Os -ffunction-sections -fdata-sections -Wframe-larger-than=40000" "CPPFLAGS=$XCPP"
-      "LDFLAGS=-Wl,--gc-sections -Wl,--wrap=stat -Wl,--wrap=fstat -Wl,--wrap=close -Wl,--wrap=strtold" "LIBS=$W/x68shim.o"
+      "LDFLAGS=-Wl,--gc-sections -Wl,--wrap=stat -Wl,--wrap=fstat -Wl,--wrap=close -Wl,--wrap=strtold -Wl,--wrap=getcwd -Wl,--wrap=open -Wl,--wrap=dup -Wl,--wrap=opendir -Wl,--wrap=closedir -Wl,--wrap=readdir -Wl,--wrap=rewinddir -Wl,--wrap=chdir -Wl,--wrap=exit" "LIBS=$W/x68shim.o"
       # newlib の printf は C99 の大きさ指定・%a・inf/nan・%n に対応している (XEiJ で確かめた)。クロスでは試せず
       # gnulib が「無い」と見て自前の vasnprintf (15KB) を入れるので、あると答える (%b と C23 の %w は使われない前提)
       gl_cv_func_printf_sizes_c99=yes gl_cv_func_printf_sizes_c23=yes gl_cv_func_printf_directive_a=yes
@@ -23,7 +23,11 @@ CONF=(--host=m68k-elf --disable-nls CC=m68k-xelf-gcc AR=m68k-xelf-ar RANLIB=m68k
       gl_cv_func_snprintf_truncation_c99=yes gl_cv_func_vsnprintf_zerosize_c99=yes
       # utimes と futimes は src/xshim にある。使えると答えないと touch が名前で日時を付け、
       # その後で書き込みで開いた番号を閉じたときに今の時刻で上書きされる
-      gl_cv_func_working_utimes=yes)
+      gl_cv_func_working_utimes=yes
+      # diffutils の configure がクロスで試せず止まる
+      gl_cv_func_strcasecmp_works=yes
+      # getcwd(NULL, 0) は src/xshim の包みで使える。「無い」と見ると gnulib が .. をたどる版に替え、Human68k では動かない (find)
+      gl_cv_func_getcwd_null=yes gl_cv_func_getcwd_path_max=yes gl_cv_func_getcwd_abort_bug=no gl_cv_func_getcwd_succeeds_beyond_4k=yes)
 gbuild() {  # gbuild NAME TARBALL "configure の追加" 出力 (ソース木からの相対パス) ...
   local n=$1 tb=$2 extra=$3 d=$W/$1 o missing=0; shift 3
   for o in "$@"; do [ -s "build/x/gnu/$(basename "$o")" ] || missing=1; done
@@ -52,6 +56,12 @@ CU="b2sum base32 base64 basename basenc cat chmod cksum comm cp csplit cut date 
     uniq unlink vdir wc whoami yes"
 gbuild coreutils dl/gnu/coreutils-9.12.tar.xz "--disable-acl --without-selinux --disable-xattr --disable-libcap --without-openssl --disable-threads" \
   $(for p in $CU; do echo src/$p.x; done)
+gbuild findutils dl/gnu/findutils-4.11.0.tar.xz "--disable-acl --without-selinux --disable-threads" find/find.x xargs/xargs.x
+# diff3 と sdiff は diff を fork / popen で動かすので入れない
+gbuild diffutils dl/gnu/diffutils-3.12.tar.xz "--disable-threads" src/diff.x src/cmp.x
+# gunzip と zcat は gzip と同じもの (名前で動きが変わる。元は sh のスクリプト)
+gbuild gzip dl/gnu/gzip-1.15.tar.xz "" gzip.x
+cp build/x/gnu/gzip.x build/x/gnu/gunzip.x; cp build/x/gnu/gzip.x build/x/gnu/zcat.x
 # slip.sys (ESP/X 用 SLIP ドライバ, ../net/slip)
 make -s -C ../net/slip slip.sys >/dev/null && cp ../net/slip/slip.sys build/x/slip.sys && echo "xbuild: build/x/slip.sys"
 m68k-xelf-gcc -O2 ../net/rsspeed/rsspeed.c -o build/x/rsspeed.x && rm -f build/x/rsspeed.x.elf && echo "xbuild: build/x/rsspeed.x"

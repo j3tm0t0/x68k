@@ -36,7 +36,19 @@ int _setmode(int fd, int mode)
 }
 int setmode(int fd, int mode) { return _setmode(fd, mode); }
 int access(const char *p, int m) { struct stat st; (void)m; return stat(p, &st); }   /* 存在確認だけ */
-long sysconf(int name) { (void)name; return 8192; }   /* grep はページサイズ (_SC_PAGESIZE) に使う */
+long sysconf(int name)
+{
+    switch (name) {
+    case _SC_ARG_MAX: return 4096;          /* POSIX の最小。本当の上限 (コマンドライン 255 バイト) は x68_spawnvp が E2BIG で知らせる */
+    case _SC_CHILD_MAX: return 1;
+    case _SC_CLK_TCK: return 100;
+    case _SC_OPEN_MAX: return 64;
+    case _SC_NPROCESSORS_CONF: case _SC_NPROCESSORS_ONLN: return 1;
+    case _SC_PHYS_PAGES: return (12L << 20) / 8192;     /* 主記憶 12MB (sort の既定の作業域の見積りに使う) */
+    case _SC_AVPHYS_PAGES: return (4L << 20) / 8192;
+    default: return 8192;                   /* _SC_PAGESIZE (grep) など */
+    }
+}
 int fsync(int fd) { (void)fd; return 0; }
 int fdatasync(int fd) { (void)fd; return 0; }
 void sync(void) { }
@@ -208,6 +220,8 @@ static int drvfree(int drv, struct statvfs *s)
 int statvfs(const char *p, struct statvfs *s) { return drvfree(pathdrive(p), s); }
 int fstatvfs(int fd, struct statvfs *s) { (void)fd; return drvfree(0, s); }
 
+int setuid(uid_t u) { (void)u; return 0; }
+int setgid(gid_t g) { (void)g; return 0; }
 int setreuid(uid_t r, uid_t e) { (void)r; (void)e; return 0; }
 int setregid(gid_t r, gid_t e) { (void)r; (void)e; return 0; }
 int setresuid(uid_t r, uid_t e, uid_t s) { (void)r; (void)e; (void)s; return 0; }
@@ -369,9 +383,29 @@ static int isroot(const char *p)
     if (*p == '/' || *p == '\\') p++;
     return *p == 0;
 }
+static int dotname(const char *p)   /* 最後の要素が . か .. */
+{
+    size_t n = strlen(p);
+    if (n >= 1 && p[n - 1] == '.' && (n == 1 || p[n - 2] == '/' || p[n - 2] == '\\' || p[n - 2] == ':')) return 1;
+    if (n >= 2 && p[n - 1] == '.' && p[n - 2] == '.' && (n == 2 || p[n - 3] == '/' || p[n - 3] == '\\' || p[n - 3] == ':')) return 1;
+    return 0;
+}
+static int chdir_drive(const char *p);
+char *__real_getcwd(char *, size_t);
 int __wrap_stat(const char *path, struct stat *st)
 {
     int r = __real_stat(path, st);
+    /* "." ".." "D1/." は _FILES で引けないので、そこへ移ってフルパスを得てから引く */
+    if (r < 0 && path && dotname(path)) {
+        char old[256], abs[256];
+        int e = errno;
+        if (__real_getcwd(old, sizeof old) && chdir_drive(path) == 0) {
+            if (!__real_getcwd(abs, sizeof abs)) abs[0] = 0;
+            chdir_drive(old);
+            if (abs[0]) return __wrap_stat(abs, st);
+        }
+        errno = e;
+    }
     if (r < 0 && path && isroot(path) && (path[0] && path[1] == ':' ? _dos_drvctrl(0, toupper((unsigned char)path[0]) - 'A' + 1) >= 0 : 1)) {
         memset(st, 0, sizeof *st);
         st->st_mode = S_IFDIR | 0777;
@@ -381,9 +415,12 @@ int __wrap_stat(const char *path, struct stat *st)
     if (r == 0) setino(path, st, -1);
     return r;
 }
+static const char *dirfd_path(int fd);
 int __wrap_fstat(int fd, struct stat *st)
 {
-    int r = __real_fstat(fd, st);
+    int r;
+    if (dirfd_path(fd)) return __wrap_stat(dirfd_path(fd), st);
+    r = __real_fstat(fd, st);
     if (r == 0) setino(fd >= 0 && fd < 64 ? __fd_list[fd].name : NULL, st, fd);
     return r;
 }
@@ -392,9 +429,11 @@ int __wrap_fstat(int fd, struct stat *st)
    GNU の道具は終わるときに close_stdout で標準出力を閉じるので、0〜4 は閉じたことにして実際には閉じない
    (-Wl,--wrap=close。終了時に Human68k が後始末する) */
 int __real_close(int);
+static int dirfd_close(int fd);
 int __wrap_close(int fd)
 {
     if (fd >= 0 && fd <= 4) return 0;
+    if (dirfd_close(fd) == 0) return 0;
     return __real_close(fd);
 }
 
@@ -424,3 +463,279 @@ ssize_t getrandom(void *buf, size_t len, unsigned int flags)
 /* newlib の strtold は m68k の 96 ビットの long double で桁を間違える ("3.14159" が 3.24224 になる)。
    strtod (64 ビット) で読んで広げる (-Wl,--wrap=strtold。printf・seq・sort -g が使う) */
 long double __wrap_strtold(const char *s, char **end) { return strtod(s, end); }
+
+/* fcntl: libx68k のは ENOSYS を返すだけ。gnulib の stdopen (gzip・find・diff) は F_GETFD で 0〜2 が
+   開いているかを見て、失敗すると "standard file descriptors" で止まる */
+#include <stdarg.h>
+int __wrap_dup(int);
+static int fdopen_p(int fd)
+{
+    if (fd >= 0 && fd <= 4) return 1;
+    if (dirfd_path(fd)) return 1;
+    return fd > 4 && fd < 64 && (__fd_list[fd].flags & 0x80000000L);
+}
+int fcntl(int fd, int cmd, ...)
+{
+    va_list ap;
+    int arg;
+    va_start(ap, cmd); arg = va_arg(ap, int); va_end(ap);
+    if (!fdopen_p(fd)) { errno = EBADF; return -1; }
+    switch (cmd) {
+    case F_GETFD: return 0;
+    case F_SETFD: return 0;
+    case F_GETFL: return fd <= 4 ? O_RDWR : (int)(__fd_list[fd].flags & (O_ACCMODE | O_APPEND));
+    case F_SETFL: return 0;
+    case F_DUPFD:
+#ifdef F_DUPFD_CLOEXEC
+    case F_DUPFD_CLOEXEC:
+#endif
+        { int n = __wrap_dup(fd); (void)arg; return n; }
+    default: errno = EINVAL; return -1;
+    }
+}
+
+/* getcwd(NULL, 0) (POSIX の拡張。find の save_cwd が使う) を、libx68k は受け付けないので領域を取って渡す (-Wl,--wrap=getcwd) */
+char *__real_getcwd(char *, size_t);
+char *__wrap_getcwd(char *buf, size_t size)
+{
+    char *r, *own = NULL;
+    if (!buf) {
+        if (!size) size = 256;
+        if (!(buf = own = malloc(size))) { errno = ENOMEM; return NULL; }
+    }
+    r = __real_getcwd(buf, size);
+    if (!r) free(own);
+    return r;
+}
+
+/* ディレクトリの番号: Human68k はディレクトリを開けないが、gnulib の fts (find・du・rm -r・cp -r) や
+   save_cwd は open(".") や fdopendir・fchdir を使う。ディレクトリを読み込みで開こうとしたら、
+   フルパスを覚えた仮の番号 (1000〜) を返し、close・fstat・fchdir・dup・fcntl をそれで受ける
+   (-Wl,--wrap=open,--wrap=dup。gnulib の openat・fstatat・fdopendir は fchdir で動く) */
+#define DIRFD0 1000
+#define NDIRFD 64
+static char *dirfds[NDIRFD];
+static const char *dirfd_path(int fd)
+{
+    return fd >= DIRFD0 && fd < DIRFD0 + NDIRFD ? dirfds[fd - DIRFD0] : NULL;
+}
+static int dirfd_new(const char *abs)
+{
+    int i;
+    for (i = 0; i < NDIRFD; i++)
+        if (!dirfds[i]) {
+            if (!(dirfds[i] = strdup(abs))) { errno = ENOMEM; return -1; }
+            return DIRFD0 + i;
+        }
+    errno = EMFILE;
+    return -1;
+}
+static int dirfd_close(int fd)
+{
+    if (!dirfd_path(fd)) return -1;
+    free(dirfds[fd - DIRFD0]); dirfds[fd - DIRFD0] = NULL;
+    return 0;
+}
+/* ドライブも移る chdir (_CHDIR は今のドライブを変えない) */
+static int chdir_drive(const char *p)
+{
+    if (p[0] && p[1] == ':') _dos_chgdrv(toupper((unsigned char)p[0]) - 'A');
+    return chdir(p);
+}
+int __real_open(const char *, int, ...);
+int __wrap_open(const char *path, int flags, ...)
+{
+    va_list ap;
+    int mode, r, e;
+    struct stat st;
+    va_start(ap, flags); mode = va_arg(ap, int); va_end(ap);
+    r = __real_open(path, flags & ~O_DIRECTORY, mode);
+    if (r >= 0 || (flags & O_ACCMODE) != O_RDONLY) return r;
+    e = errno;
+    if (__wrap_stat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
+        char old[256], abs[256];
+        if (!__real_getcwd(old, sizeof old)) { errno = e; return -1; }
+        if (chdir_drive(path) < 0) { errno = e; return -1; }
+        if (!__real_getcwd(abs, sizeof abs)) abs[0] = 0;
+        chdir_drive(old);
+        if (!abs[0]) { errno = e; return -1; }
+        return dirfd_new(abs);
+    }
+    errno = e;
+    return r;
+}
+int __real_dup(int);
+int __wrap_dup(int fd)
+{
+    if (dirfd_path(fd)) return dirfd_new(dirfd_path(fd));
+    return __real_dup(fd);
+}
+int fchdir(int fd)
+{
+    if (!dirfd_path(fd)) { errno = fd >= 0 && fd < 64 ? ENOTDIR : EBADF; return -1; }
+    return chdir_drive(dirfd_path(fd));
+}
+
+/* *at 関数と fdopendir / dirfd: 上の仮の番号のフルパスに名前をつないで、ふつうの関数を呼ぶ。
+   gnulib の代わりの版 (fchdir で移って戻る) は fts の中で途中で止まったので、こちらで用意する */
+#include <dirent.h>
+static int atpath(int dfd, const char *name, char *out, size_t n)
+{
+    const char *base;
+    size_t k;
+    if (dfd == AT_FDCWD || name[0] == '/' || name[0] == '\\' || (name[0] && name[1] == ':')) {
+        if (strlen(name) >= n) { errno = ENAMETOOLONG; return -1; }
+        strcpy(out, name);
+        return 0;
+    }
+    if (!(base = dirfd_path(dfd))) { errno = EBADF; return -1; }
+    k = strlen(base);
+    if (k + 1 + strlen(name) >= n) { errno = ENAMETOOLONG; return -1; }
+    strcpy(out, base);
+    if (k && base[k - 1] != '\\' && base[k - 1] != '/') out[k++] = '\\';
+    strcpy(out + k, name);
+    return 0;
+}
+int openat(int dfd, const char *name, int flags, ...)
+{
+    char p[256];
+    va_list ap;
+    int mode;
+    va_start(ap, flags); mode = va_arg(ap, int); va_end(ap);
+    if (atpath(dfd, name, p, sizeof p) < 0) return -1;
+    return __wrap_open(p, flags, mode);
+}
+int fstatat(int dfd, const char *name, struct stat *st, int flag)
+{
+    char p[256];
+    (void)flag;
+    if (atpath(dfd, name, p, sizeof p) < 0) return -1;
+    return __wrap_stat(p, st);
+}
+int unlinkat(int dfd, const char *name, int flag)
+{
+    char p[256];
+    if (atpath(dfd, name, p, sizeof p) < 0) return -1;
+    return (flag & AT_REMOVEDIR) ? rmdir(p) : unlink(p);
+}
+int mkdirat(int dfd, const char *name, mode_t m)
+{
+    char p[256];
+    if (atpath(dfd, name, p, sizeof p) < 0) return -1;
+    return mkdir(p, m);
+}
+/* DIR と番号の対応 (opendir で開いたものはフルパスを覚えておき、dirfd を聞かれたら仮の番号を作る) */
+#define NDIRMAP 64
+static struct { DIR *d; int fd; char *path; int empty; } dirmap[NDIRMAP];
+static void dirmap_add(DIR *d, int fd, const char *path)
+{
+    int i;
+    for (i = 0; i < NDIRMAP; i++)
+        if (!dirmap[i].d) { dirmap[i].d = d; dirmap[i].fd = fd; dirmap[i].path = path ? strdup(path) : NULL; dirmap[i].empty = 0; return; }
+}
+static int dirmap_find(DIR *d)
+{
+    int i;
+    for (i = 0; i < NDIRMAP; i++) if (dirmap[i].d == d) return i;
+    return -1;
+}
+/* 空のディレクトリ: libx68k の opendir は _FILES が何も見つけないと失敗する (find・du・rm -r が止まる)。
+   空の DIR の代わりを返し、readdir はすぐ終わりにする */
+static DIR *emptydir(void)
+{
+    DIR *d = malloc(4);
+    int i;
+    if (!d) return NULL;
+    dirmap_add(d, -1, NULL);
+    if ((i = dirmap_find(d)) >= 0) dirmap[i].empty = 1;
+    return d;
+}
+DIR *__real_opendir(const char *);
+DIR *__wrap_opendir(const char *path)
+{
+    DIR *d = __real_opendir(path);
+    struct stat st;
+    if (!d && __wrap_stat(path, &st) == 0 && S_ISDIR(st.st_mode)) d = emptydir();
+    if (d) {
+        char old[256], abs[256];
+        abs[0] = 0;
+        if (__real_getcwd(old, sizeof old) && chdir_drive(path) == 0) {
+            if (!__real_getcwd(abs, sizeof abs)) abs[0] = 0;
+            chdir_drive(old);
+        }
+        dirmap_add(d, -1, abs[0] ? abs : NULL);
+    }
+    return d;
+}
+DIR *fdopendir(int fd)
+{
+    DIR *d;
+    if (!dirfd_path(fd)) { errno = fd >= 0 && fd < 64 ? ENOTDIR : EBADF; return NULL; }
+    if ((d = __real_opendir(dirfd_path(fd))) != NULL) { dirmap_add(d, fd, NULL); return d; }
+    if (!(d = emptydir())) return NULL;
+    dirmap[dirmap_find(d)].fd = fd;
+    return d;
+}
+int dirfd(DIR *d)
+{
+    int i;
+    for (i = 0; i < NDIRMAP; i++)
+        if (dirmap[i].d == d) {
+            if (dirmap[i].fd < 0 && dirmap[i].path) dirmap[i].fd = dirfd_new(dirmap[i].path);
+            return dirmap[i].fd;
+        }
+    errno = EINVAL;
+    return -1;
+}
+int __real_closedir(DIR *);
+int __wrap_closedir(DIR *d)
+{
+    int i = dirmap_find(d), empty = 0;
+    if (i >= 0) {
+        if (dirmap[i].fd >= 0) dirfd_close(dirmap[i].fd);
+        free(dirmap[i].path);
+        empty = dirmap[i].empty;
+        dirmap[i].d = NULL; dirmap[i].path = NULL; dirmap[i].empty = 0;
+    }
+    if (empty) { free(d); return 0; }
+    return __real_closedir(d);
+}
+struct dirent *__real_readdir(DIR *);
+struct dirent *__wrap_readdir(DIR *d)
+{
+    int i = dirmap_find(d);
+    if (i >= 0 && dirmap[i].empty) return NULL;
+    return __real_readdir(d);
+}
+void __real_rewinddir(DIR *);
+void __wrap_rewinddir(DIR *d)
+{
+    int i = dirmap_find(d);
+    if (i >= 0 && dirmap[i].empty) return;
+    __real_rewinddir(d);
+}
+
+/* カレントディレクトリ: Human68k ではドライブごとに 1 つで、子が chdir すると親 (シェル) まで移る。
+   UNIX と同じく自分だけの話にするため、最初の chdir の前に今のドライブとそのディレクトリを覚え、
+   exit で戻す (-Wl,--wrap=chdir,--wrap=exit。crt0 の atexit は constructor より後で初期化されるので使わない) */
+static char start_cwd[256];
+static int start_saved;
+int __real_chdir(const char *);
+int __wrap_chdir(const char *p)
+{
+    if (!start_saved) {
+        start_saved = 1;
+        if (!__real_getcwd(start_cwd, sizeof start_cwd)) start_cwd[0] = 0;
+    }
+    return __real_chdir(p);
+}
+void __real_exit(int) __attribute__((noreturn));
+void __wrap_exit(int st)
+{
+    if (start_saved && start_cwd[0]) {
+        start_saved = 0;
+        if (start_cwd[1] == ':') _dos_chgdrv(toupper((unsigned char)start_cwd[0]) - 'A');
+        __real_chdir(start_cwd);
+    }
+    __real_exit(st);
+}

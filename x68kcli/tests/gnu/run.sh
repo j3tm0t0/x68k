@@ -15,6 +15,8 @@ printf '\000\015\012\377' > "$I/BIN.DAT"
 printf 'abcdef\n' > "$I/TR.TXT"
 printf '1 a\n2 b\n' > "$I/J1.TXT"; printf '1 x\n2 y\n' > "$I/J2.TXT"
 printf 'a\tb\n' > "$I/TAB.TXT"
+printf 'a\nb\n' > "$I/S3.TXT"
+printf 'gz\n' > "$I/G.TXT"
 printf 'a\r\n' > "$I/DIR1/A.TXT"
 # XEiJ のホストファイルシステムは、Human68k の Shift_JIS の名前をホストでは UTF-8 の名前にする
 printf 'hyo\r\n' > "$I/DIR1/表.TXT"
