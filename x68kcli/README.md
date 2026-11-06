@@ -5,7 +5,7 @@ X68000 (Human68k 3.02) 用の CLI 環境入り SCSI HDD イメージ (`.hds`) �
 - シェル: **zsh 2.5.03** (既定、ログインシェル) / fish 0.8 (tcsh 系) / ksh 4.9
 - エディタ: **Vim 3.0** (vi 互換, `vi` / `vim` で起動)
 - UNIX コマンド: ITA TOOLBOX (ls cp mv rm mkdir rmdir cat head tail wc tr cut paste …)、GNU gawk 2.15 (`awk` でも可)、GNU make 3.79、GNU tar 1.11 (+gzip)、LHA 2.62。
-  elf2x68k でクロスビルドした GNU sed 4.9 / grep 3.11 / coreutils 9.12 / findutils 4.11 (find xargs) / diffutils 3.12 (diff cmp) / gzip 1.15 (`scripts/xbuild.sh`、試験は `tests/gnu/run.sh` と `tests/gnu/zosh.sh`)。
+  elf2x68k でクロスビルドした GNU sed 4.9 / grep 3.11 / coreutils 9.12 / findutils 4.11 (find xargs) / diffutils 3.12 (diff cmp diff3 sdiff) / gzip 1.15 / patch 2.8 / bc・dc 1.08.1、less 710、file 5.46 (`scripts/xbuild.sh`、試験は `tests/gnu/run.sh`・`tests/gnu/zosh.sh`・`tests/gnu/less.sh`)。
   ITA と同じ名前の GNU 版は `/usr/gnu/bin` (起動が ITA の数倍遅いので、PATH の先頭には置いていない)
 - ファイル名拡張: TwentyOne.x (18+3 文字、マルチピリオド、`/` 区切り)
 - C コンパイラ: **GCC 1.42 真里子版** (`gcc`、LIBC 1.1.32A + HAS.X + HLK.X)、**XC 2.1** (`cc`、シャープ純正)、GCC 2.95.2 beta4 (`gcc295`、68020 以上専用)
