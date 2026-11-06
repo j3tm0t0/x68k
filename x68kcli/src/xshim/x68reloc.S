@@ -25,16 +25,20 @@ __x68_real_entry:
     lea     0(%a4,%d0.l),%a5        /* 表 */
     move.l  %a5,48(%a0)             /* crt0 はここから bss を 0 で消す (表も消える) */
     move.l  %a5,52(%a0)
-2:                                  /* 1 項目 54 サイクル (表の形は fastreloc.py: 差を符号付き 16 ビットで。0 なら続く 32 ビット、それも 0 なら終わり) */
+2:                                  /* 1 項目 60 サイクルほど (表の形は fastreloc.py: 差を符号付き 16 ビットで。0 なら続く 32 ビット、それも 0 なら終わり) */
     move.w  (%a5)+,%d0
     beq.s   4f
     adda.w  %d0,%a4
+    cmpa.l  %a1,%a4                 /* プログラムの終わり (a1) を越えたら、表が壊れているのでやめる */
+    bcc.s   8f
     add.l   %d1,(%a4)
     bra.s   2b
 4:
     move.l  (%a5)+,%d0
     beq.s   8f
     adda.l  %d0,%a4
+    cmpa.l  %a1,%a4
+    bcc.s   8f
     add.l   %d1,(%a4)
     bra.s   2b
 8:

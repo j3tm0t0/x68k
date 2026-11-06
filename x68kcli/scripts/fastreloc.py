@@ -20,6 +20,10 @@ def fix(path):
     if d[:2] != b"HU":
         return "not .x"
     entry, text, data, bss, rel, sym = struct.unpack(">IIIIII", d[8:32])
+    if entry + 14 > text:
+        return "entry is not in text"
+    if (text + data) & 1:
+        return "text+data is odd"
     e = 64 + entry
     if d[e:e + 2] != b"\x60\x10" or d[e + 2:e + 10] != MARK:
         return "no x68reloc entry"
@@ -44,12 +48,12 @@ def fix(path):
             table += struct.pack(">HI", 0, delta)
     table += struct.pack(">HI", 0, 0)
     table = bytes(table)
-    syms = bytes(d[body_end + rel:body_end + rel + sym])
+    rest = bytes(d[body_end + rel:])   # 記号の表と、その後ろに何かあればそれも残す
     struct.pack_into(">I", d, e + 10, text + data)       # 表の位置 (テキストの頭から)
     newdata = data + len(table)
     newbss = max(0, bss - len(table))
     struct.pack_into(">IIII", d, 16, newdata, newbss, 0, sym)
-    out = bytes(d[:body_end]) + table + syms
+    out = bytes(d[:body_end]) + table + rest
     open(path, "wb").write(out)
     return "ok (%d bytes of relocation)" % rel
 
