@@ -216,8 +216,6 @@ mkdir -p stage/XC/BIN stage/XC/CC stage/XC/INCLUDE stage/XC/LIB
 for f in AS.X LK.X AR.X LIB.X CV.X DB.X SCD.X SCD.CNF SCD.HLP MAKE.X; do cp "work/xc1/BIN/$f" stage/XC/BIN/; done
 cp work/xc2/CC/CC.X stage/XC/CC/; cp work/xc2/INCLUDE/* stage/XC/INCLUDE/; cp work/xc2/LIB/* stage/XC/LIB/
 
-# --- GNU sed / grep (scripts/xbuild.sh が elf2x68k でクロスビルドしたもの。無ければ入れない) ---
-for f in build/x/sed.x build/x/grep.x; do [ -s "$f" ] && cp "$f" stage/USR/BIN/; done
 # slip.sys (SLIP ドライバ。CONFIG.SYS で ppp.sys の代わりに組み込む: NET=slip make image)
 [ -s build/x/slip.sys ] && cp build/x/slip.sys stage/SYS/slip.sys
 [ -s build/x/slipd.x ] && cp build/x/slipd.x stage/USR/BIN/slipd.x
@@ -237,6 +235,36 @@ for a in dl/ita/*; do
   find "work/ita/$n" -name '*.x' -exec cp {} stage/USR/BIN/ \;
   find "work/ita/$n" -name '*.1' -exec cp {} stage/USR/DOC/ITA/ \;
 done
+
+# --- GNU coreutils / sed / grep / findutils / diffutils / gzip (scripts/xbuild.sh が elf2x68k でクロスビルドしたもの。無ければ入れない) ---
+# GNU の .x は 80〜300KB あり、起動に ITA の数倍かかる (XEiJ の SCSI で head 238ms 対 50ms、ls 548ms 対 117ms)。
+# そこで ITA と同じ名前 (ls cat head tail wc tr cut cp mv rm など) は /USR/GNU/BIN に置き、/USR/BIN は ITA のまま。
+# GNU の版を先に使うなら PATH の先頭に A:/usr/gnu/bin を足す。ITA に無いもの (sort find xargs diff gzip env seq など) は /USR/BIN に。
+# Sharp の FIND.X SORT.X PR.X (/BIN) より先に見つかるよう、AUTOEXEC.BAT の PATH は /USR/BIN を /BIN より前にした。
+# GPL のソースの在りかと許諾は /USR/DOC/GNU に置く
+if ls build/x/gnu/*.x >/dev/null 2>&1; then
+  mkdir -p stage/USR/GNU/BIN stage/USR/DOC/GNU
+  for f in build/x/gnu/*.x; do
+    if [ -e "stage/USR/BIN/$(basename "$f")" ]; then cp "$f" stage/USR/GNU/BIN/; else cp "$f" stage/USR/BIN/; fi
+  done
+  # GPL のソース一式 (元の tar と、Human68k 向けの直しと組み方) を image の中にも入れる。
+  # 名前は 18+3 文字に収まるように *.tar.xz を *.txz にする
+  mkdir -p stage/USR/SRC/GNU/X68K/include/sys
+  for t in dl/gnu/*.tar.xz; do b=$(basename "$t" .tar.xz); cp "$t" "stage/USR/SRC/GNU/$b.txz"; done
+  cp scripts/xbuild.sh scripts/gnulib_x68k.py src/xshim/x68shim.c stage/USR/SRC/GNU/X68K/
+  cp src/xshim/include/sys/*.h stage/USR/SRC/GNU/X68K/include/sys/
+  for t in dl/gnu/*.tar.*; do
+    d=$(tar tf "$t" | head -1 | cut -d/ -f1)
+    tar xf "$t" -C work "$d/COPYING" 2>/dev/null && cp "work/$d/COPYING" stage/USR/DOC/GNU/COPYING && break
+  done
+  { echo "GNU のコマンド (elf2x68k の m68k-xelf-gcc でクロスビルド)。ライセンスは GPL (COPYING)。"
+    echo "ソース: /usr/src/gnu/*.txz (下の URL の tar と同じもの。sha256 は sources.txt)。Human68k 向けの直しと組み方は /usr/src/gnu/x68k/ と"
+    echo "https://github.com/j3tm0t0/x68k の x68kcli/scripts/gnulib_x68k.py と x68kcli/src/xshim (MIT)、組み方は x68kcli/scripts/xbuild.sh。"
+    echo "ITA TOOLBOX と同じ名前のものは /usr/gnu/bin にある。"
+    echo
+    grep '^gnu/' sources.txt | awk '{print $2}'
+  } | sjis /dev/stdin stage/USR/DOC/GNU/SOURCES.TXT
+fi
 
 echo "stage: $(find stage -type f | wc -l | tr -d ' ') files"
 du -sh stage

@@ -1,0 +1,18 @@
+start
+cat: nosuch.txt: No such file or directory
+rc=1
+2
+after grep
+5
+4
+after touch
+A:/
+bar
+ls: cannot access 'nosuch': No such file or directory
+rc=2
+d1
+d1/d2
+ls: cannot access 'd1': No such file or directory
+x-007
+1970
+end
