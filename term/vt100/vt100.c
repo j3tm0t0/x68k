@@ -972,7 +972,7 @@ static void vs_apply(void)
   /* 違うセルだけ写すのは zos.x の端末 (VT_ZOS) だけ。ssh.x などの端末は、zos.x がペインに描いた字 (DOS で出した知らせなど) を
    * drawn が知らないことがあるので、前のとおり全部写す */
 #if defined(VT_ZOS) || defined(VT_HOSTTEST)
-  if (RAS_OK() || vt_small || vt_fullmove) { vram_move_lines(vs_top * vch, (vs_top + n) * vch, (h - n) * vch); return; }
+  if (1) { vram_move_lines(vs_top * vch, (vs_top + n) * vch, (h - n) * vch); return; }
 #else
   vram_move_lines(vs_top * vch, (vs_top + n) * vch, (h - n) * vch);
   return;
