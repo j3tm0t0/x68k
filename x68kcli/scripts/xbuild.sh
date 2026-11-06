@@ -8,17 +8,19 @@ R=$PWD; W=$R/work/xbuild; mkdir -p "$W" build/x build/x/gnu
 # newlib に無い関数 (src/xshim)。関数ごとの節で組み、--gc-sections で使う分だけ残す
 # (ライブラリにしないのは、libc の _fstat_r が後から __wrap_fstat を求めるため)
 m68k-xelf-gcc -Os -ffunction-sections -fdata-sections -Wall -I"$R/src/xshim/include" -c src/xshim/x68shim.c -o "$W/x68shim.o"
+# 再配置を自分で当てる入口 (src/xshim/x68reloc.S)。どのプログラムもここから始め、組んだ後に scripts/fastreloc.py で表を移す
+m68k-xelf-gcc -m68000 -c src/xshim/x68reloc.S -o "$W/x68reloc.o"
 # termcap の関数 (tgetent など) も x68shim.o にある。less の configure は -ltermcap が見つからないと止まるので、空の libtermcap.a を置く
 mkdir -p "$W/lib"; echo 'int x68_termcap_dummy;' > "$W/lib/dummy.c"
 m68k-xelf-gcc -c "$W/lib/dummy.c" -o "$W/lib/dummy.o"; rm -f "$W/lib/libtermcap.a"; m68k-xelf-ar rcs "$W/lib/libtermcap.a" "$W/lib/dummy.o"
 # libtool を使うもの (file の libmagic) は LIBS に .o を書くと断るので、ライブラリにして丸ごと入れる
-rm -f "$W/lib/libx68shim.a"; m68k-xelf-ar rcs "$W/lib/libx68shim.a" "$W/x68shim.o"
+rm -f "$W/lib/libx68shim.a"; m68k-xelf-ar rcs "$W/lib/libx68shim.a" "$W/x68shim.o" "$W/x68reloc.o"
 # -fexec-charset は elf2x68k の gcc が後ろに cp932 を足すので変えられない (UTF-8 の文字列を持つ部分は外す)
 # Human68k に無い dirent の型と fnmatch の拡張は数だけ合わせる
 XCPP="-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -I$R/src/xshim/include -DSUPPORT_NON_GREG_CALENDARS_IN_STRFTIME=false -DDT_BLK=6 -DDT_CHR=2 -DDT_FIFO=1 -DDT_LNK=10 -DDT_SOCK=12 -DFNM_EXTMATCH=32 -D_POSIX_OPEN_MAX=20 -D_POSIX_ARG_MAX=4096 -DSA_RESTART=0"
 CONF=(--host=m68k-elf --disable-nls CC=m68k-xelf-gcc AR=m68k-xelf-ar RANLIB=m68k-xelf-ranlib
       "CFLAGS=-Os -ffunction-sections -fdata-sections -Wframe-larger-than=40000" "CPPFLAGS=$XCPP"
-      "LDFLAGS=-L$W/lib -Wl,--gc-sections -Wl,--wrap=stat -Wl,--wrap=fstat -Wl,--wrap=close -Wl,--wrap=strtold -Wl,--wrap=getcwd -Wl,--wrap=open -Wl,--wrap=dup -Wl,--wrap=opendir -Wl,--wrap=closedir -Wl,--wrap=readdir -Wl,--wrap=rewinddir -Wl,--wrap=chdir -Wl,--wrap=exit -Wl,--wrap=read -Wl,--wrap=write -Wl,--wrap=poll" "LIBS=$W/x68shim.o"
+      "LDFLAGS=-L$W/lib -Wl,-e,__x68_fastreloc_start -Wl,--gc-sections -Wl,--wrap=stat -Wl,--wrap=fstat -Wl,--wrap=close -Wl,--wrap=strtold -Wl,--wrap=getcwd -Wl,--wrap=open -Wl,--wrap=dup -Wl,--wrap=opendir -Wl,--wrap=closedir -Wl,--wrap=readdir -Wl,--wrap=rewinddir -Wl,--wrap=chdir -Wl,--wrap=exit -Wl,--wrap=read -Wl,--wrap=write -Wl,--wrap=poll" "LIBS=$W/x68shim.o $W/x68reloc.o"
       # newlib の printf は C99 の大きさ指定・%a・inf/nan・%n に対応している (XEiJ で確かめた)。クロスでは試せず
       # gnulib が「無い」と見て自前の vasnprintf (15KB) を入れるので、あると答える (%b と C23 の %w は使われない前提)
       gl_cv_func_printf_sizes_c99=yes gl_cv_func_printf_sizes_c23=yes gl_cv_func_printf_directive_a=yes
@@ -96,6 +98,8 @@ GALIAS=vim9.x gbuild vim dl/gnu/vim-9.2.1302.tar.gz "--with-features=tiny --disa
 GEXTRA=()
 # vi / vim は vim 3.0 (stage.sh) なので、こちらは vim9.x の名前で置く
 [ -s build/x/gnu/vim.x ] && mv build/x/gnu/vim.x build/x/gnu/vim9.x
+# 再配置の表を、Human68k に当てさせずに自分で当てる形にする (起動が速くなる。scripts/fastreloc.py の頭に理由)
+python3 -I scripts/fastreloc.py build/x/gnu/*.x | grep -v ": already$\|: ok " || true
 # slip.sys (ESP/X 用 SLIP ドライバ, ../net/slip)
 make -s -C ../net/slip slip.sys >/dev/null && cp ../net/slip/slip.sys build/x/slip.sys && echo "xbuild: build/x/slip.sys"
 m68k-xelf-gcc -O2 ../net/rsspeed/rsspeed.c -o build/x/rsspeed.x && rm -f build/x/rsspeed.x.elf && echo "xbuild: build/x/rsspeed.x"
