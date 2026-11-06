@@ -355,3 +355,73 @@ DU.X -a 表
 == env_path_colon
 ENV.X PATH=A:/NOPE:A:/ FOO=bar PRINTENV.X FOO
 bar
+== diff3
+DIFF3.X D1.TXT D2.TXT D3.TXT
+====
+1:2,3c
+  b
+  c
+2:2,3c
+  B
+  c
+3:2,3c
+  b
+  C
+== sdiff
+SDIFF.X -s -w 20 S.TXT S3.TXT
+a     <
+== diff_u
+DIFF.X -u S.TXT S3.TXT > P.DIF
+== cp_patch
+CP.X S.TXT PS.TXT
+== patch
+PATCH.X PS.TXT P.DIF
+patching file PS.TXT
+== patch_result
+CAT.X PS.TXT
+a
+b
+== bc
+BC.X BCIN.TXT
+1024
+.333
+== dc
+DC.X -e "2 3 + p"
+5
+== less_cat
+LESS.X S.TXT
+a
+a
+b
+== file_x
+ENV.X MAGIC=A:/MAGIC.TXT FILE.X SED.X
+SED.X: Human68k executable (.x)
+== file_txt
+ENV.X MAGIC=A:/MAGIC.TXT FILE.X S.TXT IN.TXT
+S.TXT:  ASCII text
+IN.TXT: ASCII text, with CRLF line terminators
+== file_gz
+ENV.X MAGIC=A:/MAGIC.TXT FILE.X B.GZ
+B.GZ: gzip compressed data, with original name
+== file_sjis
+ENV.X MAGIC=A:/MAGIC.TXT FILE.X SJ.TXT
+SJ.TXT: Non-ISO extended-ASCII text, with CRLF line terminators
+== mv_over_a
+CP.X S.TXT MV1.TXT
+== mv_over_b
+CP.X S3.TXT MV2.TXT
+== mv_over
+MV.X MV2.TXT MV1.TXT
+== mv_over_cat
+CAT.X MV1.TXT
+a
+b
+== mv_keep_a
+CP.X S.TXT KEEP.TXT
+== mv_nosrc
+MV.X NOSUCH.TXT KEEP.TXT
+== mv_keep_cat
+CAT.X KEEP.TXT
+a
+a
+b

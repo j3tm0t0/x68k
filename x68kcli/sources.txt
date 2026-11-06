@@ -84,3 +84,9 @@ gnu/coreutils-9.12.tar.xz https://ftp.gnu.org/gnu/coreutils/coreutils-9.12.tar.x
 gnu/findutils-4.11.0.tar.xz https://ftp.gnu.org/gnu/findutils/findutils-4.11.0.tar.xz bfd19cb06cc71f3352d567e90284d8cdac02ac89774bbeadf0b533b0c11432fd
 gnu/diffutils-3.12.tar.xz https://ftp.gnu.org/gnu/diffutils/diffutils-3.12.tar.xz 7c8b7f9fc8609141fdea9cece85249d308624391ff61dedaf528fcb337727dfd
 gnu/gzip-1.15.tar.xz https://ftp.gnu.org/gnu/gzip/gzip-1.15.tar.xz 9aa0cc780dec156b8282844833b342ab7cb08c25d2cd9a1869cdd0df31deff48
+gnu/patch-2.8.tar.xz https://ftp.gnu.org/gnu/patch/patch-2.8.tar.xz f87cee69eec2b4fcbf60a396b030ad6aa3415f192aa5f7ee84cad5e11f7f5ae3
+gnu/bc-1.08.1.tar.xz https://ftp.gnu.org/gnu/bc/bc-1.08.1.tar.xz 515430115b3334c636317503460a0950dff79940aa3259ce2c1aa67c2881d023
+# less は GNU ではない (Mark Nudelman、GPLv3 か Less License の選択)。組み方は GNU のものと同じ
+gnu/less-710.tar.gz https://www.greenwoodsoftware.com/less/less-710.tar.gz d1008fb78dcae1323ddab664bcb352a61f022b1b131bd8018548e021d975ec7a
+# file は GNU ではない (BSD ライセンス)。組み方は GNU のものと同じ
+gnu/file-5.46.tar.gz https://astron.com/pub/file/file-5.46.tar.gz c9cc77c7c560c543135edc555af609d5619dbef011997e988ce40a3d75d86088

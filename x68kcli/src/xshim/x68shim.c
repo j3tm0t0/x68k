@@ -180,7 +180,7 @@ pid_t tcgetpgrp(int fd) { (void)fd; return getpid(); }
 int getrusage(int who, struct rusage *ru) { (void)who; memset(ru, 0, sizeof *ru); return 0; }
 int mkfifo(const char *p, mode_t m) { (void)p; (void)m; errno = ENOSYS; return -1; }
 int mknod(const char *p, mode_t m, dev_t d) { (void)p; (void)m; (void)d; errno = ENOSYS; return -1; }
-char *ttyname(int fd) { return isatty(fd) ? "/dev/con" : NULL; }
+char *ttyname(int fd) { return isatty(fd) ? "/dev/tty" : NULL; }
 int lstat(const char *p, struct stat *st) { return stat(p, st); }
 
 /* sys/utsname.h・sys/statvfs.h・sys/random.h は include/ に置いた (newlib に無い) */
@@ -441,6 +441,7 @@ static int dirfd_close(int fd);
 int __wrap_close(int fd)
 {
     if (fd >= 0 && fd <= 4) return 0;
+    if (fd == 3000) return 0;   /* /dev/tty の仮の番号 (TTYFD) */
     if (dirfd_close(fd) == 0) return 0;
     return __real_close(fd);
 }
@@ -479,7 +480,7 @@ int __wrap_dup(int);
 static int fdopen_p(int fd)
 {
     if (fd >= 0 && fd <= 4) return 1;
-    if (dirfd_path(fd)) return 1;
+    if (fd == 3000 || dirfd_path(fd)) return 1;
     return fd > 4 && fd < 64 && (__fd_list[fd].flags & 0x80000000L);
 }
 int fcntl(int fd, int cmd, ...)
@@ -552,6 +553,9 @@ static int chdir_drive(const char *p)
     if (p[0] && p[1] == ':') _dos_chgdrv(toupper((unsigned char)p[0]) - 'A');
     return chdir(p);
 }
+#define TTYFD 3000
+static int is_ttyname(const char *p);
+static void tty_opened(void);
 int __real_open(const char *, int, ...);
 int __wrap_open(const char *path, int flags, ...)
 {
@@ -559,6 +563,7 @@ int __wrap_open(const char *path, int flags, ...)
     int mode, r, e;
     struct stat st;
     va_start(ap, flags); mode = va_arg(ap, int); va_end(ap);
+    if (path && is_ttyname(path)) { tty_opened(); return TTYFD; }
     r = __real_open(path, flags & ~O_DIRECTORY, mode);
     if (r >= 0 || (flags & O_ACCMODE) != O_RDONLY) return r;
     e = errno;
@@ -759,8 +764,10 @@ int __wrap_chdir(const char *p)
     return __real_chdir(p);
 }
 void __real_exit(int) __attribute__((noreturn));
+static void tty_closeall(void);
 void __wrap_exit(int st)
 {
+    tty_closeall();
     if (start_saved && start_cwd[0]) {
         start_saved = 0;
         if (start_cwd[1] == ':') _dos_chgdrv(toupper((unsigned char)start_cwd[0]) - 'A');
@@ -771,8 +778,310 @@ void __wrap_exit(int st)
 
 /* 仮のディレクトリの番号を read したら EISDIR (cat DIR が "Is a directory" と出す) (-Wl,--wrap=read) */
 ssize_t __real_read(int, void *, size_t);
+static ssize_t tty_read(void *b, size_t n);
 ssize_t __wrap_read(int fd, void *b, size_t n)
 {
     if (dirfd_path(fd)) { errno = EISDIR; return -1; }
+    if (fd == TTYFD) return tty_read(b, n);
     return __real_read(fd, b, n);
+}
+
+/* ---- 端末: less などのキー入力と termcap ----
+   /dev/tty (と /dev/con) を読み込みで開くと仮の番号 TTYFD を返し、read はキーを 1 つずつ生のまま返す
+   (エコーしない、行にまとめない)。キーは zosh と同じく、DOS のキーの列 (貼り付け・ssh などの遠隔) に
+   あればそれを、無ければ IOCS の _B_KEYINP で読む。矢印などはスキャンコードを VT100 の列に直す */
+#include <x68k/iocs.h>
+static int is_ttyname(const char *p)
+{
+    return !strcasecmp(p, "/dev/tty") || !strcasecmp(p, "/dev/con");
+}
+/* /dev/tty を開いたら、Human68k の BREAK の確かめ (Ctrl+C で DOS がプログラムを止める) を切る。
+   Ctrl+C はキーの 3 として less などに届き、less は後片付け (反転の解除など) をしてから戻る。終わるときに元に戻す */
+static int tty_brk = -1, con_fd = -1;
+static void tty_opened(void)
+{
+    if (tty_brk < 0) { tty_brk = _dos_breakck(-1); _dos_breakck(0); }
+}
+static void tty_closeall(void)
+{
+    if (tty_brk >= 0) { _dos_breakck(tty_brk); tty_brk = -1; }
+    if (con_fd >= 0) { _dos_close(con_fd); con_fd = -1; }
+}
+/* 書き込みは CON (画面) に直に */
+static ssize_t tty_write(const void *b, size_t n)
+{
+    int r;
+    if (con_fd < 0 && (con_fd = _dos_open("CON", 1)) < 0) { con_fd = -1; errno = EIO; return -1; }
+    r = _dos_write(con_fd, b, n);
+    if (r < 0) { errno = EIO; return -1; }
+    return r;
+}
+ssize_t __real_write(int, const void *, size_t);
+ssize_t __wrap_write(int fd, const void *b, size_t n)
+{
+    if (fd == 3000) return tty_write(b, n);   /* TTYFD */
+    return __real_write(fd, b, n);
+}
+static unsigned char ttyq[8];
+static int ttyqn, ttyqi;
+static void ttyput(const char *k) { ttyqn = strlen(k); ttyqi = 0; memcpy(ttyq, k, ttyqn); }
+static ssize_t tty_read(void *b, size_t n)
+{
+    unsigned char *o = b;
+    if (!n) return 0;
+    while (ttyqi >= ttyqn) {
+        long p = _iocs_b_lpeek((const void *)0x12406);
+        int k, c, sc;
+        fflush(stdout);
+        if (p >= 0x1240a && p < 0x1242a && _iocs_b_bpeek((const void *)p) && _dos_keysns()) {
+            ttyq[0] = _dos_inkey() & 0xff; ttyqn = 1; ttyqi = 0;   /* 遠隔のキーは送られたまま (ESC [ A など) */
+            break;
+        }
+        k = _iocs_b_keyinp(); c = k & 0xff; sc = (k >> 8) & 0x7f;
+        switch (sc) {
+        case 0x3b: ttyput("\033[D"); continue;   /* ← */
+        case 0x3c: ttyput("\033[A"); continue;   /* ↑ */
+        case 0x3d: ttyput("\033[C"); continue;   /* → */
+        case 0x3e: ttyput("\033[B"); continue;   /* ↓ */
+        case 0x36: ttyput("\033[H"); continue;   /* HOME */
+        case 0x3a: ttyput("\033[F"); continue;   /* UNDO を END の代わりに */
+        case 0x38: ttyput("\033[6~"); continue;  /* ROLL UP: 次のページ */
+        case 0x39: ttyput("\033[5~"); continue;  /* ROLL DOWN: 前のページ */
+        case 0x37: ttyput("\177"); continue;     /* DEL */
+        }
+        if (!c) continue;
+        ttyq[0] = c; ttyqn = 1; ttyqi = 0;
+    }
+    *o = ttyq[ttyqi++];
+    return 1;
+}
+#include <termios.h>
+int tcgetattr(int fd, struct termios *t)
+{
+    (void)fd;
+    memset(t, 0, sizeof *t);
+    t->c_lflag = ICANON | ECHO | ISIG;
+    t->c_cc[VERASE] = 8; t->c_cc[VKILL] = 21; t->c_cc[VWERASE] = 23; t->c_cc[VINTR] = 3; t->c_cc[VEOF] = 4;
+    t->c_ospeed = t->c_ispeed = B38400;
+    return 0;
+}
+int tcsetattr(int fd, int act, const struct termios *t) { (void)fd; (void)act; (void)t; return 0; }
+speed_t cfgetospeed(const struct termios *t) { return t->c_ospeed; }
+speed_t cfgetispeed(const struct termios *t) { return t->c_ispeed; }
+int cfsetospeed(struct termios *t, speed_t s) { t->c_ospeed = s; return 0; }
+int cfsetispeed(struct termios *t, speed_t s) { t->c_ispeed = s; return 0; }
+int tcflush(int fd, int q) { (void)fd; (void)q; return 0; }
+int tcdrain(int fd) { (void)fd; return 0; }
+
+/* termcap: TERM によらず、zos.x のペイン (term/vt100) と Human68k の CON の両方が分かる VT100 の一部だけを返す。
+   桁数・行数は IOCS の _B_CONSOL (d1 = d2 = -1 で今の枠を返す。zos.x はペインの大きさを返す) から */
+char PC, *BC, *UP;
+short ospeed;
+static void con_size(int *cols, int *rows)
+{
+    register long d0 __asm__("d0") = 0x2e;
+    register long d1 __asm__("d1") = -1;
+    register long d2 __asm__("d2") = -1;
+    char *e;
+    __asm__ volatile ("trap #15" : "+r"(d0), "+r"(d1), "+r"(d2) : : "a0", "a1", "cc", "memory");
+    *cols = ((d2 >> 16) & 0xffff) + 1; *rows = (d2 & 0xffff) + 1;
+    if (*cols < 20 || *cols > 256) *cols = 96;
+    if (*rows < 4 || *rows > 128) *rows = 31;
+    if ((e = getenv("COLUMNS")) && atoi(e) > 0) *cols = atoi(e);
+    if ((e = getenv("LINES")) && atoi(e) > 0) *rows = atoi(e);
+}
+int tgetent(char *bp, const char *name) { (void)bp; (void)name; return 1; }
+int tgetnum(const char *id)
+{
+    int c, r;
+    con_size(&c, &r);
+    if (!strncmp(id, "co", 2)) return c;
+    if (!strncmp(id, "li", 2)) return r;
+    return -1;
+}
+int tgetflag(const char *id) { return !strncmp(id, "am", 2) || !strncmp(id, "bs", 2); }
+static const char *const tcaps[][2] = {
+    { "te", "\033[m" }, { "cl", "\033[H\033[2J" }, { "cm", "\033[%i%d;%dH" }, { "ce", "\033[K" }, { "cd", "\033[J" },
+    { "ho", "\033[H" }, { "so", "\033[7m" }, { "se", "\033[m" }, { "us", "\033[4m" }, { "ue", "\033[m" },
+    { "md", "\033[1m" }, { "me", "\033[m" }, { "mr", "\033[7m" }, { "le", "\b" }, { "nd", "\033[C" },
+    { "up", "\033[A" }, { "do", "\n" }, { "cr", "\r" }, { "al", "\033[L" }, { "dl", "\033[M" },
+    { "ku", "\033[A" }, { "kd", "\033[B" }, { "kl", "\033[D" }, { "kr", "\033[C" }, { "kh", "\033[H" },
+    { "@7", "\033[F" }, { "kP", "\033[5~" }, { "kN", "\033[6~" }, { "kD", "\177" },
+    { NULL, NULL } };
+char *tgetstr(const char *id, char **area)
+{
+    int i;
+    for (i = 0; tcaps[i][0]; i++)
+        if (!strncmp(id, tcaps[i][0], 2)) {
+            const char *v = tcaps[i][1];
+            if (area && *area) { char *r = *area; strcpy(r, v); *area += strlen(v) + 1; return r; }
+            return (char *)v;
+        }
+    return NULL;
+}
+/* cm の %i %d %2 %. %+ %r %% だけ */
+char *tgoto(const char *cm, int col, int row)
+{
+    static char buf[128];
+    char *o = buf;
+    int a[2] = { row, col }, k = 0, t;
+    for (; *cm && o < buf + sizeof buf - 8; cm++) {
+        if (*cm != '%') { *o++ = *cm; continue; }
+        switch (*++cm) {
+        case 'i': a[0]++; a[1]++; break;
+        case 'r': t = a[0]; a[0] = a[1]; a[1] = t; break;
+        case 'd': o += sprintf(o, "%d", a[k++ & 1]); break;
+        case '2': o += sprintf(o, "%02d", a[k++ & 1]); break;
+        case '.': *o++ = a[k++ & 1]; break;
+        case '+': *o++ = a[k++ & 1] + *++cm; break;
+        case '%': *o++ = '%'; break;
+        default: break;
+        }
+    }
+    *o = 0;
+    return buf;
+}
+int tputs(const char *str, int affcnt, int (*putc_)(int))
+{
+    (void)affcnt;
+    if (!str) return -1;
+    while (*str >= '0' && *str <= '9') str++;   /* 先頭の遅延の数 */
+    for (; *str; str++) putc_((unsigned char)*str);
+    return 0;
+}
+
+/* popen / pclose: パイプも fork も無いので一時ファイルを使う。"r" は COMMAND.X /C "cmd > 一時" を動かしてから
+   その一時ファイルを開く。"w" は一時ファイルに書かせておき、pclose で COMMAND.X /C "cmd < 一時" を動かす。
+   付け替え (>、<) は子の COMMAND.X がする (自分で標準入出力を _DUP2 しない) */
+#define NPOPEN 4
+static struct { FILE *f; char tmp[96]; char *cmd; int w, st; } popens[NPOPEN];
+/* 一時ファイルの名前: TEMP (無ければ TMP、それも無いか長すぎれば A:/tmp) に、8+3 に収まる "pK%04x%d.tmp" */
+static void tmpname_x(char *b, size_t n, int kind, int i)
+{
+    const char *t = getenv("TEMP");
+    if (!t) t = getenv("TMP");
+    if (!t || strlen(t) + 16 > n) t = "A:/tmp";
+    snprintf(b, n, "%s%sp%c%04x%d.tmp", t, endsep(t) ? "" : "/", kind,
+             (unsigned)((unsigned long)_dos_getpdb() >> 4) & 0xffff, i);
+}
+/* コマンドを 1 つ動かして終了コードを返す (popen・system)。redir と file があれば "cmd > file" などにする。
+   環境変数 SHELL (zosh・zsh) があれば、その行を一時ファイルに書いて "$SHELL 一時ファイル" で動かす
+   (コマンドラインを通さないので、引用符・パイプ・$ もシェルの文法のまま)。無ければ COMMAND.X /C */
+static int run_line(const char *prog, const char *args)
+{
+    static char full[256];
+    struct dos_comline cl;
+    char *env;
+    int r, n = snprintf(cl.buffer, sizeof cl.buffer, " %s", args);
+    if (n < 0 || n > 255) { errno = E2BIG; return -1; }
+    cl.len = n;
+    if (findprog(prog, full, sizeof full) < 0) { errno = ENOENT; return -1; }
+    if (!(env = mkenv())) { errno = ENOMEM; return -1; }
+    fflush(NULL);
+    r = _dos_loadexec(full, &cl, env);
+    free(env);
+    return r < 0 ? -1 : (r & 0xff);
+}
+static int run_comline(const char *cmd, const char *redir, const char *file)
+{
+    static int seq;
+    const char *sh = getenv("SHELL");
+    char line[300];
+    if (sh && *sh) {
+        char scr[96];
+        FILE *f;
+        int r;
+        tmpname_x(scr, sizeof scr, 's', ++seq & 7);
+        if (!(f = fopen(scr, "wb"))) return -1;   /* LF のまま (CR が語の最後に残らないように) */
+        if (!redir) fprintf(f, "%s\n", cmd);
+        else if (redir[0] == '>' || !strchr(cmd, '|')) fprintf(f, "%s %s %s\n", cmd, redir, file);   /* パイプの最後の出力が file へ */
+        else fprintf(f, "cat %s | %s\n", file, cmd);   /* "a | b < file" では a に届かないので、前に cat を付ける */
+        fclose(f);
+        r = run_line(sh, scr);
+        unlink(scr);
+        return r;
+    }
+    snprintf(line, sizeof line, "/C %s%s%s%s%s", cmd, redir ? " " : "", redir ? redir : "", file ? " " : "", file ? file : "");
+    return run_line("command.x", line);
+}
+int system(const char *cmd)
+{
+    int r;
+    if (!cmd) return 1;
+    r = run_comline(cmd, NULL, NULL);
+    return r < 0 ? -1 : r << 8;
+}
+FILE *popen(const char *cmd, const char *mode)
+{
+    int i;
+    for (i = 0; i < NPOPEN && popens[i].f; i++) ;
+    if (i == NPOPEN) { errno = EMFILE; return NULL; }
+    tmpname_x(popens[i].tmp, sizeof popens[i].tmp, 'o', i);
+    popens[i].w = mode[0] == 'w';
+    if (popens[i].w) {
+        if (!(popens[i].cmd = strdup(cmd))) return NULL;
+        popens[i].f = fopen(popens[i].tmp, "w");
+    } else {
+        popens[i].cmd = NULL;
+        if ((popens[i].st = run_comline(cmd, ">", popens[i].tmp)) < 0) return NULL;   /* 終了コードは pclose で返す */
+        popens[i].f = fopen(popens[i].tmp, "r");
+    }
+    if (!popens[i].f) { free(popens[i].cmd); unlink(popens[i].tmp); return NULL; }
+    return popens[i].f;
+}
+int pclose(FILE *f)
+{
+    int i, r;
+    for (i = 0; i < NPOPEN && popens[i].f != f; i++) ;
+    if (i == NPOPEN) { errno = EINVAL; return -1; }
+    fclose(f);
+    r = popens[i].st;
+    if (popens[i].w) { r = run_comline(popens[i].cmd, "<", popens[i].tmp); free(popens[i].cmd); }
+    unlink(popens[i].tmp);
+    popens[i].f = NULL;
+    return r < 0 ? -1 : r << 8;
+}
+
+/* rename: Human68k の _RENAME は行き先があると -22 で失敗する (XEiJ の HFS では置き換わる)。POSIX と同じく置き換える
+   (patch・mv・sed -i が使う)。置き換えるのは、-22 で失敗し、元と行き先がどちらもふつうのファイルのときだけ。
+   行き先はいったん同じディレクトリの別の名前にずらし、元の名前を付けられたら消す。付けられなければ行き先を戻す */
+static int regfile(const char *p)
+{
+    struct stat st;
+    return __wrap_stat(p, &st) == 0 && S_ISREG(st.st_mode);
+}
+static int dos2errno_rename(int r)
+{
+    return r == -2 || r == -3 ? ENOENT : r == -15 ? EXDEV : r == -22 ? EEXIST : r == -13 ? ENAMETOOLONG : EACCES;
+}
+int rename(const char *from, const char *to)
+{
+    static int seq;
+    char tmp[256];
+    const unsigned char *q;
+    size_t dl = 0;
+    struct dos_nameckbuf na, nb;
+    int r, r2;
+    /* ドライブが違えば EXDEV (mv はコピーと削除に切り替える)。行き先には何もしない */
+    if (_dos_nameck(from, &na) >= 0 && _dos_nameck(to, &nb) >= 0 && toupper((unsigned char)na.drive[0]) != toupper((unsigned char)nb.drive[0])) {
+        errno = EXDEV; return -1;
+    }
+    r = _dos_rename(from, to);
+    if (r >= 0) return 0;
+    if (r != -22 || !regfile(from) || !regfile(to)) { errno = dos2errno_rename(r); return -1; }
+    for (q = (const unsigned char *)to; *q; q++) {   /* 行き先のディレクトリの部分 (Shift_JIS の 2 バイト目の 5C は区切りではない) */
+        if (((*q >= 0x81 && *q <= 0x9f) || (*q >= 0xe0 && *q <= 0xfc)) && q[1]) { q++; continue; }
+        if (*q == '/' || *q == '\\' || *q == ':') dl = q + 1 - (const unsigned char *)to;
+    }
+    if (dl + 9 >= sizeof tmp) { errno = ENAMETOOLONG; return -1; }
+    memcpy(tmp, to, dl);
+    snprintf(tmp + dl, sizeof tmp - dl, "rn%04x%02x", (unsigned)((unsigned long)_dos_getpdb() >> 4) & 0xffff, ++seq & 0xff);
+    if ((r2 = _dos_rename(to, tmp)) < 0) { errno = dos2errno_rename(r2); return -1; }
+    if ((r = _dos_rename(from, to)) < 0) {
+        _dos_rename(tmp, to);   /* 元の名前を付けられなかったので、行き先を戻す */
+        errno = dos2errno_rename(r);
+        return -1;
+    }
+    _dos_delete(tmp);
+    return 0;
 }

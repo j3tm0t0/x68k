@@ -16,4 +16,15 @@ rm -r d1
 ls -d d1 2>&1
 printf "%s-%03d\n" x 7
 date -u -d @0 +%Y
+printf 'a\na\nb\n' > s1.txt
+printf 'a\nb\n' > s3.txt
+sdiff -s s1.txt s3.txt > /dev/null
+echo "sdiff rc=$?"
+sdiff -s s1.txt s1.txt > /dev/null
+echo "sdiff same rc=$?"
+export SHELL=A:/ZOSH.X
+popen_t "printf '%s|%s\n' 'b c' d | tr '|' ':'"
+popen_t false
+unset SHELL
+popen_t "echo x"
 echo end
