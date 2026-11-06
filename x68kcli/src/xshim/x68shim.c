@@ -788,6 +788,11 @@ static int fd_isatty(int fd)
     return isatty_cache[fd] == 2;
 }
 static void fd_forget(int fd) { if (fd >= 0 && fd < 64) isatty_cache[fd] = 0; }
+/* DOS の読み書きのエラー: -6 開いていない番号、-5 そのモードでは使えない (読み込み専用への書き込みなど)、-23 ディスクがいっぱい */
+static int dos2errno_rw(int r) { return r == -6 ? EBADF : r == -5 ? EACCES : r == -23 ? ENOSPC : EIO; }
+/* dup2 で番号の中身が替わるので、isatty の控えを忘れる (-Wl,--wrap=dup2) */
+int __real_dup2(int, int);
+int __wrap_dup2(int oldfd, int newfd) { fd_forget(newfd); return __real_dup2(oldfd, newfd); }
 static ssize_t tty_read(void *b, size_t n);
 static unsigned char tty_raw[3];   /* tcsetattr で ICANON を外した標準入力 (vim などはこれを生で読む) */
 ssize_t __wrap_read(int fd, void *b, size_t n)
@@ -800,7 +805,7 @@ ssize_t __wrap_read(int fd, void *b, size_t n)
         char *p = b;
         for (;;) {
             int r = _dos_read(fd, p, n), i, k;
-            if (r < 0) { errno = EIO; return -1; }
+            if (r < 0) { errno = dos2errno_rw(r); return -1; }
             if (r == 0) return 0;
             for (i = k = 0; i < r; i++) if (p[i] != '\r' && p[i] != 0x1a) p[k++] = p[i];
             if (k) return k;
@@ -852,7 +857,7 @@ ssize_t __wrap_write(int fd, const void *b, size_t n)
             int k = 0, r;
             while (i < n && k < 4096) { if (p[i] == '\n') buf[k++] = '\r'; buf[k++] = p[i++]; }
             r = _dos_write(fd, buf, k);
-            if (r < 0) { errno = r == -23 ? ENOSPC : EIO; return -1; }   /* -23: ディスクがいっぱい */
+            if (r < 0) { errno = dos2errno_rw(r); return -1; }
             if (r < k) { errno = ENOSPC; return -1; }
         }
         return n;
