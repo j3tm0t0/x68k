@@ -425,3 +425,11 @@ CAT.X KEEP.TXT
 a
 a
 b
+== touch_tz
+ENV.X TZ=UTC0 TOUCH.X -d "2002-03-04 05:06:08" TZ.TXT
+== date_tz
+ENV.X TZ=UTC0 DATE.X -r TZ.TXT +%Y%m%d%H%M%S
+20020304050608
+== ls_l_date
+ENV.X TZ=UTC0 LS.X -l --time-style=+%Y%m%d%H%M TZ.TXT
+~-rw-rw-rw- 1 \S+ \S+ 0 200203040506 TZ.TXT
