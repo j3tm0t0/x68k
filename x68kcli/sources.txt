@@ -88,3 +88,5 @@ gnu/patch-2.8.tar.xz https://ftp.gnu.org/gnu/patch/patch-2.8.tar.xz f87cee69eec2
 gnu/bc-1.08.1.tar.xz https://ftp.gnu.org/gnu/bc/bc-1.08.1.tar.xz 515430115b3334c636317503460a0950dff79940aa3259ce2c1aa67c2881d023
 # less は GNU ではない (Mark Nudelman、GPLv3 か Less License の選択)。組み方は GNU のものと同じ
 gnu/less-710.tar.gz https://www.greenwoodsoftware.com/less/less-710.tar.gz d1008fb78dcae1323ddab664bcb352a61f022b1b131bd8018548e021d975ec7a
+# file は GNU ではない (BSD ライセンス)。組み方は GNU のものと同じ
+gnu/file-5.46.tar.gz https://astron.com/pub/file/file-5.46.tar.gz c9cc77c7c560c543135edc555af609d5619dbef011997e988ce40a3d75d86088

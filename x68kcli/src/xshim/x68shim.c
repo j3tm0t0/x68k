@@ -924,7 +924,7 @@ int tputs(const char *str, int affcnt, int (*putc_)(int))
    その一時ファイルを開く。"w" は一時ファイルに書かせておき、pclose で COMMAND.X /C "cmd < 一時" を動かす。
    付け替え (>、<) は子の COMMAND.X がする (自分で標準入出力を _DUP2 しない) */
 #define NPOPEN 4
-static struct { FILE *f; char tmp[64]; char *cmd; int w; } popens[NPOPEN];
+static struct { FILE *f; char tmp[64]; char *cmd; int w, st; } popens[NPOPEN];
 static void tmpname_x(char *b, size_t n, int i)
 {
     const char *t = getenv("TEMP");
@@ -959,7 +959,7 @@ FILE *popen(const char *cmd, const char *mode)
         popens[i].f = fopen(popens[i].tmp, "w");
     } else {
         popens[i].cmd = NULL;
-        if (run_comline(cmd, ">", popens[i].tmp) < 0) return NULL;
+        if ((popens[i].st = run_comline(cmd, ">", popens[i].tmp)) < 0) return NULL;   /* 終了コードは pclose で返す */
         popens[i].f = fopen(popens[i].tmp, "r");
     }
     if (!popens[i].f) { free(popens[i].cmd); unlink(popens[i].tmp); return NULL; }
@@ -967,26 +967,51 @@ FILE *popen(const char *cmd, const char *mode)
 }
 int pclose(FILE *f)
 {
-    int i, r = 0;
+    int i, r;
     for (i = 0; i < NPOPEN && popens[i].f != f; i++) ;
     if (i == NPOPEN) { errno = EINVAL; return -1; }
     fclose(f);
+    r = popens[i].st;
     if (popens[i].w) { r = run_comline(popens[i].cmd, "<", popens[i].tmp); free(popens[i].cmd); }
     unlink(popens[i].tmp);
     popens[i].f = NULL;
     return r < 0 ? -1 : r << 8;
 }
 
-/* rename: Human68k の _RENAME は行き先があると失敗する。POSIX と同じく置き換える (patch・sed -i・sort -o が使う)。
-   行き先がディレクトリなら置き換えない */
-int rename(const char *from, const char *to)
+/* rename: Human68k の _RENAME は行き先があると -22 で失敗する (XEiJ の HFS では置き換わる)。POSIX と同じく置き換える
+   (patch・mv・sed -i が使う)。置き換えるのは、-22 で失敗し、元と行き先がどちらもふつうのファイルのときだけ。
+   行き先はいったん同じディレクトリの別の名前にずらし、元の名前を付けられたら消す。付けられなければ行き先を戻す */
+static int regfile(const char *p)
 {
     struct stat st;
-    int r = _dos_rename(from, to);
-    if (r < 0 && __wrap_stat(to, &st) == 0 && !S_ISDIR(st.st_mode) && __wrap_stat(from, &st) == 0) {
-        if (_dos_delete(to) < 0) { errno = EACCES; return -1; }
-        r = _dos_rename(from, to);
+    return __wrap_stat(p, &st) == 0 && S_ISREG(st.st_mode);
+}
+static int dos2errno_rename(int r)
+{
+    return r == -2 || r == -3 ? ENOENT : r == -15 ? EXDEV : r == -22 ? EEXIST : r == -13 ? ENAMETOOLONG : EACCES;
+}
+int rename(const char *from, const char *to)
+{
+    static int seq;
+    char tmp[256];
+    const unsigned char *q;
+    size_t dl = 0;
+    int r = _dos_rename(from, to), r2;
+    if (r >= 0) return 0;
+    if (r != -22 || !regfile(from) || !regfile(to)) { errno = dos2errno_rename(r); return -1; }
+    for (q = (const unsigned char *)to; *q; q++) {   /* 行き先のディレクトリの部分 (Shift_JIS の 2 バイト目の 5C は区切りではない) */
+        if (((*q >= 0x81 && *q <= 0x9f) || (*q >= 0xe0 && *q <= 0xfc)) && q[1]) { q++; continue; }
+        if (*q == '/' || *q == '\\' || *q == ':') dl = q + 1 - (const unsigned char *)to;
     }
-    if (r < 0) { errno = r == -2 || r == -3 ? ENOENT : EACCES; return -1; }
+    if (dl + 9 >= sizeof tmp) { errno = ENAMETOOLONG; return -1; }
+    memcpy(tmp, to, dl);
+    snprintf(tmp + dl, sizeof tmp - dl, "rn%04x%02x", (unsigned)((unsigned long)_dos_getpdb() >> 4) & 0xffff, ++seq & 0xff);
+    if ((r2 = _dos_rename(to, tmp)) < 0) { errno = dos2errno_rename(r2); return -1; }
+    if ((r = _dos_rename(from, to)) < 0) {
+        _dos_rename(tmp, to);   /* 元の名前を付けられなかったので、行き先を戻す */
+        errno = dos2errno_rename(r);
+        return -1;
+    }
+    _dos_delete(tmp);
     return 0;
 }

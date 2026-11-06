@@ -15,4 +15,6 @@ d1/d2
 ls: cannot access 'd1': No such file or directory
 x-007
 1970
+sdiff rc=1
+sdiff same rc=0
 end

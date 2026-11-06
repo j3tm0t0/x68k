@@ -416,3 +416,12 @@ MV.X MV2.TXT MV1.TXT
 CAT.X MV1.TXT
 a
 b
+== mv_keep_a
+CP.X S.TXT KEEP.TXT
+== mv_nosrc
+MV.X NOSUCH.TXT KEEP.TXT
+== mv_keep_cat
+CAT.X KEEP.TXT
+a
+a
+b
