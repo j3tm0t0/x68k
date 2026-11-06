@@ -35,6 +35,8 @@ if stage == 'pre':
     # mountlist (df): ドライブの一覧は自前で作るので、configure には「ある」と答えさせる
     ed('configure', '      mingw* | windows*) ac_list_mounted_fs=found ;;',
        '      mingw* | windows*) ac_list_mounted_fs=found ;;\n      elf*) ac_list_mounted_fs=found ;;')
+    # vim: configure が -D_FORTIFY_SOURCE=1 を足す (elf2x68k には ssp.h が無い)
+    ed('src/auto/configure', '-D_FORTIFY_SOURCE=1', '-D_FORTIFY_SOURCE=0', count=-1)
     sys.exit(0)
 
 # --- post ---
@@ -281,3 +283,22 @@ ed('src/file.c', "\tif ((progname = strrchr(argv[0], '/')) != NULL)\n\t\tprognam
    "#ifdef __human68k__\n\t{\n\t\textern const char *x68_progname(const char *);\n\t\tprogname = x68_progname(argv[0]);\n\t}\n#else\n\tif ((progname = strrchr(argv[0], '/')) != NULL)\n\t\tprogname++;\n\telse\n\t\tprogname = argv[0];\n#endif")
 # patch: 256KB の読み込みの区切りを bss に持ち、起動のたびに 0 で埋めるので 1 回 1.4 秒かかっていた。32KB にする
 ed('src/util.h', 'enum { IO_BUFSIZE = 256 * 1024 };', 'enum { IO_BUFSIZE = 32 * 1024 };')
+
+# --- vim: ファイルはバイナリで開く (CR LF を vim が見て fileformat=dos にする)。fork が無いので :! は system() ---
+ed('src/vim.h', '#ifdef __CYGWIN__\n# define O_EXTRA    O_BINARY', '#if defined(__CYGWIN__) || defined(__human68k__)\n# define O_EXTRA    O_BINARY')
+ed('src/feature.h', '// #define USE_SYSTEM\n', '// #define USE_SYSTEM\n#ifdef __human68k__\n# define USE_SYSTEM\n#endif\n')
+ed('src/os_unix.c', '#include "vim.h"\n', '#include "vim.h"\n#ifndef WNOHANG\n# define WNOHANG 1   /* newlib の sys/wait.h に無い (fork が無いので使われない) */\n#endif\n')
+# vim の Shift_JIS (encoding=cp932): newlib の mblen は C ロケールで 1 を返すので、先頭バイト (81-9F, E0-FC) を表で決める。
+# 「内部のコードは SJIS」の扱い (dbcs_class など) も Windows・Mac と同じにする
+ed('src/mbyte.c', '''	else if (enc_dbcs == 0)
+	    n = 1;
+	else
+	{''', '''	else if (enc_dbcs == 0)
+	    n = 1;
+#ifdef __human68k__
+	else if (enc_dbcs == DBCS_JPN)
+	    n = ((i >= 0x81 && i <= 0x9f) || (i >= 0xe0 && i <= 0xfc)) ? 2 : 1;
+#endif
+	else
+	{''')
+ed('src/mbyte.c', '#if defined(MSWIN) || defined(WIN32UNIX) || defined(MACOS_X)', '#if defined(MSWIN) || defined(WIN32UNIX) || defined(MACOS_X) || defined(__human68k__)', count=-1)
