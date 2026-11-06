@@ -263,7 +263,7 @@ if ls build/x/gnu/*.x >/dev/null 2>&1; then
   # 入れるのは sources.txt の gnu/ の行の tar (dl/ にほかの tar があっても入れない)。
   # tar の名前は 18+3 文字に収まるように *.tar.xz を *.txz、*.tar.gz を *.tgz にする。許諾は USR/DOC/GNU/<名前>/
   mkdir -p stage/USR/SRC/GNU/X68K/include/sys
-  cp scripts/xbuild.sh scripts/gnulib_x68k.py src/xshim/x68shim.c stage/USR/SRC/GNU/X68K/
+  cp scripts/xbuild.sh scripts/gnulib_x68k.py scripts/fastreloc.py src/xshim/x68shim.c src/xshim/x68reloc.S stage/USR/SRC/GNU/X68K/
   cp src/xshim/include/sys/*.h stage/USR/SRC/GNU/X68K/include/sys/
   grep '^gnu/' sources.txt | awk '{print $1}' | while read -r rel; do
     t=dl/$rel; [ -s "$t" ] || continue
