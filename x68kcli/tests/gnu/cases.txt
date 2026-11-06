@@ -1,0 +1,256 @@
+# GNU の道具の試験 (COMMAND.X から 1 行ずつ動かす)。run.sh が読む。
+# "== 名前" の次の行がコマンド (標準出力を R名前.TXT に受ける)、その後ろが期待する出力 (CR は落として比べる)。
+# 期待の行が "~" で始まるときは、その行を正規表現として出力の同じ行と比べる。行末の空白は比べない。
+# 自分で > を書いた行は出力を見ない (期待は空にして、後の行で結果を見る)。
+# 入力 (run.sh が作る): IN.TXT (CR LF) / NUM.TXT / S.TXT (a a b) / BIN.DAT (00 0d 0a ff) / DIR1 (A.TXT 表.TXT ソ.TXT)
+== sort
+SORT.X IN.TXT
+apple 10
+apple 10
+banana 3
+cherry 2
+== sort_n
+SORT.X -n NUM.TXT
+-1
+9
+10
+100
+== sort_k
+SORT.X -k2,2n -k1,1 IN.TXT
+cherry 2
+banana 3
+apple 10
+apple 10
+== sort_u
+SORT.X -u IN.TXT
+apple 10
+banana 3
+cherry 2
+== shuf
+SHUF.X -i 1-5 > SH.TXT
+== sort_shuf
+SORT.X -n SH.TXT
+1
+2
+3
+4
+5
+== uniq_c
+UNIQ.X -c S.TXT
+      2 a
+      1 b
+== cut_f
+CUT.X -d " " -f1 IN.TXT
+banana
+apple
+cherry
+apple
+== cut_c
+CUT.X -c1-3 IN.TXT
+ban
+app
+che
+app
+== tr
+TR.X a-z A-Z < IN.TXT
+BANANA 3
+APPLE 10
+CHERRY 2
+APPLE 10
+== tr_d
+TR.X -d an < IN.TXT
+b 3
+pple 10
+cherry 2
+pple 10
+== head
+HEAD.X -n 2 IN.TXT
+banana 3
+apple 10
+== tail
+TAIL.X -n 1 IN.TXT
+apple 10
+== wc_l
+WC.X -l IN.TXT
+4 IN.TXT
+== wc_c
+WC.X -c IN.TXT
+40 IN.TXT
+== tac
+TAC.X S.TXT
+b
+a
+a
+== cat_n
+CAT.X -n S.TXT
+     1	a
+     2	a
+     3	b
+== nl
+NL.X S.TXT
+     1	a
+     2	a
+     3	b
+== paste
+PASTE.X -s -d , S.TXT
+a,a,b
+== fold
+FOLD.X -w 3 IN.TXT
+ban
+ana
+ 3
+app
+le
+10
+che
+rry
+ 2
+app
+le
+10
+== seq
+SEQ.X 3
+1
+2
+3
+== seq_s
+SEQ.X -s , 1 3
+1,2,3
+== seq_f
+SEQ.X 0.5 0.5 1.5
+0.5
+1.0
+1.5
+== basename
+BASENAME.X A:/foo/bar.txt .txt
+bar
+== basename_sjis
+BASENAME.X A:/DIR1/表.TXT
+表.TXT
+== dirname
+DIRNAME.X A:/foo/bar.txt
+A:/foo
+== expr
+EXPR.X 3 + 4
+7
+== expr_len
+EXPR.X length abcde
+5
+== env_exec
+ENV.X FOO=bar PRINTENV.X FOO
+bar
+== printf
+PRINTF.X "%05.1f|%s\n" 3.14159 x
+003.1|x
+== echo
+ECHO.X -n hello
+hello
+== date_u
+DATE.X -u -d @86400 +%Y-%m-%d
+1970-01-02
+== date_now
+DATE.X +%Y
+~20[0-9][0-9]
+== uname
+UNAME.X -sm
+Human68k m68k
+== od_bin
+OD.X -An -tx1 BIN.DAT
+ 00 0d 0a ff
+== md5sum
+MD5SUM.X BIN.DAT
+80eab51f8f50d35fe66bcf8f688ffedf  BIN.DAT
+== sha256sum
+SHA256SUM.X BIN.DAT
+d0585d080e1306012af277c93878dfdff7c00b3e8602893d8361bbcc6e8a791c  BIN.DAT
+== cksum
+CKSUM.X BIN.DAT
+4131577444 4 BIN.DAT
+== factor
+FACTOR.X 60
+60: 2 2 3 5
+== numfmt
+NUMFMT.X --to=iec 2048
+2.0K
+== ls
+LS.X DIR1
+A.TXT
+ソ.TXT
+表.TXT
+== cp_sjis
+CP.X DIR1/表.TXT C1.TXT
+== cat_cp
+CAT.X C1.TXT
+hyo
+== mkdir
+MKDIR.X NEWD
+== touch_sjis
+TOUCH.X NEWD/ソ.TXT
+== cp2
+CP.X DIR1/ソ.TXT NEWD/B.TXT
+== mv
+MV.X NEWD/B.TXT NEWD/C.TXT
+== rm
+RM.X NEWD/ソ.TXT
+== ls_after
+LS.X NEWD
+C.TXT
+== cat_mv
+CAT.X NEWD/C.TXT
+so
+== touch_d
+TOUCH.X -d "2001-02-03 04:05:06" TD.TXT
+== date_r
+DATE.X -r TD.TXT +%Y%m%d%H%M%S
+20010203040506
+== truncate
+TRUNCATE.X -s 2 TR.TXT
+== stat_size
+STAT.X -c %s TR.TXT
+2
+== same_cat
+CAT.X S2.TXT >> S2.TXT
+== same_cat_after
+CAT.X S2.TXT
+x
+== same_cp
+CP.X S2.TXT S2.TXT
+== du
+DU.X -s DIR1
+~[0-9]+\tDIR1
+== df
+DF.X A:
+~Filesystem .*
+~A: .*
+== tee
+TEE.X T1.TXT < S.TXT
+a
+a
+b
+== tee_file
+CAT.X T1.TXT
+a
+a
+b
+== sed
+SED.X -n 2p IN.TXT
+apple 10
+== grep
+GREP.X -c apple IN.TXT
+2
+== join
+JOIN.X J1.TXT J2.TXT
+1 a x
+2 b y
+== comm
+COMM.X -12 S.TXT S.TXT
+a
+a
+b
+== expand
+EXPAND.X -t 4 TAB.TXT
+a   b
+== sleep
+SLEEP.X 0.2
+== true
+TRUE.X

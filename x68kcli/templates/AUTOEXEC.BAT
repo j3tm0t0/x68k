@@ -1,5 +1,5 @@
 ECHO OFF
-PATH A:\;A:\SYS;A:\BIN;A:\USR\BIN;A:\ETC;A:\XC\BIN;A:\XC\CC;A:\USR\GCC295;
+PATH A:\;A:\SYS;A:\USR\BIN;A:\BIN;A:\ETC;A:\XC\BIN;A:\XC\CC;A:\USR\GCC295;
 REM --- 21 文字ファイル名 / マルチピリオド / 特殊文字 (大文字小文字は同一視) ---
 \USR\BIN\TwentyOne.x +TPS -C
 REM --- UNIX 系ツール共通の環境変数 ---

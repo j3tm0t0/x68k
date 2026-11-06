@@ -216,8 +216,6 @@ mkdir -p stage/XC/BIN stage/XC/CC stage/XC/INCLUDE stage/XC/LIB
 for f in AS.X LK.X AR.X LIB.X CV.X DB.X SCD.X SCD.CNF SCD.HLP MAKE.X; do cp "work/xc1/BIN/$f" stage/XC/BIN/; done
 cp work/xc2/CC/CC.X stage/XC/CC/; cp work/xc2/INCLUDE/* stage/XC/INCLUDE/; cp work/xc2/LIB/* stage/XC/LIB/
 
-# --- GNU sed / grep (scripts/xbuild.sh が elf2x68k でクロスビルドしたもの。無ければ入れない) ---
-for f in build/x/sed.x build/x/grep.x; do [ -s "$f" ] && cp "$f" stage/USR/BIN/; done
 # slip.sys (SLIP ドライバ。CONFIG.SYS で ppp.sys の代わりに組み込む: NET=slip make image)
 [ -s build/x/slip.sys ] && cp build/x/slip.sys stage/SYS/slip.sys
 [ -s build/x/slipd.x ] && cp build/x/slipd.x stage/USR/BIN/slipd.x
@@ -229,14 +227,33 @@ for f in build/x/sed.x build/x/grep.x; do [ -s "$f" ] && cp "$f" stage/USR/BIN/;
 [ -s build/x/clear.x ] && cp build/x/clear.x stage/USR/BIN/clear.x
 [ -s build/x/rcc.x ] && cp build/x/rcc.x stage/USR/BIN/rcc.x
 
-# --- ITA TOOLBOX ---
-mkdir -p stage/USR/DOC/ITA
+# --- ITA TOOLBOX (全部を /USR/ITA/BIN に。GNU に無いもの (strings strip colrm rev など) は /USR/BIN にも) ---
+mkdir -p stage/USR/DOC/ITA stage/USR/ITA/BIN
 for a in dl/ita/*; do
   n=$(basename "$a"); n=${n%.*}
   x "$a" "ita/$n"
-  find "work/ita/$n" -name '*.x' -exec cp {} stage/USR/BIN/ \;
+  find "work/ita/$n" -name '*.x' -exec cp {} stage/USR/ITA/BIN/ \; -exec cp {} stage/USR/BIN/ \;
   find "work/ita/$n" -name '*.1' -exec cp {} stage/USR/DOC/ITA/ \;
 done
+
+# --- GNU coreutils / sed / grep (scripts/xbuild.sh が elf2x68k でクロスビルドしたもの。無ければ入れない) ---
+# ITA と同じ名前 (ls cat head tail wc tr cut sort など) は GNU で上書きする。ITA の版は /USR/ITA/BIN に残る。
+# Sharp の FIND.X SORT.X PR.X (/BIN) より先に見つかるよう、AUTOEXEC.BAT の PATH は /USR/BIN を /BIN より前にした。
+# GPL のソースの在りかと許諾は /USR/DOC/GNU に置く
+if ls build/x/gnu/*.x >/dev/null 2>&1; then
+  cp build/x/gnu/*.x stage/USR/BIN/
+  mkdir -p stage/USR/DOC/GNU
+  for t in dl/gnu/*.tar.*; do
+    d=$(tar tf "$t" | head -1 | cut -d/ -f1)
+    tar xf "$t" -C work "$d/COPYING" 2>/dev/null && cp "work/$d/COPYING" stage/USR/DOC/GNU/COPYING && break
+  done
+  { echo "GNU のコマンド (elf2x68k の m68k-xelf-gcc でクロスビルド)。ライセンスは GPL (COPYING)。"
+    echo "ソース: 下の URL の tar (sha256 は sources.txt)。Human68k 向けの直しは"
+    echo "https://github.com/j3tm0t0/x68k の x68kcli/scripts/gnulib_x68k.py と x68kcli/src/xshim (MIT)、組み方は x68kcli/scripts/xbuild.sh。"
+    echo
+    grep '^gnu/' sources.txt | awk '{print $2}'
+  } | sjis /dev/stdin stage/USR/DOC/GNU/SOURCES.TXT
+fi
 
 echo "stage: $(find stage -type f | wc -l | tr -d ' ') files"
 du -sh stage
