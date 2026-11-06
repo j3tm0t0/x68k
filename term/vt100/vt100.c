@@ -985,7 +985,7 @@ static void vs_apply(void)
    * 描くので、写さないと r 行目に前の絵が残り、flush も描き直さない */
   {
     int r;
-#if defined(VT_ZOS) && !defined(VT_HOSTTEST)
+#if 0
     int s = sup_enter();
     /* $09CC は IOCS の作業域 BIOS_TC_MINUTE_COUNTER (XEiJ の misc/include/bioswork.equ)。Timer-C の割り込みで 1/100 秒ごとに 1 ずつ減る */
     unsigned short t0 = *(volatile unsigned short *)0x9cc, d;
@@ -1005,7 +1005,7 @@ static void vs_apply(void)
       lo &= ~1;   /* 偶数番地から (枠の左端は偶数) */
       row_copy(TVRAM + (long)r * vch * VBYTES + lo, TVRAM + (long)(r + n) * vch * VBYTES + lo, vch, (hi - lo + 2) / 2);
     }
-#if defined(VT_ZOS) && !defined(VT_HOSTTEST)
+#if 0
     d = (unsigned short)(t0 - *(volatile unsigned short *)0x9cc);
     if (d > vt_mvmax && d < 30000) vt_mvmax = d;
     sup_leave(s);
