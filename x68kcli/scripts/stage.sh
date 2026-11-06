@@ -227,22 +227,26 @@ cp work/xc2/CC/CC.X stage/XC/CC/; cp work/xc2/INCLUDE/* stage/XC/INCLUDE/; cp wo
 [ -s build/x/clear.x ] && cp build/x/clear.x stage/USR/BIN/clear.x
 [ -s build/x/rcc.x ] && cp build/x/rcc.x stage/USR/BIN/rcc.x
 
-# --- ITA TOOLBOX (全部を /USR/ITA/BIN に。GNU に無いもの (strings strip colrm rev など) は /USR/BIN にも) ---
-mkdir -p stage/USR/DOC/ITA stage/USR/ITA/BIN
+# --- ITA TOOLBOX ---
+mkdir -p stage/USR/DOC/ITA
 for a in dl/ita/*; do
   n=$(basename "$a"); n=${n%.*}
   x "$a" "ita/$n"
-  find "work/ita/$n" -name '*.x' -exec cp {} stage/USR/ITA/BIN/ \; -exec cp {} stage/USR/BIN/ \;
+  find "work/ita/$n" -name '*.x' -exec cp {} stage/USR/BIN/ \;
   find "work/ita/$n" -name '*.1' -exec cp {} stage/USR/DOC/ITA/ \;
 done
 
-# --- GNU coreutils / sed / grep (scripts/xbuild.sh が elf2x68k でクロスビルドしたもの。無ければ入れない) ---
-# ITA と同じ名前 (ls cat head tail wc tr cut sort など) は GNU で上書きする。ITA の版は /USR/ITA/BIN に残る。
+# --- GNU coreutils / sed / grep / findutils / diffutils / gzip (scripts/xbuild.sh が elf2x68k でクロスビルドしたもの。無ければ入れない) ---
+# GNU の .x は 80〜300KB あり、起動に ITA の数倍かかる (XEiJ の SCSI で head 238ms 対 50ms、ls 548ms 対 117ms)。
+# そこで ITA と同じ名前 (ls cat head tail wc tr cut cp mv rm など) は /USR/GNU/BIN に置き、/USR/BIN は ITA のまま。
+# GNU の版を先に使うなら PATH の先頭に A:/usr/gnu/bin を足す。ITA に無いもの (sort find xargs diff gzip env seq など) は /USR/BIN に。
 # Sharp の FIND.X SORT.X PR.X (/BIN) より先に見つかるよう、AUTOEXEC.BAT の PATH は /USR/BIN を /BIN より前にした。
 # GPL のソースの在りかと許諾は /USR/DOC/GNU に置く
 if ls build/x/gnu/*.x >/dev/null 2>&1; then
-  cp build/x/gnu/*.x stage/USR/BIN/
-  mkdir -p stage/USR/DOC/GNU
+  mkdir -p stage/USR/GNU/BIN stage/USR/DOC/GNU
+  for f in build/x/gnu/*.x; do
+    if [ -e "stage/USR/BIN/$(basename "$f")" ]; then cp "$f" stage/USR/GNU/BIN/; else cp "$f" stage/USR/BIN/; fi
+  done
   for t in dl/gnu/*.tar.*; do
     d=$(tar tf "$t" | head -1 | cut -d/ -f1)
     tar xf "$t" -C work "$d/COPYING" 2>/dev/null && cp "work/$d/COPYING" stage/USR/DOC/GNU/COPYING && break
@@ -250,6 +254,7 @@ if ls build/x/gnu/*.x >/dev/null 2>&1; then
   { echo "GNU のコマンド (elf2x68k の m68k-xelf-gcc でクロスビルド)。ライセンスは GPL (COPYING)。"
     echo "ソース: 下の URL の tar (sha256 は sources.txt)。Human68k 向けの直しは"
     echo "https://github.com/j3tm0t0/x68k の x68kcli/scripts/gnulib_x68k.py と x68kcli/src/xshim (MIT)、組み方は x68kcli/scripts/xbuild.sh。"
+    echo "ITA TOOLBOX と同じ名前のものは /usr/gnu/bin にある。"
     echo
     grep '^gnu/' sources.txt | awk '{print $2}'
   } | sjis /dev/stdin stage/USR/DOC/GNU/SOURCES.TXT

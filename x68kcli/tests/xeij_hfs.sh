@@ -13,7 +13,7 @@ OUT=${OUT:-${TMPDIR:-/tmp}/x68kcli-test}
 B=$OUT/boot
 JAVA=java; [ -x /opt/homebrew/opt/openjdk/bin/java ] && JAVA=/opt/homebrew/opt/openjdk/bin/java
 [ -f "$XEIJ/XEiJ.jar" ] || { echo "XEiJ が見つからない: $XEIJ (make tools)"; exit 1; }
-rm -rf "$B" "$OUT/tmp"; mkdir -p "$B" "$OUT/tmp"
+rm -rf "$B" "$OUT/tmp"; mkdir -p "$B/TMP" "$OUT/tmp"   # A:\TMP は zosh のパイプの一時ファイルの置き場
 cp "$XEIJ/data/HUMAN.SYS" "$XEIJ/data/COMMAND.X" "$B/"
 for f in ${FILES:-}; do cp "$f" "$B/$(basename "$f" | tr a-z A-Z)"; done
 for d in ${DIRS:-}; do cp -R "$d" "$B/"; done
