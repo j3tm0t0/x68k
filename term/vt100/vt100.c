@@ -955,6 +955,10 @@ static void row_copy(volatile unsigned char *dst, volatile unsigned char *src, i
     }
 #endif
 }
+/* 1: スクロールで VRAM を写すとき、違うセルの範囲でなく全部写す。VRAM に drawn の知らない絵があるときに立てる:
+ * zos.x はペインの中の ssh.x などが _B_DOWN_S を呼ぶと、そのペインの端末でスクロールして VRAM を動かす。そこにあるのは
+ * ssh.x が自分で描いた絵で、zos.x の端末の drawn は知らない (違うセルだけ写すと ssh.x の絵が動かなかった) */
+int vt_fullmove;
 #if defined(VT_ZOS) && !defined(VT_HOSTTEST)
 int vt_mvmax;   /* 測り: ソフトで写したスクロール 1 回にかかった時間の最大 (1/100 秒)。zos.x の -o と試験 (split_test.sh) が読む */
 #endif
@@ -965,7 +969,14 @@ static void vs_apply(void)
   /* XOR のカーソルが残っていると、VRAM と一緒に動いて別の行に残り、後で消すとき元の位置の別の字を反転してしまう */
   if (csr_shown && !VT_HIDDEN) { cursor_xor(csr_x, csr_y); csr_shown = 0; }
   if (n <= 0 || n >= h) return;
-  if (RAS_OK() || vt_small) { vram_move_lines(vs_top * vch, (vs_top + n) * vch, (h - n) * vch); return; }
+  /* 違うセルだけ写すのは zos.x の端末 (VT_ZOS) だけ。ssh.x などの端末は、zos.x がペインに描いた字 (DOS で出した知らせなど) を
+   * drawn が知らないことがあるので、前のとおり全部写す */
+#if defined(VT_ZOS) || defined(VT_HOSTTEST)
+  if (RAS_OK() || vt_small || vt_fullmove) { vram_move_lines(vs_top * vch, (vs_top + n) * vch, (h - n) * vch); return; }
+#else
+  vram_move_lines(vs_top * vch, (vs_top + n) * vch, (h - n) * vch);
+  return;
+#endif
   /* ソフトで写すとき (zos.x で左右に割ったペインなど) は、行ごとに、今の絵と違うセルの範囲だけ写す。1 画面 (47 桁 x 30 行) を
    * 全部写すと XEiJ の 10MHz で 150ms ほどかかり、その間は写し終えた行と写す前の行の境目で同じ行が 2 回見えた。
    * drawn はもう n 行回してあるので、drawn[r] は VRAM の r + n 行目の絵 (写すもの)、drawn[r - n] は VRAM の r 行目の今の絵。
