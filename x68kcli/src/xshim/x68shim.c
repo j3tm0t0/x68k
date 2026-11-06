@@ -245,6 +245,7 @@ int pthread_join(pthread_t t, void **r) { (void)t; (void)r; return ESRCH; }
 
 /* exec*: Human68k には exec が無いので、_EXEC で子として動かし、その終了コードで自分も終わる。
    名前は PATH から探す (拡張子が無ければ .x、.r の順) */
+static int endsep(const char *p);
 static int findprog(const char *name, char *out, size_t n)
 {
     static const char *ext[] = { "", ".x", ".r", NULL };
@@ -260,12 +261,18 @@ static int findprog(const char *name, char *out, size_t n)
     }
     path = getenv("PATH");
     if (!path) path = "";
+    /* 区切りは ; と : (zosh と同じ)。ただし要素の先頭の "A:" のようなドライブ名の : は区切りではない */
     for (p = path; ; ) {
         const char *e = p;
-        while (*e && *e != ';') e++;
+        char dir[256];
+        size_t k;
+        if (isalpha((unsigned char)p[0]) && p[1] == ':') e = p + 2;
+        while (*e && *e != ';' && *e != ':') e++;
+        k = (size_t)(e - p) < sizeof dir ? (size_t)(e - p) : sizeof dir - 1;
+        memcpy(dir, p, k); dir[k] = 0;
         for (i = 0; ext[i]; i++) {
-            if (e == p) snprintf(out, n, "%s%s", name, ext[i]);
-            else snprintf(out, n, "%.*s%s%s%s", (int)(e - p), p, (e[-1] == '/' || e[-1] == '\\') ? "" : "/", name, ext[i]);
+            if (!k) snprintf(out, n, "%s%s", name, ext[i]);
+            else snprintf(out, n, "%s%s%s%s", dir, endsep(dir) ? "" : "/", name, ext[i]);
             if (stat(out, &st) == 0 && !S_ISDIR(st.st_mode)) return 0;
         }
         if (!*e) break;

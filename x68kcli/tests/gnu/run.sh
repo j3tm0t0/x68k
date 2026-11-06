@@ -28,7 +28,7 @@ cases = []
 cur = None
 for line in open(src, encoding='utf-8'):
     line = line.rstrip('\n')
-    if line.startswith('#') and cur is None: continue
+    if line.startswith('#') and (cur is None or cur[1] is None): continue
     if line.startswith('== '):
         cur = [line[3:].strip(), None, []]; cases.append(cur); continue
     if cur is None: continue
@@ -50,9 +50,10 @@ FILES="$(ls "$X"/build/x/gnu/*.x | tr '\n' ' ') $(ls "$I"/*.* | tr '\n' ' ')" DI
 python3 -I - "$OUT" <<'PY'
 import sys, re, os
 out = sys.argv[1]
-ok = ng = 0
+ok = ng = xf = 0
 for line in open(out + '/cases.tsv', encoding='utf-8'):
     i, n, exp = line.rstrip('\n').split('\t', 2)
+    xfail = n.endswith(' xfail'); n = n.split()[0]
     exp = exp.split('\x1f') if exp else []
     p = '%s/boot/R%03d.TXT' % (out, int(i))
     if not exp and not os.path.exists(p):   # 出力を見ない行 (後の行で結果を見る)
@@ -64,8 +65,9 @@ for line in open(out + '/cases.tsv', encoding='utf-8'):
     got = [g.rstrip(' ') for g in got]   # 行末の空白は比べない (cases.txt に書けないので)
     good = len(got) == len(exp) and all(re.fullmatch(e[1:], g) if e.startswith('~') else e == g for e, g in zip(exp, got))
     if good: ok += 1; print('ok   %s' % n)
+    elif xfail: xf += 1; print('XFAIL %s' % n)
     else:
         ng += 1; print('FAIL %-16s 期待 %r\n     %-16s 出力 %r' % (n, exp, '', got))
-print('%d ok, %d FAIL' % (ok, ng))
+print('%d ok, %d FAIL, %d XFAIL (わかっている失敗)' % (ok, ng, xf))
 sys.exit(1 if ng else 0)
 PY

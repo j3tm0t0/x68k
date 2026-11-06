@@ -1,6 +1,7 @@
 # GNU の道具の試験 (COMMAND.X から 1 行ずつ動かす)。run.sh が読む。
 # "== 名前" の次の行がコマンド (標準出力を R名前.TXT に受ける)、その後ろが期待する出力 (CR は落として比べる)。
 # 期待の行が "~" で始まるときは、その行を正規表現として出力の同じ行と比べる。行末の空白は比べない。
+# 名前の後ろに xfail と書いた項目は、いまは通らないとわかっているもの (落ちても全体は失敗にしない)。
 # 自分で > を書いた行は出力を見ない (期待は空にして、後の行で結果を見る)。
 # 入力 (run.sh が作る): IN.TXT (CR LF) / NUM.TXT / S.TXT (a a b) / BIN.DAT (00 0d 0a ff) / DIR1 (A.TXT 表.TXT ソ.TXT)
 == sort
@@ -209,8 +210,9 @@ TRUNCATE.X -s 2 TR.TXT
 STAT.X -c %s TR.TXT
 2
 == same_cat
+# cat a >> a: シェルが開いた出力の名前が分からず、同じファイルだと判定できない (GNU は "input file is output file" で止める)
 CAT.X S2.TXT >> S2.TXT
-== same_cat_after
+== same_cat_after xfail
 CAT.X S2.TXT
 x
 == same_cp
@@ -350,3 +352,6 @@ FIND.X 表
 DU.X -a 表
 ~[0-9]+\t表/A.TXT
 ~[0-9]+\t表
+== env_path_colon
+ENV.X PATH=A:/NOPE:A:/ FOO=bar PRINTENV.X FOO
+bar
