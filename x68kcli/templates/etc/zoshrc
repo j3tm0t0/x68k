@@ -6,6 +6,9 @@ alias dir='ls -alF'
 alias vi='vim.x -T builtin_x68k'
 alias vim='vim.x -T builtin_x68k'
 alias less='vim.x -T builtin_x68k -R'
+# less の v や sdiff などが使うエディタ
+export EDITOR=vim.x
+export VISUAL=vim.x
 alias awk='gawk.x'
 alias h='history'
 # C コンパイラ: gcc = 真里子版 1.42 (-lgcc2 を後ろに付けないとリンクで __ltdf2 などが足りない)、gcc295 = GCC 2.95.2 (68020 以上専用)、cc = XC 2.1

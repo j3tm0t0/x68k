@@ -1,0 +1,5 @@
+" vim (3.0 x68.7) の全体の設定。vim.x と同じディレクトリに置くと読む ($VIM68_EXECDIR/vimrc)
+" TwentyOne.x が無くても予備 (.bak) と .swp が作れるように、8+3 の名前にする
+set shortname
+" TERM が vt100 などでも、矢印とファンクションキーが届く内蔵の端末の設定を使う
+set term=builtin_x68k
