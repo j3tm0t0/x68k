@@ -259,19 +259,29 @@ if ls build/x/gnu/*.x >/dev/null 2>&1; then
   for f in build/x/gnu/*.x; do
     if [ -e "stage/USR/BIN/$(basename "$f")" ]; then cp "$f" stage/USR/GNU/BIN/; else cp "$f" stage/USR/BIN/; fi
   done
-  # GPL のソース一式 (元の tar と、Human68k 向けの直しと組み方) を image の中にも入れる。
-  # 名前は 18+3 文字に収まるように *.tar.xz を *.txz にする
+  # ソース一式 (元の tar と、Human68k 向けの直しと組み方) と、それぞれの許諾を image の中にも入れる。
+  # 入れるのは sources.txt の gnu/ の行の tar (dl/ にほかの tar があっても入れない)。
+  # tar の名前は 18+3 文字に収まるように *.tar.xz を *.txz、*.tar.gz を *.tgz にする。許諾は USR/DOC/GNU/<名前>/
   mkdir -p stage/USR/SRC/GNU/X68K/include/sys
-  for t in dl/gnu/*.tar.xz; do b=$(basename "$t" .tar.xz); cp "$t" "stage/USR/SRC/GNU/$b.txz"; done
-  for t in dl/gnu/*.tar.gz; do [ -e "$t" ] || continue; b=$(basename "$t" .tar.gz); cp "$t" "stage/USR/SRC/GNU/$b.tgz"; done
   cp scripts/xbuild.sh scripts/gnulib_x68k.py src/xshim/x68shim.c stage/USR/SRC/GNU/X68K/
   cp src/xshim/include/sys/*.h stage/USR/SRC/GNU/X68K/include/sys/
-  for t in dl/gnu/*.tar.*; do
-    d=$(tar tf "$t" | head -1 | cut -d/ -f1)
-    tar xf "$t" -C work "$d/COPYING" 2>/dev/null && cp "work/$d/COPYING" stage/USR/DOC/GNU/COPYING && break
+  grep '^gnu/' sources.txt | awk '{print $1}' | while read -r rel; do
+    t=dl/$rel; [ -s "$t" ] || continue
+    case "$t" in *.tar.xz) b=$(basename "$t" .tar.xz); cp "$t" "stage/USR/SRC/GNU/$b.txz";;
+                 *.tar.gz) b=$(basename "$t" .tar.gz); cp "$t" "stage/USR/SRC/GNU/$b.tgz";; esac
+    n=${b%-*}; d=$(tar tf "$t" | head -1 | cut -d/ -f1)
+    mkdir -p "stage/USR/DOC/GNU/$n"
+    for l in COPYING LICENSE; do
+      if tar xf "$t" -C work "$d/$l" 2>/dev/null; then cp "work/$d/$l" "stage/USR/DOC/GNU/$n/$l"; fi
+    done
   done
-  { echo "GNU のコマンド (elf2x68k の m68k-xelf-gcc でクロスビルド)。ライセンスは GPL (COPYING)。"
-    echo "ソース: /usr/src/gnu/*.txz (下の URL の tar と同じもの。sha256 は sources.txt)。Human68k 向けの直しと組み方は /usr/src/gnu/x68k/ と"
+  { echo "elf2x68k の m68k-xelf-gcc でクロスビルドしたコマンド。許諾はそれぞれ /usr/doc/gnu/<名前>/ の COPYING か LICENSE。"
+    echo "  sed grep coreutils findutils diffutils gzip patch bc: GPL (GNU)"
+    echo "  less: GPLv3 か Less License のどちらか (less/LICENSE)"
+    echo "  file: BSD 2 条項 (file/COPYING)"
+    echo "  vim (vim9.x): Vim License (vim/LICENSE、GPL と両立)。Human68k 向けに直してある (直しは下の gnulib_x68k.py と x68shim.c、"
+    echo "       問い合わせは https://github.com/j3tm0t0/x68k へ。元の Vim の作者ではない)"
+    echo "ソース: /usr/src/gnu/*.txz と *.tgz (下の URL の tar と同じもの。sha256 は sources.txt)。Human68k 向けの直しと組み方は /usr/src/gnu/x68k/ と"
     echo "https://github.com/j3tm0t0/x68k の x68kcli/scripts/gnulib_x68k.py と x68kcli/src/xshim (MIT)、組み方は x68kcli/scripts/xbuild.sh。"
     echo "ITA TOOLBOX と同じ名前のものは /usr/gnu/bin にある。"
     echo
