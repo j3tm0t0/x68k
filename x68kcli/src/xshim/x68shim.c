@@ -382,6 +382,7 @@ static time_t dos2time(unsigned date, unsigned tm)
     t = (time_t)days * 86400 + (tm >> 11) * 3600 + ((tm >> 5) & 63) * 60 + (tm & 31) * 2;
     if (tz) {   /* "JST-9" "EST5" "UTC" "XXX-9:30": 英字の後の符号付きの時 (と分) が、UTC から引く時間 */
         int sign = 1, h = 0, mi = 0;
+        if (*tz == '<') { while (*tz && *tz != '>') tz++; if (*tz) tz++; }   /* "<+09>-9" の形: <> の中は名前 */
         while (*tz && !(*tz == '+' || *tz == '-' || (*tz >= '0' && *tz <= '9'))) tz++;
         if (*tz == '-') { sign = -1; tz++; } else if (*tz == '+') tz++;
         while (*tz >= '0' && *tz <= '9') h = h * 10 + (*tz++ - '0');
@@ -397,6 +398,10 @@ static int lean_stat(const char *path, struct stat *st)
     if (_dos_files(&fb, path, 0x37) < 0) { errno = ENOENT; return -1; }
     memset(st, 0, sizeof *st);
     st->st_mode = (fb.atr & 0x10) ? (S_IFDIR | 0777) : (S_IFREG | ((fb.atr & 1) ? 0444 : 0666));
+    if (!(fb.atr & 0x10)) {   /* libx68k と同じく、.x と .z は実行できるファイル (ls -l、test -x、find -perm) */
+        size_t n = strlen(path);
+        if (n > 2 && path[n - 2] == '.' && strchr("xXzZ", path[n - 1])) st->st_mode |= 0111;
+    }
     st->st_nlink = 1;
     st->st_size = (fb.atr & 0x10) ? 0 : fb.filelen;
     st->st_blksize = 512;
