@@ -5,7 +5,10 @@
 #   x68mouse drag 100 0 [b]     押して動かして離す
 #   x68mouse wheel -3           x68mouse step 1-127 / rate ms (以後のコマンドにも残る)
 #   x68mouse home               左上の隅へ (大きく動かして画面の端で止める)
-#   x68mouse goto X Y           home のあと X, Y だけ動かす (X68MOUSE_SCALE 倍。既定 1。Z で何ドット動くかは実機で合わせる)
+#   x68mouse to X Y             画面のドット (0-767, 0-511) へ。home してから Z で測った換算で動かす (ファーム 20250908-59 以降)
+#   x68mouse by DX DY           今の場所からドットで動かす (ボタンを押したままでもよい: down → by → up でドラッグ)
+#   x68mouse tap MS             クリックの押す・離す時間 (既定 100。50 ではダブルクリックが落ちる)
+#   x68mouse goto X Y           home のあと move X*X68MOUSE_SCALE (古い形。move は 1 単位が 1 ドットにならないので to を使う)
 # 宛先は x68key と同じ (-t 名前か IP、PICOKBD、~/.x68key の default)。送るのは x68key。終わると "ok" を表示する
 X68KEY=${X68KEY:-$(dirname "$0")/x68key}
 [ -x "$X68KEY" ] || X68KEY=x68key
