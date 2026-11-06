@@ -247,12 +247,18 @@ if ls build/x/gnu/*.x >/dev/null 2>&1; then
   for f in build/x/gnu/*.x; do
     if [ -e "stage/USR/BIN/$(basename "$f")" ]; then cp "$f" stage/USR/GNU/BIN/; else cp "$f" stage/USR/BIN/; fi
   done
+  # GPL のソース一式 (元の tar と、Human68k 向けの直しと組み方) を image の中にも入れる。
+  # 名前は 18+3 文字に収まるように *.tar.xz を *.txz にする
+  mkdir -p stage/USR/SRC/GNU/X68K/include/sys
+  for t in dl/gnu/*.tar.xz; do b=$(basename "$t" .tar.xz); cp "$t" "stage/USR/SRC/GNU/$b.txz"; done
+  cp scripts/xbuild.sh scripts/gnulib_x68k.py src/xshim/x68shim.c stage/USR/SRC/GNU/X68K/
+  cp src/xshim/include/sys/*.h stage/USR/SRC/GNU/X68K/include/sys/
   for t in dl/gnu/*.tar.*; do
     d=$(tar tf "$t" | head -1 | cut -d/ -f1)
     tar xf "$t" -C work "$d/COPYING" 2>/dev/null && cp "work/$d/COPYING" stage/USR/DOC/GNU/COPYING && break
   done
   { echo "GNU のコマンド (elf2x68k の m68k-xelf-gcc でクロスビルド)。ライセンスは GPL (COPYING)。"
-    echo "ソース: 下の URL の tar (sha256 は sources.txt)。Human68k 向けの直しは"
+    echo "ソース: /usr/src/gnu/*.txz (下の URL の tar と同じもの。sha256 は sources.txt)。Human68k 向けの直しと組み方は /usr/src/gnu/x68k/ と"
     echo "https://github.com/j3tm0t0/x68k の x68kcli/scripts/gnulib_x68k.py と x68kcli/src/xshim (MIT)、組み方は x68kcli/scripts/xbuild.sh。"
     echo "ITA TOOLBOX と同じ名前のものは /usr/gnu/bin にある。"
     echo

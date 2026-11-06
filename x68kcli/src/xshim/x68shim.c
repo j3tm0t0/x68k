@@ -538,8 +538,10 @@ static int dirfd_close(int fd)
     return 0;
 }
 /* ドライブも移る chdir (_CHDIR は今のドライブを変えない) */
+static void save_start_cwd(void);
 static int chdir_drive(const char *p)
 {
+    save_start_cwd();   /* ドライブを移す前に、戻る先を覚える */
     if (p[0] && p[1] == ':') _dos_chgdrv(toupper((unsigned char)p[0]) - 'A');
     return chdir(p);
 }
@@ -580,6 +582,17 @@ int fchdir(int fd)
 /* *at 関数と fdopendir / dirfd: 上の仮の番号のフルパスに名前をつないで、ふつうの関数を呼ぶ。
    gnulib の代わりの版 (fchdir で移って戻る) は fts の中で途中で止まったので、こちらで用意する */
 #include <dirent.h>
+/* 最後の文字が区切り (\ か /) か。Shift_JIS の 2 バイト目の 5C (表 = 95 5C) は区切りではない */
+static int endsep(const char *p)
+{
+    const unsigned char *q = (const unsigned char *)p;
+    int sep = 0;
+    for (; *q; q++) {
+        if (((*q >= 0x81 && *q <= 0x9f) || (*q >= 0xe0 && *q <= 0xfc)) && q[1]) { q++; sep = 0; continue; }
+        sep = *q == '\\' || *q == '/';
+    }
+    return sep;
+}
 static int atpath(int dfd, const char *name, char *out, size_t n)
 {
     const char *base;
@@ -593,7 +606,7 @@ static int atpath(int dfd, const char *name, char *out, size_t n)
     k = strlen(base);
     if (k + 1 + strlen(name) >= n) { errno = ENAMETOOLONG; return -1; }
     strcpy(out, base);
-    if (k && base[k - 1] != '\\' && base[k - 1] != '/') out[k++] = '\\';
+    if (k && !endsep(base)) out[k++] = '\\';
     strcpy(out + k, name);
     return 0;
 }
@@ -664,7 +677,11 @@ DIR *__wrap_opendir(const char *path)
             if (!__real_getcwd(abs, sizeof abs)) abs[0] = 0;
             chdir_drive(old);
         }
-        dirmap_add(d, -1, abs[0] ? abs : NULL);
+        {   /* emptydir() は登録済みなので、その項目にパスを入れる */
+            int i = dirmap_find(d);
+            if (i >= 0) { if (abs[0] && !dirmap[i].path) dirmap[i].path = strdup(abs); }
+            else dirmap_add(d, -1, abs[0] ? abs : NULL);
+        }
     }
     return d;
 }
@@ -722,12 +739,16 @@ void __wrap_rewinddir(DIR *d)
 static char start_cwd[256];
 static int start_saved;
 int __real_chdir(const char *);
-int __wrap_chdir(const char *p)
+static void save_start_cwd(void)
 {
     if (!start_saved) {
         start_saved = 1;
         if (!__real_getcwd(start_cwd, sizeof start_cwd)) start_cwd[0] = 0;
     }
+}
+int __wrap_chdir(const char *p)
+{
+    save_start_cwd();
     return __real_chdir(p);
 }
 void __real_exit(int) __attribute__((noreturn));

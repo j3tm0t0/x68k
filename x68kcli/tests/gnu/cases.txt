@@ -338,3 +338,15 @@ DU.X EMP
 RM.X -r EMP
 == ls_empty_gone
 LS.X -d EMP
+== mkdir_sjis
+MKDIR.X 表
+== cp_sjis_dir
+CP.X DIR1/A.TXT 表/A.TXT
+== find_sjis_dir
+FIND.X 表
+表
+表/A.TXT
+== du_sjis_dir
+DU.X -a 表
+~[0-9]+\t表/A.TXT
+~[0-9]+\t表
