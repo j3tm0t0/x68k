@@ -24,6 +24,7 @@ def ed1(p, old, new, count=1, guard=None):
         return
     s = open(p, encoding='utf-8', errors='surrogateescape').read()
     if old in s and not (guard and guard in s):
+        os.chmod(p, os.stat(p).st_mode | 0o200)   # less の tar は読み込み専用で展開される (実行の許可は残す)
         open(p, 'w', encoding='utf-8', errors='surrogateescape').write(s.replace(old, new, count))
 
 
@@ -227,3 +228,56 @@ int
 fnmatch (const char *pattern, const char *string, int flags)
 {
 ''', guard='fnmatch_sjis')
+
+# --- patch: newlib に getrlimit が無い。開いたディレクトリの控えの数は決め打ち ---
+ed('src/safe.c', 'static rlim_t min_cached_fds = 8;\nstatic rlim_t max_cached_fds;', 'static unsigned long min_cached_fds = 8;\nstatic unsigned long max_cached_fds;')
+ed('src/safe.c', '''  struct rlimit nofile;
+
+  if (getrlimit (RLIMIT_NOFILE, &nofile) == 0)
+    {
+      if (nofile.rlim_cur == RLIM_INFINITY)
+        max_cached_fds = RLIM_INFINITY;
+      else
+	max_cached_fds = MAX (nofile.rlim_cur / 4, min_cached_fds);
+    }
+  else
+    max_cached_fds = min_cached_fds;''', '''#ifdef __human68k__
+  max_cached_fds = min_cached_fds;
+#else
+  struct rlimit nofile;
+
+  if (getrlimit (RLIMIT_NOFILE, &nofile) == 0)
+    {
+      if (nofile.rlim_cur == RLIM_INFINITY)
+        max_cached_fds = RLIM_INFINITY;
+      else
+	max_cached_fds = MAX (nofile.rlim_cur / 4, min_cached_fds);
+    }
+  else
+    max_cached_fds = min_cached_fds;
+#endif''')
+ed('src/safe.c', '  if (max_cached_fds != RLIM_INFINITY)', '#ifndef RLIM_INFINITY\n# define RLIM_INFINITY ((unsigned long) -1)\n#endif\n  if (max_cached_fds != RLIM_INFINITY)')
+
+# --- less: Shift_JIS をそのまま通す。LESSCHARDEF で 0x80-0xFF を全部「印字できる字」(1 バイト 1 桁) にすると、
+# 全角 (2 バイト) は 2 桁、半角カナ (1 バイト) は 1 桁で、Human68k の画面と合う (latin1 は 0x80-0x9F を制御文字と見る) ---
+ed('main.c', '\tno_config = lgetenv("LESSNOCONFIG");', '#ifdef __human68k__\n\tif (getenv("LESSCHARSET") == NULL && getenv("LESSCHARDEF") == NULL)\n\t\tsetenv("LESSCHARDEF", "8bcccbcc18b95.b128.", 0);\n#endif\n\tno_config = lgetenv("LESSNOCONFIG");')
+# patch の一時ファイル: 元の名前に ".oXXXXXX" を足すと 8+3 の名前にならない (TwentyOne が無いと作れない)。
+# 同じディレクトリに "poXXXXXX" (8 文字、拡張子なし) で作る
+ed('src/util.c', '''      for (char const *p = last; *p; p++)
+	t += (*t = *p) != '\\n';
+      sprintf (t, ".%cXXXXXX", letter);''', '''#ifdef __human68k__
+      sprintf (t, "p%cXXXXXX", letter);
+#else
+      for (char const *p = last; *p; p++)
+	t += (*t = *p) != '\\n';
+      sprintf (t, ".%cXXXXXX", letter);
+#endif''')
+
+# --- file: der.h の宣言は int、der.c の定義は int32_t。m68k の newlib では int32_t が long なので合わない ---
+ed('src/der.h', 'file_protected int der_offs(struct magic_set *, struct magic *, size_t);', 'file_protected int32_t der_offs(struct magic_set *, struct magic *, size_t);')
+# file: MAGIC の区切りは ; (A:/... の : で切れる)。名前は argv[0] (A:\USR\BIN\FILE.X) から "file" を作る
+ed('src/file.h', '#if defined(__EMX__) || defined (WIN32)\n#define PATHSEP\t\';\'', '#if defined(__EMX__) || defined (WIN32) || defined(__human68k__)\n#define PATHSEP\t\';\'')
+ed('src/file.c', "\tif ((progname = strrchr(argv[0], '/')) != NULL)\n\t\tprogname++;\n\telse\n\t\tprogname = argv[0];",
+   "#ifdef __human68k__\n\t{\n\t\textern const char *x68_progname(const char *);\n\t\tprogname = x68_progname(argv[0]);\n\t}\n#else\n\tif ((progname = strrchr(argv[0], '/')) != NULL)\n\t\tprogname++;\n\telse\n\t\tprogname = argv[0];\n#endif")
+# patch: 256KB の読み込みの区切りを bss に持ち、起動のたびに 0 で埋めるので 1 回 1.4 秒かかっていた。32KB にする
+ed('src/util.h', 'enum { IO_BUFSIZE = 256 * 1024 };', 'enum { IO_BUFSIZE = 32 * 1024 };')

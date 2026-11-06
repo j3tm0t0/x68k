@@ -17,6 +17,10 @@ printf '1 a\n2 b\n' > "$I/J1.TXT"; printf '1 x\n2 y\n' > "$I/J2.TXT"
 printf 'a\tb\n' > "$I/TAB.TXT"
 printf 'a\nb\n' > "$I/S3.TXT"
 printf 'gz\n' > "$I/G.TXT"
+printf 'a\nb\nc\n' > "$I/D1.TXT"; printf 'a\nB\nc\n' > "$I/D2.TXT"; printf 'a\nb\nC\n' > "$I/D3.TXT"
+printf '2^10\nscale=3\n1/3\nquit\n' > "$I/BCIN.TXT"
+printf '\223\372\226\173\214\352\r\n' > "$I/SJ.TXT"   # 日本語 (Shift_JIS)
+cp "$X/src/magic/magic" "$I/MAGIC.TXT"
 printf 'a\r\n' > "$I/DIR1/A.TXT"
 # XEiJ のホストファイルシステムは、Human68k の Shift_JIS の名前をホストでは UTF-8 の名前にする
 printf 'hyo\r\n' > "$I/DIR1/表.TXT"

@@ -1,0 +1,68 @@
+# file(1) の型の表 (Human68k / Z-OS 向けの小さい版)。file-5.46 の magic/Magdir の全部 (.mgc で 10MB) は X68000 では
+# 読み込みに時間がかかりすぎるので、よく見るものだけ。書式は magic(5)。A:/usr/share/misc/magic に文字のまま置く
+
+# --- Human68k ---
+0	string	HU\0\0		Human68k executable (.x)
+0	beshort	0x601a		Human68k .z executable
+# HDS (SCSI のディスクイメージ) と XDF
+0	string	X68SCSI1	X68000 SCSI disk image (HDS)
+# PIC (X68000 の画像)
+0	string	PIC		X68000 PIC image
+# MDX (X68000 の音楽)。曲名の後ろに 0x0d 0x0a 0x1a
+# (先頭に決まった並びが無いので判定しない)
+
+# --- アーカイブと圧縮 ---
+2	string	-lh0-		LHa archive data [lh0]
+2	string	-lh5-		LHa archive data [lh5]
+2	string	-lh6-		LHa archive data [lh6]
+2	string	-lh7-		LHa archive data [lh7]
+2	string	-lzs-		LHa archive data [lzs]
+0	string	PK\003\004	Zip archive data
+0	string	PK\005\006	Zip archive data (empty)
+0	string	\037\213	gzip compressed data
+>3	byte&0x08	0x08	\b, with original name
+0	string	BZh		bzip2 compressed data
+0	string	\3757zXZ\0	XZ compressed data
+0	string	\037\235	compress'd data
+257	string	ustar		POSIX tar archive
+0	string	7z\274\257\047\034	7-zip archive data
+0	string	Rar!		RAR archive data
+
+# --- 画像・文書 ---
+0	string	\x89PNG\x0d\x0a\x1a\x0a	PNG image data
+>16	belong	x		\b, %d x
+>20	belong	x		%d
+0	string	GIF87a		GIF image data, version 87a
+0	string	GIF89a		GIF image data, version 89a
+0	beshort	0xffd8		JPEG image data
+0	string	BM		PC bitmap
+0	string	%PDF-		PDF document
+>5	string	x		\b, version %.3s
+0	string	%!PS		PostScript document
+0	string	RIFF		RIFF data
+>8	string	WAVE		\b, WAVE audio
+0	string	ID3		Audio file with ID3 version 2
+0	string	OggS		Ogg data
+0	string	fLaC		FLAC audio
+
+# --- 実行形式 (ほかの機械) ---
+0	string	\177ELF		ELF
+>4	byte	1		32-bit
+>4	byte	2		64-bit
+>5	byte	1		LSB
+>5	byte	2		MSB
+>18	beshort	4		\b, Motorola m68k
+0	string	MZ		MS-DOS executable
+0	belong	0xcafebabe	Java class data or Mach-O universal binary
+0	belong	0xfeedfacf	Mach-O 64-bit
+0	lelong	0xfeedfacf	Mach-O 64-bit
+
+# --- スクリプト ---
+0	string/w	#!\ /bin/sh	POSIX shell script text executable
+0	string/w	#!/bin/sh	POSIX shell script text executable
+0	string/w	#!/bin/bash	Bourne-Again shell script text executable
+0	string/w	#!/usr/bin/env	script text executable (env)
+0	string/w	#!/usr/bin/python	Python script text executable
+0	string/wt	\<!DOCTYPE\ html	HTML document text
+0	string/wct	\<html		HTML document text
+0	string/t	\<?xml		XML document text

@@ -58,7 +58,11 @@ if [ "${PROFILE:-cli}" = dev ]; then
 fi
 crlf work/AUTOEXEC.BAT stage/AUTOEXEC.BAT
 crlf templates/STARTUP.ENV  stage/STARTUP.ENV
-for f in zshenv zshrc fishrc profile kshrc zoshrc; do sjis templates/etc/$f stage/ETC/$f; done
+for f in zshenv zshrc fishrc profile kshrc zoshrc; do
+  # GNU less (scripts/xbuild.sh) があれば、less を vim -R で代用する別名は入れない
+  if [ -s build/x/gnu/less.x ]; then grep -v "^alias less=" templates/etc/$f > work/$f.tmp; else cp templates/etc/$f work/$f.tmp; fi
+  sjis work/$f.tmp stage/ETC/$f
+done
 # ホームディレクトリのサンプル (hello.c など)
 for f in templates/home/*; do crlf "$f" "stage/HOME/$(basename "$f")"; done
 
@@ -243,7 +247,8 @@ done
 # Sharp の FIND.X SORT.X PR.X (/BIN) より先に見つかるよう、AUTOEXEC.BAT の PATH は /USR/BIN を /BIN より前にした。
 # GPL のソースの在りかと許諾は /USR/DOC/GNU に置く
 if ls build/x/gnu/*.x >/dev/null 2>&1; then
-  mkdir -p stage/USR/GNU/BIN stage/USR/DOC/GNU
+  mkdir -p stage/USR/GNU/BIN stage/USR/DOC/GNU stage/USR/SHARE/MISC
+  cp src/magic/magic stage/USR/SHARE/MISC/magic   # file の型の表 (文字のまま。src/magic/magic の頭に理由)
   for f in build/x/gnu/*.x; do
     if [ -e "stage/USR/BIN/$(basename "$f")" ]; then cp "$f" stage/USR/GNU/BIN/; else cp "$f" stage/USR/BIN/; fi
   done
@@ -251,6 +256,7 @@ if ls build/x/gnu/*.x >/dev/null 2>&1; then
   # 名前は 18+3 文字に収まるように *.tar.xz を *.txz にする
   mkdir -p stage/USR/SRC/GNU/X68K/include/sys
   for t in dl/gnu/*.tar.xz; do b=$(basename "$t" .tar.xz); cp "$t" "stage/USR/SRC/GNU/$b.txz"; done
+  for t in dl/gnu/*.tar.gz; do [ -e "$t" ] || continue; b=$(basename "$t" .tar.gz); cp "$t" "stage/USR/SRC/GNU/$b.tgz"; done
   cp scripts/xbuild.sh scripts/gnulib_x68k.py src/xshim/x68shim.c stage/USR/SRC/GNU/X68K/
   cp src/xshim/include/sys/*.h stage/USR/SRC/GNU/X68K/include/sys/
   for t in dl/gnu/*.tar.*; do
