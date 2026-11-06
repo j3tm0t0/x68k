@@ -829,18 +829,12 @@ static void cursor_xor(int col, int row)
 /* 1: スクロールで IOCS の TXRASCOPY (ハードのラスタコピー) を使わず、CPU の 32bit 転送で VRAM を動かす (実機の Z で、ラスタコピーが
  * 重なって全行が同じ行になった疑いの切り分け用。遅い: 1 画面で 70ms ほど)。zos.x の ZOS_NORAS=1 / -N */
 int vt_noras;
-#if !defined(VT_HOSTTEST) || defined(VT_SIM_TXRAS)
-/* 全幅の枠 (zos.x の全幅のペイン) も、ラスタ単位の転送なので TXRASCOPY が使える */
-#define RAS_OK() ((!vt_pane || (pane_x == 0 && pane_w >= SCRCOLS)) && !vt_noras)
-#else
-#define RAS_OK() 0
-#endif
 static void vram_move_lines(int dst_line, int src_line, int nlines)
 {
   int p, y, k, nl = (COLS + 3) / 4;   /* 1 ラインのうち画面の COLS バイトだけ (128 のうち 96) 動かす */
 #if !defined(VT_HOSTTEST) || defined(VT_SIM_TXRAS)
-  /* 枠の上端 pane_py ぶん足す */
-  if (RAS_OK() && (dst_line & 3) == 0 && (src_line & 3) == 0 && (nlines & 3) == 0 && dst_line != src_line) {
+  /* 全幅の枠 (zos.x の全幅のペイン) も、ラスタ単位の転送なので TXRASCOPY が使える (枠の上端 pane_py ぶん足す) */
+  if ((!vt_pane || (pane_x == 0 && pane_w >= SCRCOLS)) && !vt_noras && (dst_line & 3) == 0 && (src_line & 3) == 0 && (nlines & 3) == 0 && dst_line != src_line) {
     int o = vt_pane ? pane_py : 0;
     dst_line += o; src_line += o;
     if (dst_line < src_line)
@@ -924,80 +918,13 @@ static int vs_pend, vs_top, vs_bot;
 #ifdef VT_ZOS
 extern int vt_defer, vt_nomove;
 #endif
-/* nlines ラインの 4 プレーンとも、各ラインの先頭 nw 語を src から dst へ (上へ: dst < src、先頭のラインから)。
- * C のループだと転送そのものより 1 ライン 1 プレーンごとの手間のほうが重いので、内側は move.w (a)+,(a)+ と dbra で
- * (語なので、偶数番地から始めれば右端のはみ出しは 1 バイトまで。前の 32bit 転送と同じ) */
-static void row_copy(volatile unsigned char *dst, volatile unsigned char *src, int nlines, int nw)
-{
-#if defined(__mc68000__) && !defined(VT_NO_ASM)
-  short y = (short)(nlines - 1), k = (short)(nw - 1);
-  __asm__ volatile (
-    "1:	moveq	#3,%%d1\n"
-    "2:	move.l	%0,%%a0\n"
-    "	move.l	%1,%%a1\n"
-    "	move.w	%3,%%d0\n"
-    "3:	move.w	(%%a1)+,(%%a0)+\n"
-    "	dbra	%%d0,3b\n"
-    "	add.l	#0x20000,%0\n"
-    "	add.l	#0x20000,%1\n"
-    "	dbra	%%d1,2b\n"
-    "	sub.l	#0x80000-128,%0\n"
-    "	sub.l	#0x80000-128,%1\n"
-    "	dbra	%2,1b\n"
-    : "+a"(dst), "+a"(src), "+d"(y), "+d"(k) : : "d0", "d1", "a0", "a1", "cc", "memory");
-#else
-  int y, p, k;
-  for (y = 0; y < nlines; y++)
-    for (p = 0; p < 4; p++) {
-      volatile unsigned short *d = (volatile unsigned short *)(dst + (long)y * VBYTES + (unsigned long)p * PLANE);
-      volatile unsigned short *q = (volatile unsigned short *)(src + (long)y * VBYTES + (unsigned long)p * PLANE);
-      for (k = 0; k < nw; k++) *d++ = *q++;
-    }
-#endif
-}
-#if defined(VT_ZOS) && !defined(VT_HOSTTEST)
-int vt_mvmax;   /* 測り: ソフトで写したスクロール 1 回にかかった時間の最大 (1/100 秒)。zos.x の -o と試験 (split_test.sh) が読む */
-#endif
 static void vs_apply(void)
 {
   int n = vs_pend, h = vs_bot - vs_top + 1;
   vs_pend = 0;
   /* XOR のカーソルが残っていると、VRAM と一緒に動いて別の行に残り、後で消すとき元の位置の別の字を反転してしまう */
   if (csr_shown && !VT_HIDDEN) { cursor_xor(csr_x, csr_y); csr_shown = 0; }
-  if (n <= 0 || n >= h) return;
-  if (RAS_OK() || vt_small) { vram_move_lines(vs_top * vch, (vs_top + n) * vch, (h - n) * vch); return; }
-  /* ソフトで写すとき (zos.x で左右に割ったペインなど) は、行ごとに、今の絵と違うセルの範囲だけ写す。1 画面 (47 桁 x 30 行) を
-   * 全部写すと XEiJ の 10MHz で 150ms ほどかかり、その間は写し終えた行と写す前の行の境目で同じ行が 2 回見えた。
-   * drawn はもう n 行回してあるので、drawn[r] は VRAM の r + n 行目の絵 (写すもの)、drawn[r - n] は VRAM の r 行目の今の絵。
-   * r - n が領域の外なら、r 行目の今の絵は分からないので全部写す。どちらも「分からない」セル同士は等しく見えるが、
-   * そのセルは flush が描き直す (論理画面のどのセルとも等しくならない) ので写さなくてよい */
-  {
-    int r;
-#if defined(VT_ZOS) && !defined(VT_HOSTTEST)
-    int s = sup_enter();
-    unsigned short t0 = *(volatile unsigned short *)0x9cc, d;   /* IOCS の 1/100 秒ごとに 1 ずつ減る */
-#endif
-    for (r = vs_top; r < vs_top + h - n; r++) {
-      const cell_t *nw = drawn[r];
-      int lo = 0, hi = COLS - 1;
-      if (r - n >= vs_top) {
-        const cell_t *od = drawn[r - n];
-        while (lo <= hi && CELLEQ(&nw[lo], &od[lo])) lo++;
-        while (hi >= lo && CELLEQ(&nw[hi], &od[hi])) hi--;
-        if (lo > hi) continue;
-        /* 全角・絵文字は左のセルが 2 セル分を描くので、範囲の端で割らない */
-        if (lo > 0 && (nw[lo].at & F_WIDECONT || od[lo].at & F_WIDECONT)) lo--;
-        if (hi < COLS - 1 && (nw[hi].at & F_WIDE || od[hi].at & F_WIDE)) hi++;
-      }
-      lo &= ~1;   /* 偶数番地から (枠の左端は偶数) */
-      row_copy(TVRAM + (long)r * vch * VBYTES + lo, TVRAM + (long)(r + n) * vch * VBYTES + lo, vch, (hi - lo + 2) / 2);
-    }
-#if defined(VT_ZOS) && !defined(VT_HOSTTEST)
-    d = (unsigned short)(t0 - *(volatile unsigned short *)0x9cc);
-    if (d > vt_mvmax && d < 30000) vt_mvmax = d;
-    sup_leave(s);
-#endif
-  }
+  if (n > 0 && n < h) vram_move_lines(vs_top * vch, (vs_top + n) * vch, (h - n) * vch);
 }
 
 static void scroll(int n)
