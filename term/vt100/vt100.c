@@ -938,13 +938,13 @@ static void row_copy(volatile unsigned char *dst, volatile unsigned char *src, i
     "	move.w	%3,%%d0\n"
     "3:	move.w	(%%a1)+,(%%a0)+\n"
     "	dbra	%%d0,3b\n"
-    "	add.l	#0x20000,%0\n"
-    "	add.l	#0x20000,%1\n"
+    "	add.l	%4,%0\n"            /* 次のプレーン */
+    "	add.l	%4,%1\n"
     "	dbra	%%d1,2b\n"
-    "	sub.l	#0x80000-128,%0\n"
-    "	sub.l	#0x80000-128,%1\n"
+    "	sub.l	%5,%0\n"            /* 4 プレーン戻って次のライン */
+    "	sub.l	%5,%1\n"
     "	dbra	%2,1b\n"
-    : "+a"(dst), "+a"(src), "+d"(y), "+d"(k) : : "d0", "d1", "a0", "a1", "cc", "memory");
+    : "+a"(dst), "+a"(src), "+d"(y), "+d"(k) : "i"(PLANE), "i"(4 * PLANE - VBYTES) : "d0", "d1", "a0", "a1", "cc", "memory");
 #else
   int y, p, k;
   for (y = 0; y < nlines; y++)
@@ -969,21 +969,23 @@ static void vs_apply(void)
   /* ソフトで写すとき (zos.x で左右に割ったペインなど) は、行ごとに、今の絵と違うセルの範囲だけ写す。1 画面 (47 桁 x 30 行) を
    * 全部写すと XEiJ の 10MHz で 150ms ほどかかり、その間は写し終えた行と写す前の行の境目で同じ行が 2 回見えた。
    * drawn はもう n 行回してあるので、drawn[r] は VRAM の r + n 行目の絵 (写すもの)、drawn[r - n] は VRAM の r 行目の今の絵。
-   * r - n が領域の外なら、r 行目の今の絵は分からないので全部写す。どちらも「分からない」セル同士は等しく見えるが、
-   * そのセルは flush が描き直す (論理画面のどのセルとも等しくならない) ので写さなくてよい */
+   * r - n が領域の外なら、r 行目の今の絵は分からないので全部写す。「分からない」セル (cp = 0xffff) は同じに見えても写す:
+   * 状態表示 (vt_con_status) やスクロールバックの表示は、書き換え範囲に入れずに drawn だけ「分からない」にして VRAM に
+   * 描くので、写さないと r 行目に前の絵が残り、flush も描き直さない */
   {
     int r;
 #if defined(VT_ZOS) && !defined(VT_HOSTTEST)
     int s = sup_enter();
-    unsigned short t0 = *(volatile unsigned short *)0x9cc, d;   /* IOCS の 1/100 秒ごとに 1 ずつ減る */
+    /* $09CC は IOCS の作業域 BIOS_TC_MINUTE_COUNTER (XEiJ の misc/include/bioswork.equ)。Timer-C の割り込みで 1/100 秒ごとに 1 ずつ減る */
+    unsigned short t0 = *(volatile unsigned short *)0x9cc, d;
 #endif
     for (r = vs_top; r < vs_top + h - n; r++) {
       const cell_t *nw = drawn[r];
       int lo = 0, hi = COLS - 1;
       if (r - n >= vs_top) {
         const cell_t *od = drawn[r - n];
-        while (lo <= hi && CELLEQ(&nw[lo], &od[lo])) lo++;
-        while (hi >= lo && CELLEQ(&nw[hi], &od[hi])) hi--;
+        while (lo <= hi && CELLEQ(&nw[lo], &od[lo]) && nw[lo].cp != 0xffff) lo++;
+        while (hi >= lo && CELLEQ(&nw[hi], &od[hi]) && nw[hi].cp != 0xffff) hi--;
         if (lo > hi) continue;
         /* 全角・絵文字は左のセルが 2 セル分を描くので、範囲の端で割らない */
         if (lo > 0 && (nw[lo].at & F_WIDECONT || od[lo].at & F_WIDECONT)) lo--;
