@@ -955,10 +955,6 @@ static void row_copy(volatile unsigned char *dst, volatile unsigned char *src, i
     }
 #endif
 }
-/* 1: スクロールで VRAM を写すとき、違うセルの範囲でなく全部写す。VRAM に drawn の知らない絵があるときに立てる:
- * zos.x はペインの中の ssh.x などが _B_DOWN_S を呼ぶと、そのペインの端末でスクロールして VRAM を動かす。そこにあるのは
- * ssh.x が自分で描いた絵で、zos.x の端末の drawn は知らない (違うセルだけ写すと ssh.x の絵が動かなかった) */
-int vt_fullmove;
 #if defined(VT_ZOS) && !defined(VT_HOSTTEST)
 int vt_mvmax;   /* 測り: ソフトで写したスクロール 1 回にかかった時間の最大 (1/100 秒)。zos.x の -o と試験 (split_test.sh) が読む */
 #endif
@@ -972,7 +968,7 @@ static void vs_apply(void)
   /* 違うセルだけ写すのは zos.x の端末 (VT_ZOS) だけ。ssh.x などの端末は、zos.x がペインに描いた字 (DOS で出した知らせなど) を
    * drawn が知らないことがあるので、前のとおり全部写す */
 #if defined(VT_ZOS) || defined(VT_HOSTTEST)
-  if (RAS_OK() || vt_small || vt_fullmove) { vram_move_lines(vs_top * vch, (vs_top + n) * vch, (h - n) * vch); return; }
+  if (RAS_OK() || vt_small) { vram_move_lines(vs_top * vch, (vs_top + n) * vch, (h - n) * vch); return; }
 #else
   vram_move_lines(vs_top * vch, (vs_top + n) * vch, (h - n) * vch);
   return;
@@ -2539,6 +2535,18 @@ void vt_con_rect(int col, int row, int w, int h)
   clamp_cursor();
   csr_shown = 0;
   for (r = 0; r < ROWS; r++) vc_unknown(r, 0, COLS - 1);
+}
+
+/* いまの端末の drawn を全部「分からない」にする (書き換え範囲には入れない: flush は描き直さず、VRAM の絵はそのまま)。
+ * zos.x は、ペインのプログラムが _B_CONSOL を聞いたら (ssh.x の term/vt100 のように、自分でペインに描くかもしれない) 呼ぶ。
+ * スクロールで VRAM を写すとき、違うセルの範囲だけ写す作りは drawn が VRAM の絵と同じことを前提にしている。
+ * 「分からない」セルは必ず写すので、そのプログラムの絵も行ごと動く (x68k-zos の ssh_test が #47 で落ちた件) */
+void vt_con_unknown(void)
+{
+  cell_t z;
+  int r, c;
+  z.cp = 0xffff; z.at = F_EMOJI | F_WIDECONT;
+  for (r = 0; r < ROWS; r++) for (c = 0; c < COLS; c++) drawn[r][c] = z;
 }
 
 /* いまの端末のカーソルを描く / 描かない (zos.x の前面のペインの印: 前面のペインだけカーソルを出す) */
