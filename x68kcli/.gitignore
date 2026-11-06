@@ -1,6 +1,8 @@
 # downloaded archives, tools, staging and build outputs are never committed
 /dl/
+/dl
 /tools/
+/tools
 /stage/
 /build/
 *.hds

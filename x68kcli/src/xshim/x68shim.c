@@ -406,7 +406,8 @@ int __wrap_stat(const char *path, struct stat *st)
         }
         errno = e;
     }
-    if (r < 0 && path && isroot(path) && (path[0] && path[1] == ':' ? _dos_drvctrl(0, toupper((unsigned char)path[0]) - 'A' + 1) >= 0 : 1)) {
+    /* ドライブの状態の bit1 = メディアが入っている (空の FD を読みに行くと「中止 再実行 無視」の枠が出る) */
+    if (r < 0 && path && isroot(path) && (path[0] && path[1] == ':' ? (_dos_drvctrl(0, toupper((unsigned char)path[0]) - 'A' + 1) & 0x80000002) == 2 : 1)) {
         memset(st, 0, sizeof *st);
         st->st_mode = S_IFDIR | 0777;
         st->st_nlink = 1;
@@ -738,4 +739,12 @@ void __wrap_exit(int st)
         __real_chdir(start_cwd);
     }
     __real_exit(st);
+}
+
+/* 仮のディレクトリの番号を read したら EISDIR (cat DIR が "Is a directory" と出す) (-Wl,--wrap=read) */
+ssize_t __real_read(int, void *, size_t);
+ssize_t __wrap_read(int fd, void *b, size_t n)
+{
+    if (dirfd_path(fd)) { errno = EISDIR; return -1; }
+    return __real_read(fd, b, n);
 }
