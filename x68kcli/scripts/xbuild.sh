@@ -20,7 +20,7 @@ rm -f "$W/lib/libx68shim.a"; m68k-xelf-ar rcs "$W/lib/libx68shim.a" "$W/x68shim.
 XCPP="-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -I$R/src/xshim/include -DSUPPORT_NON_GREG_CALENDARS_IN_STRFTIME=false -DDT_BLK=6 -DDT_CHR=2 -DDT_FIFO=1 -DDT_LNK=10 -DDT_SOCK=12 -DFNM_EXTMATCH=32 -D_POSIX_OPEN_MAX=20 -D_POSIX_ARG_MAX=4096 -DSA_RESTART=0"
 CONF=(--host=m68k-elf --disable-nls CC=m68k-xelf-gcc AR=m68k-xelf-ar RANLIB=m68k-xelf-ranlib
       "CFLAGS=-Os -ffunction-sections -fdata-sections -Wframe-larger-than=40000" "CPPFLAGS=$XCPP"
-      "LDFLAGS=-L$W/lib -Wl,-e,__x68_fastreloc_start -Wl,--gc-sections -Wl,--wrap=stat -Wl,--wrap=fstat -Wl,--wrap=close -Wl,--wrap=strtold -Wl,--wrap=getcwd -Wl,--wrap=open -Wl,--wrap=dup -Wl,--wrap=opendir -Wl,--wrap=closedir -Wl,--wrap=readdir -Wl,--wrap=rewinddir -Wl,--wrap=chdir -Wl,--wrap=exit -Wl,--wrap=read -Wl,--wrap=write -Wl,--wrap=poll" "LIBS=$W/x68shim.o $W/x68reloc.o"
+      "LDFLAGS=-L$W/lib -Wl,-e,__x68_fastreloc_start -Wl,--gc-sections -Wl,--wrap=stat -Wl,--wrap=fstat -Wl,--wrap=close -Wl,--wrap=strtold -Wl,--wrap=getcwd -Wl,--wrap=open -Wl,--wrap=dup -Wl,--wrap=opendir -Wl,--wrap=closedir -Wl,--wrap=readdir -Wl,--wrap=rewinddir -Wl,--wrap=chdir -Wl,--wrap=exit -Wl,--wrap=read -Wl,--wrap=write -Wl,--wrap=poll -Wl,--wrap=main -Wl,--wrap=dup2" "LIBS=$W/x68shim.o $W/x68reloc.o"
       # newlib の printf は C99 の大きさ指定・%a・inf/nan・%n に対応している (XEiJ で確かめた)。クロスでは試せず
       # gnulib が「無い」と見て自前の vasnprintf (15KB) を入れるので、あると答える (%b と C23 の %w は使われない前提)
       gl_cv_func_printf_sizes_c99=yes gl_cv_func_printf_sizes_c23=yes gl_cv_func_printf_directive_a=yes
@@ -37,6 +37,14 @@ CONF=(--host=m68k-elf --disable-nls CC=m68k-xelf-gcc AR=m68k-xelf-ar RANLIB=m68k
       gl_cv_func_getcwd_null=yes gl_cv_func_getcwd_path_max=yes gl_cv_func_getcwd_abort_bug=no gl_cv_func_getcwd_succeeds_beyond_4k=yes
       # fork は libnosys の ENOSYS だけ。無いと答えると diff3・sdiff は popen (src/xshim の一時ファイル版) で diff を動かす
       ac_cv_func_fork_works=no ac_cv_func_vfork_works=no ac_cv_func_fork=no ac_cv_func_vfork=no)
+# shim・入口・組み方の旗が変わったら、作ったものを捨てて全部組み直す (build/x/gnu が残っていると、直しが入らないまま使われる)
+STAMP=$( { cat src/xshim/x68shim.c src/xshim/x68reloc.S src/xshim/include/sys/*.h scripts/gnulib_x68k.py; printf '%s\n' "${CONF[@]}"; } | shasum -a 256 | cut -c1-16)
+if [ "$(cat build/x/gnu/.stamp 2>/dev/null)" != "$STAMP" ]; then
+  if ls build/x/gnu/*.x >/dev/null 2>&1; then echo "xbuild: shim か組み方が変わったので GNU の道具を組み直す"; fi
+  rm -f build/x/gnu/*.x
+  for p in sed grep coreutils findutils diffutils gzip patch bc less file vim; do rm -rf "$W/$p"; done
+  echo "$STAMP" > build/x/gnu/.stamp
+fi
 gbuild() {  # gbuild NAME TARBALL "configure の追加" 出力 (ソース木からの相対パス) ...
   local n=$1 tb=$2 extra=$3 d=$W/$1 o missing=0; shift 3
   for o in "$@"; do [ -s "build/x/gnu/$(basename "$o")" ] || [ -s "build/x/gnu/${GALIAS:-none}" ] || missing=1; done

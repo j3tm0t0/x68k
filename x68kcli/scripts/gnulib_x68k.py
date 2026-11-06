@@ -302,3 +302,8 @@ ed('src/mbyte.c', '''	else if (enc_dbcs == 0)
 	else
 	{''')
 ed('src/mbyte.c', '#if defined(MSWIN) || defined(WIN32UNIX) || defined(MACOS_X)', '#if defined(MSWIN) || defined(WIN32UNIX) || defined(MACOS_X) || defined(__human68k__)', count=-1)
+
+# sort と join は比べる処理が重いので -O2 で組む (XEiJ で sort 4000 行が 8.9 → 7.0 秒、join が 23 → 20 秒)。
+# ほかは -Os のまま (-O2 にすると .x が 5〜20% 大きくなり、読み込みが遅くなる)
+for f in ('src/sort.c', 'src/join.c'):
+    ed(f, '#include <config.h>\n', '#pragma GCC optimize ("O2")\n#include <config.h>\n', guard='#pragma GCC optimize')
