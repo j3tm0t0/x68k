@@ -110,7 +110,7 @@ if [ -s build/x/gnu/vim9.x ]; then
   mkdir -p stage/USR/SHARE/VIM/VIM92
   crlf templates/vim92/defaults.vim stage/USR/SHARE/VIM/VIM92/defaults.vim
 fi
-mkdir -p stage/USR/DOC/VIM && cp work/vim/VimX68K.doc work/vim/README stage/USR/DOC/VIM/
+mkdir -p stage/USR/DOC/VIM && cp work/vim/VimX68K.doc work/vim/README work/vim/uganda.txt stage/USR/DOC/VIM/   # uganda.txt は Vim の許諾
 
 # --- GNU tools ---
 x dl/misc/gawk2154.tgz gawk
