@@ -103,7 +103,9 @@ mkdir -p stage/USR/DOC/KSH && cp work/ksh/readme.x68 work/ksh/ksh.man stage/USR/
 # --- vim ---
 x dl/vim/vim3x687.lzh vim
 cp work/vim/vim.x work/vim/vim.hlp stage/USR/BIN/
-mkdir -p stage/USR/DOC/VIM && cp work/vim/VimX68K.doc work/vim/README stage/USR/DOC/VIM/
+# vim は vim.x と同じディレクトリの vimrc を読む ($VIM68_EXECDIR/vimrc)。8+3 の予備の名前と、TERM によらず内蔵の端末の設定
+crlf templates/vimrc stage/USR/BIN/vimrc
+mkdir -p stage/USR/DOC/VIM && cp work/vim/VimX68K.doc work/vim/README work/vim/uganda.txt stage/USR/DOC/VIM/   # uganda.txt は Vim の許諾
 
 # --- GNU tools ---
 x dl/misc/gawk2154.tgz gawk
