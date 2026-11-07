@@ -16,7 +16,7 @@ if [ ! -d "$OUT/build" ]; then
   ( cd "$OUT/build" && ./m68kmake . m68k_in.c > /dev/null )
 fi
 cc -O2 -w -I"$OUT/build" -o "$OUT/copysim" tests/m68ksim/copysim.c "$OUT"/build/m68kcpu.c "$OUT"/build/m68kops.c \
-  "$OUT"/build/m68kdasm.c "$OUT"/build/softfloat/softfloat.c
+  "$OUT"/build/m68kdasm.c "$OUT"/build/softfloat/softfloat.c -lm   # Linux は -lm が要る (Musashi の FPU の sin・cos)
 build() {   # build NAME [CFLAGS...]
   local name=$1; shift
   m68k-xelf-gcc -O2 -m68000 -fomit-frame-pointer -finput-charset=utf-8 -fexec-charset=cp932 -ffreestanding -nostdlib \
