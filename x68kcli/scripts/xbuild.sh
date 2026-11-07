@@ -10,17 +10,19 @@ R=$PWD; W=$R/work/xbuild; mkdir -p "$W" build/x build/x/gnu
 m68k-xelf-gcc -Os -ffunction-sections -fdata-sections -Wall -I"$R/src/xshim/include" -c src/xshim/x68shim.c -o "$W/x68shim.o"
 # 再配置を自分で当てる入口 (src/xshim/x68reloc.S)。どのプログラムもここから始め、組んだ後に scripts/fastreloc.py で表を移す
 m68k-xelf-gcc -m68000 -c src/xshim/x68reloc.S -o "$W/x68reloc.o"
+# memcpy・memcmp・strlen などの 68000 向けの版 (src/xshim/x68str.S)。newlib の大きさ優先の C の版より先に使う。試験は tests/str/run.sh
+m68k-xelf-gcc -m68000 -c src/xshim/x68str.S -o "$W/x68str.o"
 # termcap の関数 (tgetent など) も x68shim.o にある。less の configure は -ltermcap が見つからないと止まるので、空の libtermcap.a を置く
 mkdir -p "$W/lib"; echo 'int x68_termcap_dummy;' > "$W/lib/dummy.c"
 m68k-xelf-gcc -c "$W/lib/dummy.c" -o "$W/lib/dummy.o"; rm -f "$W/lib/libtermcap.a"; m68k-xelf-ar rcs "$W/lib/libtermcap.a" "$W/lib/dummy.o"
 # libtool を使うもの (file の libmagic) は LIBS に .o を書くと断るので、ライブラリにして丸ごと入れる
-rm -f "$W/lib/libx68shim.a"; m68k-xelf-ar rcs "$W/lib/libx68shim.a" "$W/x68shim.o" "$W/x68reloc.o"
+rm -f "$W/lib/libx68shim.a"; m68k-xelf-ar rcs "$W/lib/libx68shim.a" "$W/x68shim.o" "$W/x68reloc.o" "$W/x68str.o"
 # -fexec-charset は elf2x68k の gcc が後ろに cp932 を足すので変えられない (UTF-8 の文字列を持つ部分は外す)
 # Human68k に無い dirent の型と fnmatch の拡張は数だけ合わせる
 XCPP="-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -I$R/src/xshim/include -DSUPPORT_NON_GREG_CALENDARS_IN_STRFTIME=false -DDT_BLK=6 -DDT_CHR=2 -DDT_FIFO=1 -DDT_LNK=10 -DDT_SOCK=12 -DFNM_EXTMATCH=32 -D_POSIX_OPEN_MAX=20 -D_POSIX_ARG_MAX=4096 -DSA_RESTART=0"
 CONF=(--host=m68k-elf --disable-nls CC=m68k-xelf-gcc AR=m68k-xelf-ar RANLIB=m68k-xelf-ranlib
       "CFLAGS=-Os -ffunction-sections -fdata-sections -Wframe-larger-than=40000" "CPPFLAGS=$XCPP"
-      "LDFLAGS=-L$W/lib -Wl,-e,__x68_fastreloc_start -Wl,--gc-sections -Wl,--wrap=stat -Wl,--wrap=fstat -Wl,--wrap=close -Wl,--wrap=strtold -Wl,--wrap=getcwd -Wl,--wrap=open -Wl,--wrap=dup -Wl,--wrap=opendir -Wl,--wrap=closedir -Wl,--wrap=readdir -Wl,--wrap=rewinddir -Wl,--wrap=chdir -Wl,--wrap=exit -Wl,--wrap=read -Wl,--wrap=write -Wl,--wrap=poll -Wl,--wrap=main -Wl,--wrap=dup2 -Wl,--wrap=fwrite -Wl,--wrap=fwrite_unlocked" "LIBS=$W/x68shim.o $W/x68reloc.o"
+      "LDFLAGS=-L$W/lib -Wl,-e,__x68_fastreloc_start -Wl,--gc-sections -Wl,--wrap=stat -Wl,--wrap=fstat -Wl,--wrap=close -Wl,--wrap=strtold -Wl,--wrap=getcwd -Wl,--wrap=open -Wl,--wrap=dup -Wl,--wrap=opendir -Wl,--wrap=closedir -Wl,--wrap=readdir -Wl,--wrap=rewinddir -Wl,--wrap=chdir -Wl,--wrap=exit -Wl,--wrap=read -Wl,--wrap=write -Wl,--wrap=poll -Wl,--wrap=main -Wl,--wrap=dup2 -Wl,--wrap=fwrite -Wl,--wrap=fwrite_unlocked" "LIBS=$W/x68shim.o $W/x68reloc.o $W/x68str.o"
       # newlib の printf は C99 の大きさ指定・%a・inf/nan・%n に対応している (XEiJ で確かめた)。クロスでは試せず
       # gnulib が「無い」と見て自前の vasnprintf (15KB) を入れるので、あると答える (%b と C23 の %w は使われない前提)
       gl_cv_func_printf_sizes_c99=yes gl_cv_func_printf_sizes_c23=yes gl_cv_func_printf_directive_a=yes
@@ -38,7 +40,7 @@ CONF=(--host=m68k-elf --disable-nls CC=m68k-xelf-gcc AR=m68k-xelf-ar RANLIB=m68k
       # fork は libnosys の ENOSYS だけ。無いと答えると diff3・sdiff は popen (src/xshim の一時ファイル版) で diff を動かす
       ac_cv_func_fork_works=no ac_cv_func_vfork_works=no ac_cv_func_fork=no ac_cv_func_vfork=no)
 # shim・入口・組み方の旗が変わったら、作ったものを捨てて全部組み直す (build/x/gnu が残っていると、直しが入らないまま使われる)
-STAMP=$( { cat src/xshim/x68shim.c src/xshim/x68reloc.S src/xshim/include/sys/*.h scripts/gnulib_x68k.py; printf '%s\n' "${CONF[@]}"; } | shasum -a 256 | cut -c1-16)
+STAMP=$( { cat src/xshim/x68shim.c src/xshim/x68reloc.S src/xshim/x68str.S src/xshim/include/sys/*.h scripts/gnulib_x68k.py; printf '%s\n' "${CONF[@]}"; } | shasum -a 256 | cut -c1-16)
 if [ "$(cat build/x/gnu/.stamp 2>/dev/null)" != "$STAMP" ]; then
   if ls build/x/gnu/*.x >/dev/null 2>&1; then echo "xbuild: shim か組み方が変わったので GNU の道具を組み直す"; fi
   rm -f build/x/gnu/*.x
