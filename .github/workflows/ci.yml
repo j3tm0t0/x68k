@@ -95,6 +95,10 @@ jobs:
         run: PY=$RUNNER_TEMP/venv/bin/python .github/ci/chacha68k.sh
       - name: x68kcli の x68str.S (memcpy・memcmp など、Musashi の csim)
         run: x68kcli/tests/str/run.sh
+      - name: term/vt100 の CPU で写すスクロールの asm (C のループと VRAM が同じか、Musashi)
+        env:
+          VT_OUT: ${{ runner.temp }}/vttest
+        run: term/vt100/tests/copytest.sh
 
   zmux:
     name: net/zmux (cargo test、zmux.sys のビルド、にせの X68000 の e2e)

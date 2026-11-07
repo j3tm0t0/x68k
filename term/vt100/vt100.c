@@ -893,6 +893,11 @@ static void vram_move_lines(int dst_line, int src_line, int nlines)
   }
 }
 
+#ifdef VT_SIM_COPYTEST
+/* 試験用 (tests/copytest.sh): 桁数 cols の枠として VRAM のラインを写す (asm の経路と C の経路の結果を比べる) */
+void vt_test_move(int cols, int dst_line, int src_line, int nlines) { COLS = cols; vram_move_lines(dst_line, src_line, nlines); }
+#endif
+
 static void clear_cell(cell_t *c) { CELL32(c) = clr_cell; }
 
 /* 行ポインタ表 t[a..b] (と行ごとの書き換え範囲) を k 行ぶん回す (正: 上へ、負: 下へ)。
