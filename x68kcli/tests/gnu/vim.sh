@@ -40,7 +40,14 @@ else echo "FAIL CON: テキスト VRAM が取れない"; ok=0; fi
 make -s -C "$ZOS/kernel" zos.x >/dev/null 2>&1; make -s -C "$ZOS/shell/src" >/dev/null 2>&1
 ZOS_OUT=$OUT/zos ZOS_STAGE=$STG ZOS_CONFIG='ENVSET = 8192' ZOS_TIMEOUT=200 \
 FILES="$ZOS/kernel/zos.x $ZOS/shell/src/zosh.x $VIM $OUT/in/VIMRC $OUT/in/T.TXT" \
-ZOS_KEYS="waittext A: 60;sleep 3;type vim.x T.TXT\n;waittext def $((WAIT * 4));sleep 2;$EDIT;type :wq\n;sleep 3;type exit\n" \
+ZOS_KEYS="waittext A: 60;sleep 3;type vim.x T.TXT\n;waittext def $((WAIT * 4));sleep 2;$EDIT;type :wq\n;sleep 3;dump zv.bin 0xE00000 0x80000;type exit\n" \
   "$K/xeij_run.sh" 'ZOS.X -x -o SNAP.TXT A:\ZOSH.X' > "$OUT/zos.log" 2>&1
 check zos "$OUT/zos/boot/T.TXT"
+# zos.x のペインは別の画面 (CSI ? 1049 h / l) を持つので、vim 9 は終わったあと vim の前の画面 (vim.x T.TXT と打った行) に戻る。
+# vim 3.0 は t_ti を出さない (vimrc を読む前に端末を準備する) ので、t_te で画面を消すだけ。どちらも vim の画面 (~) は残らない
+zv=$(python3 -I "$K/tvram2txt.py" "$OUT/zos/zv.bin" 2>/dev/null)
+want_cmd=0; [ -n "${VIM9:-}" ] && want_cmd=1
+if [ "$(echo "$zv" | grep -c 'vim\.x T\.TXT') $(echo "$zv" | grep -c '^~ *$')" = "$want_cmd 0" ]; then
+  [ -n "${VIM9:-}" ] && echo "ok   zos: 終わったあと vim の前の画面に戻る" || echo "ok   zos: 終わったあと vim の画面が残らない"
+else echo "FAIL zos: 終わったあとの画面"; echo "$zv" | grep -v '^[[:space:]]*$' | head -8; ok=0; fi
 [ $ok = 1 ] && echo PASS || exit 1

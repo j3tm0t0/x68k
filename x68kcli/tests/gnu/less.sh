@@ -56,4 +56,15 @@ want "zos: ↓↓ とスペースで 32 から" "$(echo "$z2" | head -1)" '^32$'
 want "zos: ↑ で 31 から" "$(echo "$z3" | head -1)" '^31$'
 want "zos: Ctrl+C で less は終わらない (31 から、下に :)" "$(scr "$OUT/zos/z5.bin" | sed 1d | head -1) $(scr "$OUT/zos/z5.bin" | tail -1)" '^31 :'
 want "zos: q の後に zosh に戻る" "$z4" '^back'
+want "zos: q の後に less の前の画面に戻る (別の画面、CSI ? 1049)" "$(echo "$z4" | grep -c 'less\.x N\.TXT') $(echo "$z4" | grep -c -E '^3[0-9]$')" '^1 0$'
+# 3. 左右に割った zos.x のペイン (右は 48 桁): a と 23 字 = 47 桁で折り返し (24 字目は 48・49 桁目にかかるので次の行へ)、
+#    3 行目は 13 字と END1 = 30 桁 (2 行目の 24 字はペインの 48 桁ちょうど。term/vt100 は右端ちょうどで終わる 2 バイトの字を
+#    描かないので、2 行目の幅は見ない)
+ZOS_OUT=$OUT/pane ZOS_CONFIG='ENVSET = 8192' ZOS_TIMEOUT=240 \
+FILES="$ZOS/kernel/zos.x $ZOS/shell/src/zosh.x $X/build/x/gnu/less.x $OUT/in/J.TXT" \
+ZOS_KEYS='waittext A: 60;sleep 3;key opt1 d;sleep 20;type less.x J.TXT\n;waittext END1 60;sleep 3;dump p1.bin 0xE00000 0x80000;type q;sleep 8;type exit\n;sleep 3;type exit\n' \
+  "$K/xeij_run.sh" 'ZOS.X -x -o SNAP.TXT A:\ZOSH.X' > "$OUT/pane.log" 2>&1
+right() { python3 -I "$K/tvram2txt.py" "$1" 2>/dev/null | awk '{s = substr($0, 49); sub(/ +$/, "", s); print s}'; }
+p1=$(right "$OUT/pane/p1.bin")
+want "pane: 48 桁のペインで 2 バイトの字を割らない (1 行目 47 桁、3 行目 13 字と END1)" "$(echo "$p1" | grep -A2 '^a#' | awk '{print length($0)}' | sed -n '1p;3p' | tr '\n' ' ')" '^47 30 $'
 [ $ok = 1 ] && echo PASS || exit 1
