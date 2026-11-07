@@ -77,6 +77,12 @@ WC.X -l IN.TXT
 == wc_c
 WC.X -c IN.TXT
 40 IN.TXT
+== wc_all
+WC.X J3.TXT
+~ *2 +5 +16 J3.TXT
+== wc_L
+WC.X -L TAB.TXT
+9 TAB.TXT
 == tac
 TAC.X S.TXT
 b
