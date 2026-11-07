@@ -27,9 +27,11 @@ if [ -n "${BENCH:-}" ]; then
   EXTRA=("$OUT"/nl_*.o -DBENCH="$BENCH")
 fi
 m68k-xelf-gcc -O2 -m68000 -fomit-frame-pointer -ffreestanding -fno-builtin -fno-tree-loop-distribute-patterns -nostdlib \
-  -Wl,-Ttext=0x1000 -Wl,-e,_start -o "$OUT/strtest.elf" start.s strtest.c ../../src/xshim/x68str.S ${EXTRA[@]+"${EXTRA[@]}"} -lgcc
+  -Wl,-Ttext=0x1000 -Wl,-e,_start -o "$OUT/strtest.elf" start.s strtest.c regsave.s ../../src/xshim/x68str.S ${EXTRA[@]+"${EXTRA[@]}"} -lgcc
 m68k-xelf-nm "$OUT/strtest.elf" > "$OUT/strtest.nm"
 m68k-xelf-objcopy -O binary -j .text -j .data "$OUT/strtest.elf" "$OUT/strtest.bin"
-"$OUT/csim" "$OUT/strtest.bin" "$OUT/strtest.nm" /dev/null "$OUT/result.txt" | grep -v "^total" || true
+rm -f "$OUT/result.txt"   # 模擬器が途中で止まったとき、前の結果で通らないように
+"$OUT/csim" "$OUT/strtest.bin" "$OUT/strtest.nm" /dev/null "$OUT/result.txt" > "$OUT/csim.out" || { cat "$OUT/csim.out"; echo "csim が失敗した"; exit 1; }
+grep -v "^total" "$OUT/csim.out" || true
 cat "$OUT/result.txt"
 [ -n "${BENCH:-}" ] || grep -q "^OK " "$OUT/result.txt"

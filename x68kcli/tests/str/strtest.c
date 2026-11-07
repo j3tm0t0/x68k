@@ -123,12 +123,41 @@ static void t_big(void)   /* 64KB を越える長さ (dbra の上位の語) */
         if (memcmp(A + a, B + b, n)) fail("bigcmp", a, b, n); else checks++;
         B[b + n - 1] ^= 1;
         if (!memcmp(A + a, B + b, n)) fail("bigcmp2", a, b, n); else checks++;
-        memmove(A + 3 + b, A + a, n); memmove(A + a, A + 3 + b, n);
-        memset(B + a, 7, n);
-        if (B[a] != 7 || B[a + n - 1] != 7 || B[a + n] == 7 && a + n < BIG && 0) fail("bigset", a, b, n); else checks++;
-        B[a + 66000] = 9;
-        if (memchr(B + a, 9, n) != B + a + 66000) fail("bigchr", a, b, n); else checks++;
+        for (size_t k = 0; k < BIG; k++) R[k] = A[k];
+        memmove(A + 3 + b, A + a, n);              /* 後ろへ (重なる: 末尾から写す) */
+        if (!same(A + 3 + b, R + a, n)) fail("bigmove1", a, b, n); else checks++;
+        memmove(A + a, A + 3 + b, n);              /* 前へ (重なる: 前から写す) */
+        if (!same(A + a, R + a, n)) fail("bigmove2", a, b, n); else checks++;
+        B[7 + a] = 0x5a; B[8 + a + n] = 0x5a;
+        memset(B + 8 + a, 7, n);
+        { size_t k = 0; while (k < n && B[8 + a + k] == 7) k++;
+          if (k != n || B[7 + a] != 0x5a || B[8 + a + n] != 0x5a) fail("bigset", a, b, n); else checks++; }
+        B[8 + a + 66000] = 9;
+        if (memchr(B + 8 + a, 9, n) != B + 8 + a + 66000) fail("bigchr", a, b, n); else checks++;
     }
+}
+
+/* d2-d7 / a2-a6 を決まった値にして fn を呼び、戻ったあと変わっていないかを見る (regsave.s)。変わっていなければ 0 */
+int regcheck(void *fn, long x, long y, long z);
+static void t_regs(void)
+{
+    fill(A, 300); for (int k = 0; k < 300; k++) B[k] = A[k];
+    A[250] = 0; B[250] = 0;
+    struct { const char *name; void *fn; long x, y, z; } t[] = {
+        { "memcpy", (void *)memcpy, (long)R, (long)A, 200 },
+        { "memcpy_odd", (void *)memcpy, (long)R + 1, (long)A, 200 },
+        { "memmove_back", (void *)memmove, (long)R + 8, (long)R, 200 },
+        { "memmove_fwd", (void *)memmove, (long)R, (long)R + 8, 200 },
+        { "memset", (void *)memset, (long)R + 1, 0x33, 200 },
+        { "memcmp", (void *)memcmp, (long)A, (long)B, 200 },
+        { "memcmp_odd", (void *)memcmp, (long)A + 1, (long)B, 200 },
+        { "memchr", (void *)memchr, (long)A, 0x100, 200 },
+        { "strlen", (void *)strlen, (long)A, 0, 0 },
+        { "strcmp", (void *)strcmp, (long)A, (long)B, 0 },
+        { "strchr", (void *)strchr, (long)A, '#', 0 },
+    };
+    for (unsigned i = 0; i < sizeof t / sizeof t[0]; i++)
+        if (regcheck(t[i].fn, t[i].x, t[i].y, t[i].z)) fail(t[i].name, 0, 0, 0); else checks++;
 }
 
 #ifdef BENCH
@@ -155,7 +184,7 @@ void bench_main(void)
 #ifdef BENCH
     bench(BENCH);
 #else
-    t_memcpy(); t_memmove(); t_memset(); t_memcmp(); t_memchr(); t_str(); t_big();
+    t_memcpy(); t_memmove(); t_memset(); t_memcmp(); t_memchr(); t_str(); t_big(); t_regs();
     puts_(fails ? "NG " : "OK "); putn(checks); puts_(" checks, "); putn(fails); puts_(" failures\n");
 #endif
     *(volatile long *)0x7fffe4 = (long)out;
