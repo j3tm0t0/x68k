@@ -16,7 +16,7 @@ if [ ! -x "$OUT/csim" ]; then
   cc -O2 -o "$OUT/build/m68kmake" "$OUT/build/m68kmake.c"
   ( cd "$OUT/build" && ./m68kmake . m68k_in.c > /dev/null )
   cc -O2 -w -I"$OUT/build" -o "$OUT/csim" "$R/net/ssh/chacha68k/tests/csim.c" "$OUT"/build/m68kcpu.c "$OUT"/build/m68kops.c \
-    "$OUT"/build/m68kdasm.c "$OUT"/build/softfloat/softfloat.c
+    "$OUT"/build/m68kdasm.c "$OUT"/build/softfloat/softfloat.c -lm
 fi
 EXTRA=()
 if [ -n "${BENCH:-}" ]; then
