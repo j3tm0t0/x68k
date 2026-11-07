@@ -318,7 +318,7 @@ for f in ('src/sort.c', 'src/join.c'):
 ed('src/sort.c', '          free (allocated);\n        }\n      else if (ignore)', '          if (allocated)\n            free (allocated);\n        }\n      else if (ignore)', guard='if (allocated)')
 ed('lib/strnumcmp.c', '#include <config.h>\n', '#pragma GCC optimize ("O2")\n#include <config.h>\n', guard='#pragma GCC optimize')
 # join・uniq など: 欄の区切りを調べる c32issep は 1 文字ごとに iswspace を呼ぶ。ASCII は空白とタブだけなので先に答える
-ed('src/system.h', 'c32issep (char32_t wc)\n{\n', 'c32issep (char32_t wc)\n{\n  if (wc < 0x80)\n    return wc == \' \' || wc == \'\\t\';\n', guard='if (wc < 0x80)')
+ed('src/system.h', 'c32issep (char32_t wc)\n{\n', 'c32issep (char32_t wc)\n{\n  if (wc < 0x80)\n    return wc == \' \' || wc == \'\\t\';\n', guard='if (wc < 0x80)', pkg='coreutils')
 # getc / putc: newlib (m68k-elf) は getc_unlocked・putc_unlocked を関数でしか持たない。1 文字ごとの呼び出しをやめ、newlib のマクロで直に読み書きする
 # (__SCLE (CR LF の変換) は Cygwin だけで、ここでは定義されない。CR は shim の read・write で扱っている)
 ed('lib/unlocked-io.h', '#endif /* UNLOCKED_IO_H */', '''# if defined __NEWLIB__ && !defined __CUSTOM_FILE_IO__ && !defined __SCLE && defined __sgetc_r
@@ -363,7 +363,6 @@ x68_skip_blanks (char *p, char const *lim, bool ok)
   return p;
 }
 '''
-for f in ('src/join.c', 'src/uniq.c'):
-    ed(f, "newline_or_blank (mcel_t g)\n{\n  return g.ch == '\\n' || c32issep (g.ch);\n}\n", X68_SKIP, guard='x68_skip_blanks (char')
-    ed(f, 'skip_buf_matching (ptr, lim, newline_or_blank, ', 'x68_skip_blanks (ptr, lim, ', count=2)
-    ed(f, 'skip_buf_matching (lp, lim, newline_or_blank, ', 'x68_skip_blanks (lp, lim, ', count=2)
+for f, v in (('src/join.c', 'ptr'), ('src/uniq.c', 'lp')):
+    ed(f, "newline_or_blank (mcel_t g)\n{\n  return g.ch == '\\n' || c32issep (g.ch);\n}\n", X68_SKIP, guard='x68_skip_blanks (char', pkg='coreutils')
+    ed(f, 'skip_buf_matching (%s, lim, newline_or_blank, ' % v, 'x68_skip_blanks (%s, lim, ' % v, count=2, pkg='coreutils')
