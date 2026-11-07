@@ -10,15 +10,19 @@ import os, sys
 stage, d = sys.argv[1], sys.argv[2]
 
 
-def ed(p, old, new, count=1, guard=None):
+def ed(p, old, new, count=1, guard=None, pkg=None, warn=True):
     # guard: 直したあとにだけ現れる文字列 (元の文字列が直したあとにも残る場合に、2 度当てないため)
+    # pkg: そのパッケージ (work/xbuild/<名前>) にだけ当てる (同じ名前のファイルが別のパッケージにもあるとき)
+    # warn: 直す先が見つからないときに警告するか
     # gnulib は lib/ のほか gl/lib/ (findutils) に置く包みもあるので両方に当てる
+    if pkg and os.path.basename(os.path.normpath(d)) != pkg:
+        return
     if p.startswith('lib/'):
-        ed1('gl/' + p, old, new, count, guard)
-    ed1(p, old, new, count, guard)
+        ed1('gl/' + p, old, new, count, guard, warn)
+    ed1(p, old, new, count, guard, warn)
 
 
-def ed1(p, old, new, count=1, guard=None):
+def ed1(p, old, new, count=1, guard=None, warn=True):
     p = os.path.join(d, p)
     if not os.path.exists(p):
         return
@@ -26,6 +30,9 @@ def ed1(p, old, new, count=1, guard=None):
     if old in s and not (guard and guard in s):
         os.chmod(p, os.stat(p).st_mode | 0o200)   # less の tar は読み込み専用で展開される (実行の許可は残す)
         open(p, 'w', encoding='utf-8', errors='surrogateescape').write(s.replace(old, new, count))
+    elif warn and not (guard and guard in s) and new not in s:
+        # 直す前の文字列も直した後の文字列も無い: 版が上がって直しが当たらなくなったかもしれない
+        print('gnulib_x68k.py: 警告: %s に直す先が見つからない: %r' % (os.path.relpath(p, d), old[:60]), file=sys.stderr)
 
 
 if stage == 'pre':
@@ -34,7 +41,7 @@ if stage == 'pre':
     ed('lib/sys_select.in.h', 'defined __CYGWIN__', '(defined __CYGWIN__ || defined __NEWLIB__)', count=-1)
     # mountlist (df): ドライブの一覧は自前で作るので、configure には「ある」と答えさせる
     ed('configure', '      mingw* | windows*) ac_list_mounted_fs=found ;;',
-       '      mingw* | windows*) ac_list_mounted_fs=found ;;\n      elf*) ac_list_mounted_fs=found ;;')
+       '      mingw* | windows*) ac_list_mounted_fs=found ;;\n      elf*) ac_list_mounted_fs=found ;;', warn=False)   # mountlist を使わないパッケージには無い
     # vim: configure が -D_FORTIFY_SOURCE=1 を足す (elf2x68k には ssp.h が無い)
     ed('src/auto/configure', '-D_FORTIFY_SOURCE=1', '-D_FORTIFY_SOURCE=0', count=-1)
     sys.exit(0)
@@ -107,7 +114,7 @@ ed('lib/unistd.in.h', '#endif /* _@GUARD_PREFIX@_UNISTD_H */',
 # 上で STDIN_FILENO などを変数にしたので、case の札に使っているところは数に戻す
 for f in ('lib/freopen-safer.c', 'src/sort.c'):
     for n, v in (('STDIN_FILENO', 0), ('STDOUT_FILENO', 1), ('STDERR_FILENO', 2)):
-        ed(f, 'case %s:' % n, 'case %d:' % v, count=-1)
+        ed(f, 'case %s:' % n, 'case %d:' % v, count=-1, warn=False)   # sort.c に STDERR_FILENO の札は無い
 # df: "A:/" は gnulib では絶対パスに見えない (\ を区切りにすると Shift_JIS の 2 バイト目の 5C で切れるので、
 # filename.h の DOS 向けの扱いは使わない)。ドライブ名で始まるものも通す
 ed('src/df.c', '  if (!force_fsu && ! IS_ABSOLUTE_FILE_NAME (mount_point))',
@@ -273,7 +280,7 @@ ed('src/util.c', '''      for (char const *p = last; *p; p++)
       for (char const *p = last; *p; p++)
 	t += (*t = *p) != '\\n';
       sprintf (t, ".%cXXXXXX", letter);
-#endif''')
+#endif''', pkg='patch')
 
 # --- file: der.h の宣言は int、der.c の定義は int32_t。m68k の newlib では int32_t が long なので合わない ---
 ed('src/der.h', 'file_protected int der_offs(struct magic_set *, struct magic *, size_t);', 'file_protected int32_t der_offs(struct magic_set *, struct magic *, size_t);')

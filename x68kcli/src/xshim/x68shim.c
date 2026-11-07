@@ -363,8 +363,72 @@ const char *x68_progname(const char *argv0)
    "input file is output file"、cp の "are the same file" など) が当てにならない。
    -Wl,--wrap=stat,--wrap=fstat で包み、_NAMECK で正規化したフルパスのハッシュを st_ino、ドライブを st_dev にする。
    名前のわからない番号 (シェルから受けた標準入出力) は番号ごとに別の値にする */
-int __real_stat(const char *, struct stat *);
-int __real_fstat(int, struct stat *);
+/* stat / fstat そのもの: libx68k の版は DOS の日時を mktime で time_t にするので、mktime → tzset → sscanf → strtod が
+   どのプログラムにも入る (約 12KB)。日時は計算で直す。TZ は "JST-9" のような形の時差だけ見る (夏時間は見ない)。
+   TZ が無ければ、elf2x68k の newlib と同じく JST-9 */
+static time_t dos2time(unsigned date, unsigned tm)
+{
+    long y = (date >> 9) + 1980, m = (date >> 5) & 15, d = date & 31, era, yoe, doy, doe, days;
+    const char *tz = getenv("TZ");
+    time_t t;
+    if (!tz || !*tz) tz = "JST-9";   /* elf2x68k の newlib は TZ が無いと日本時間 (JST-9) として扱う。それに合わせる */
+    if (m < 1 || m > 12) m = 1;
+    if (d < 1) d = 1;
+    y -= m <= 2;   /* 1970-01-01 からの日数 (グレゴリオ暦) */
+    era = y / 400; yoe = y - era * 400;
+    doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    days = era * 146097 + doe - 719468;
+    t = (time_t)days * 86400 + (tm >> 11) * 3600 + ((tm >> 5) & 63) * 60 + (tm & 31) * 2;
+    if (tz) {   /* "JST-9" "EST5" "UTC" "XXX-9:30": 英字の後の符号付きの時 (と分) が、UTC から引く時間 */
+        int sign = 1, h = 0, mi = 0;
+        if (*tz == '<') { while (*tz && *tz != '>') tz++; if (*tz) tz++; }   /* "<+09>-9" の形: <> の中は名前 */
+        while (*tz && !(*tz == '+' || *tz == '-' || (*tz >= '0' && *tz <= '9'))) tz++;
+        if (*tz == '-') { sign = -1; tz++; } else if (*tz == '+') tz++;
+        while (*tz >= '0' && *tz <= '9') h = h * 10 + (*tz++ - '0');
+        if (*tz == ':') { tz++; while (*tz >= '0' && *tz <= '9') mi = mi * 10 + (*tz++ - '0'); }
+        t += sign * (h * 3600L + mi * 60L);
+    }
+    return t;
+}
+static int lean_stat(const char *path, struct stat *st)
+{
+    struct dos_filbuf fb;
+    if (strpbrk(path, "*?")) { errno = ENOENT; return -1; }
+    if (_dos_files(&fb, path, 0x37) < 0) { errno = ENOENT; return -1; }
+    memset(st, 0, sizeof *st);
+    st->st_mode = (fb.atr & 0x10) ? (S_IFDIR | 0777) : (S_IFREG | ((fb.atr & 1) ? 0444 : 0666));
+    if (!(fb.atr & 0x10)) {   /* libx68k と同じく、.x と .z は実行できるファイル (ls -l、test -x、find -perm) */
+        size_t n = strlen(path);
+        if (n > 2 && path[n - 2] == '.' && strchr("xXzZ", path[n - 1])) st->st_mode |= 0111;
+    }
+    st->st_nlink = 1;
+    st->st_size = (fb.atr & 0x10) ? 0 : fb.filelen;
+    st->st_blksize = 512;
+    st->st_blocks = (st->st_size + 511) / 512;
+    st->st_mtime = st->st_atime = st->st_ctime = dos2time(fb.date, fb.time);
+    return 0;
+}
+static int lean_fstat(int fd, struct stat *st)
+{
+    int dev = _dos_ioctrlgt(fd);
+    if (dev < 0) { errno = EBADF; return -1; }
+    memset(st, 0, sizeof *st);
+    st->st_nlink = 1;
+    st->st_blksize = 512;
+    if (dev & 0x80) {   /* キャラクタデバイス (CON・NUL・AUX など) */
+        st->st_mode = S_IFCHR | 0666;
+    } else {
+        long cur = _dos_seek(fd, 0, 1), end = _dos_seek(fd, 0, 2);
+        unsigned long dt = (unsigned long)_dos_filedate(fd, 0);
+        _dos_seek(fd, cur, 0);
+        st->st_mode = S_IFREG | 0666;
+        st->st_size = end < 0 ? 0 : end;
+        st->st_blocks = (st->st_size + 511) / 512;
+        st->st_mtime = st->st_atime = st->st_ctime = dos2time(dt >> 16, dt & 0xffff);
+    }
+    return 0;
+}
 static void setino(const char *path, struct stat *st, int fd)
 {
     struct dos_nameckbuf nb;
@@ -401,7 +465,7 @@ static int chdir_drive(const char *p);
 char *__real_getcwd(char *, size_t);
 int __wrap_stat(const char *path, struct stat *st)
 {
-    int r = __real_stat(path, st);
+    int r = lean_stat(path, st);
     /* "." ".." "D1/." は _FILES で引けないので、そこへ移ってフルパスを得てから引く */
     if (r < 0 && path && dotname(path)) {
         char old[256], abs[256];
@@ -428,7 +492,7 @@ int __wrap_fstat(int fd, struct stat *st)
 {
     int r;
     if (dirfd_path(fd)) return __wrap_stat(dirfd_path(fd), st);
-    r = __real_fstat(fd, st);
+    r = lean_fstat(fd, st);
     if (r == 0) setino(fd >= 0 && fd < 64 ? __fd_list[fd].name : NULL, st, fd);
     return r;
 }
