@@ -124,6 +124,17 @@ rec=tests/fixtures/shell.rec
 if ! cmp -s "$OUT/m19_full.txt" "$OUT/m19_con.txt"; then fail "mode 19 console (80x29 @ 0,0) should be the whole screen (80x30), not a pane"
 elif [ "$(wc -l < "$OUT/m16_pane.txt")" -ne 29 ]; then fail "mode 16, 80x29 @ 0,0 should stay a pane (29 rows)"
 else pass "mode 19 console = whole screen 80x30, mode 16 same window = pane"; fi
+# ---- 7c. 右端ちょうどで終わる行の後の ESC [ K (Human68k のコンソールのまね、vt_conwrap = vthost -W、zos.x のペインの既定):
+#          48 桁に全角 24 字・半角 48 字を置いた直後の ESC [ K は次の行を消し、右端の字は残る (less が出す。
+#          vt_conwrap 無しの VT100 の遅延折り返しでは右端の字が消える) ----
+printf '%s\033[Knext\033[K\r\n%s\033[Kafter\r\n' "$(python3 -c "print('漢' * 24, end='')")" "$(printf 'A%.0s' $(seq 48))" > "$OUT/conwrap.rec"
+./vthost -W -s 48x6 "$OUT/conwrap.rec" "$OUT/conwrap.txt" > /dev/null 2>&1
+./vthost -s 48x6 "$OUT/conwrap.rec" "$OUT/conwrap0.txt" > /dev/null 2>&1
+w1=$(sed -n 1p "$OUT/conwrap.txt" | sed 's/ *$//'); a1=$(sed -n 3p "$OUT/conwrap.txt" | sed 's/ *$//')
+if [ "$w1" != "$(python3 -c "print('漢' * 24)")" ]; then fail "conwrap: 全角 24 字の行の右端の字が消えた ($w1)"
+elif [ "${#a1}" != 48 ] || [ "$(sed -n 2p "$OUT/conwrap.txt" | sed 's/ *$//')" != next ] || [ "$(sed -n 4p "$OUT/conwrap.txt" | sed 's/ *$//')" != after ]; then fail "conwrap: 半角 48 字の行か次の行が違う"; cat "$OUT/conwrap.txt"
+elif cmp -s "$OUT/conwrap.txt" "$OUT/conwrap0.txt"; then fail "conwrap: -W 無しと同じ結果 (違いが出ていない)"
+else pass "conwrap: 右端ちょうどの行の後の ESC [ K は次の行を消す (-W)"; fi
 # ---- 8. 表の端末を何枚も並べる (vt_con_rect、zos.x のペイン): 4 枚に混ぜて流し、途中で枠を入れ替え、最後の VRAM が
 #         各フィクスチャを単独で流した VRAM を枠に置いたものと同じか (tests/mptest.c、tests/mpcmp.py) ----
 if cc -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=undefined -DVT_HOSTTEST -DVT_VCONS -I. -o "$OUT/mptest" tests/mptest.c vt100.c 2>/dev/null ||

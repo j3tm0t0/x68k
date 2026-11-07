@@ -78,6 +78,7 @@ void vt_follow(void);                                /* zos.x のペインの枠
 void vt_con_rect(int col, int row, int w, int h);
 extern int vt_nomove;                                /* (zos.x) vt_defer のときスクロールで VRAM を動かさない (既定 1) */
 extern int vt_noras;                                 /* 1: スクロールで TXRASCOPY を使わず CPU で VRAM を動かす (切り分け用) */
+extern int vt_conwrap;                               /* 1: 右端の後の EL / ED / ECH は先に折り返す (Human68k のコンソールのまね。VT_ZOS で既定 1) */
 extern int vt_defer;                                 /* (zos.x) 1: vt_write は描かない。描くのは vt_flush_some */
 int vt_flush_some(int maxrows);                      /* (zos.x) 描き直しの要る行を多くて maxrows 行描く。残っていれば 1 */
 /* スクロールバックの置き場 (zos.x が持つ。term/vt100 はセルを 32 ビットの値として渡すだけ。後で Pico の SD に置き換えられる) */
