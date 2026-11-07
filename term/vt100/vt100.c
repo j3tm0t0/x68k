@@ -860,6 +860,28 @@ static void vram_move_lines(int dst_line, int src_line, int nlines)
           for (k = 0; k < nb; k++) d[k] = q[k];
         }
       } else {
+#if defined(__mc68000__) && !defined(VT_NO_ASM)
+        if (st > 0 && nl > 0) {
+          /* 上へ (いちばん多い: 割ったペインのスクロール): 残りのラインを全部 asm で。C のループだと転送そのものより
+           * 1 ライン 1 プレーンごとの手間のほうが重く、47 桁 x 30 行で 150ms ほどかかっていた。写すバイトは C と同じ */
+          short yy = (short)(nlines - y - 1), kk = (short)(nl - 1);
+          __asm__ volatile (
+            "1:	moveq	#3,%%d1\n"
+            "2:	move.l	%0,%%a0\n"
+            "	move.l	%1,%%a1\n"
+            "	move.w	%3,%%d0\n"
+            "3:	move.l	(%%a1)+,(%%a0)+\n"
+            "	dbra	%%d0,3b\n"
+            "	add.l	%4,%0\n"            /* 次のプレーン */
+            "	add.l	%4,%1\n"
+            "	dbra	%%d1,2b\n"
+            "	sub.l	%5,%0\n"            /* 4 プレーン戻って次のライン */
+            "	sub.l	%5,%1\n"
+            "	dbra	%2,1b\n"
+            : "+a"(d0), "+a"(s0), "+d"(yy), "+d"(kk) : "i"(PLANE), "i"(4 * PLANE - VBYTES) : "d0", "d1", "a0", "a1", "cc", "memory");
+          return;
+        }
+#endif
         for (p = 0; p < 4; p++) {
           volatile u32 *d = (volatile u32 *)(d0 + (unsigned long)p * PLANE);
           volatile u32 *q = (volatile u32 *)(s0 + (unsigned long)p * PLANE);
@@ -918,13 +940,29 @@ static int vs_pend, vs_top, vs_bot;
 #ifdef VT_ZOS
 extern int vt_defer, vt_nomove;
 #endif
+#if defined(VT_ZOS) && !defined(VT_HOSTTEST)
+int vt_mvmax;   /* 測り: 枠の中のスクロールで VRAM を CPU で写した 1 回の最大 (1/100 秒)。zos.x の -o と試験 (split_test.sh) が読む */
+#endif
 static void vs_apply(void)
 {
   int n = vs_pend, h = vs_bot - vs_top + 1;
   vs_pend = 0;
   /* XOR のカーソルが残っていると、VRAM と一緒に動いて別の行に残り、後で消すとき元の位置の別の字を反転してしまう */
   if (csr_shown && !VT_HIDDEN) { cursor_xor(csr_x, csr_y); csr_shown = 0; }
-  if (n > 0 && n < h) vram_move_lines(vs_top * vch, (vs_top + n) * vch, (h - n) * vch);
+  if (n <= 0 || n >= h) return;
+#if defined(VT_ZOS) && !defined(VT_HOSTTEST)
+  if (vt_pane && !(pane_x == 0 && pane_w >= SCRCOLS)) {   /* TXRASCOPY の使えない枠 (CPU で写す) だけ測る */
+    /* $09CC は IOCS の作業域 BIOS_TC_MINUTE_COUNTER (XEiJ の misc/include/bioswork.equ)。Timer-C の割り込みで 1/100 秒ごとに 1 ずつ減る */
+    int s = sup_enter();
+    unsigned short t0 = *(volatile unsigned short *)0x9cc, d;
+    vram_move_lines(vs_top * vch, (vs_top + n) * vch, (h - n) * vch);
+    d = (unsigned short)(t0 - *(volatile unsigned short *)0x9cc);
+    if (d > vt_mvmax && d < 30000) vt_mvmax = d;
+    sup_leave(s);
+    return;
+  }
+#endif
+  vram_move_lines(vs_top * vch, (vs_top + n) * vch, (h - n) * vch);
 }
 
 static void scroll(int n)
