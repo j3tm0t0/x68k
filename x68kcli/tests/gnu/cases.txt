@@ -77,6 +77,18 @@ WC.X -l IN.TXT
 == wc_c
 WC.X -c IN.TXT
 40 IN.TXT
+== wc_all
+WC.X J3.TXT
+~ *2 +5 +16 J3.TXT
+== wc_L
+WC.X -L TAB.TXT
+9 TAB.TXT
+== wc_40k
+WC.X W40.TXT
+~ *2502 +12501 +46399 W40.TXT
+== wc_40k_L
+WC.X -L W40.TXT
+40000 W40.TXT
 == tac
 TAC.X S.TXT
 b
