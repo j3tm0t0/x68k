@@ -3,6 +3,9 @@
 set shortname
 " TERM が vt100 などでも、矢印とファンクションキーが届く内蔵の端末の設定を使う
 set term=builtin_x68k
+" 終わるときに画面を消す (内蔵の x68k の端末の設定には t_te が無く、vim の画面が残って次の行にプロンプトが出る)。
+" ESC [ 2 J は画面を消してカーソルを左上に置く。term を変えるとこの設定は戻る
+set t_te=[2J
 " シリアルの端末 (CTTY AUX で zterm などの端末ソフトから使う) では、内蔵の X68000 の画面の設定は合わない。
 " そのときは ~/.vimrc (名前が . で始まるので TwentyOne.x が要る) か環境変数 VIMINIT で、端末に合わせて戻す
 " (例: set term=builtin_ansi か builtin_xterm。zosh なら export VIMINIT='set term=builtin_ansi')

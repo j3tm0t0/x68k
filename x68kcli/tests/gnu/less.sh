@@ -4,7 +4,7 @@
 #   画面 1: 1 ページ目 (Shift_JIS の行が字のまま出る、下に名前)
 #   画面 2: スペースと ↓ 2 回で 30 行 + 2 行進む
 #   画面 3: ↑ で 1 行戻る (zos.x のペインのみ)。/150 で 150 行目へ (CON のみ)
-#   Ctrl+C では終わらない (BREAK の確かめを切っている)。q で終わり、zosh のプロンプトに戻る (zos.x のペイン)
+#   Ctrl+C では終わらない (BREAK の確かめを切っている)。q で終わり、画面を消して (CON)、zosh のプロンプトに戻る (zos.x のペイン)
 set -u
 cd "$(dirname "$0")"
 X=$(cd ../.. && pwd)
@@ -18,7 +18,7 @@ ok=1
 want() { if echo "$2" | grep -q -E "$3"; then echo "ok   $1"; else echo "FAIL $1 (/$3/)"; echo "$2" | head -5; ok=0; fi; }
 
 # 1. Human68k の CON
-ZOS_OUT=$OUT/con ZOS_TIMEOUT=90 FILES="$X/build/x/gnu/less.x $OUT/in/N.TXT" \
+ZOS_OUT=$OUT/con ZOS_VRAM=1 ZOS_TIMEOUT=90 FILES="$X/build/x/gnu/less.x $OUT/in/N.TXT" \
 ZOS_KEYS="sleep 20;dump c1.bin 0xE00000 0x80000;key space;sleep 3;key down;sleep 1;key down;sleep 4;dump c2.bin 0xE00000 0x80000;type /150\n;sleep 4;dump c3.bin 0xE00000 0x80000;type q" \
   "$K/xeij_run.sh" 'LESS.X N.TXT' > "$OUT/con.log" 2>&1
 s1=$(scr "$OUT/con/c1.bin"); s2=$(scr "$OUT/con/c2.bin"); s3=$(scr "$OUT/con/c3.bin")
@@ -27,6 +27,22 @@ want "CON: 下に名前" "$s1" '^N\.TXT'
 want "CON: スペースと ↓↓ で 32 から" "$(echo "$s2" | head -1)" '^32$'
 want "CON: /150 で 150 行目へ" "$(echo "$s3" | head -1)" '^150$'
 [ -f "$OUT/con/boot/DONE.TXT" ] && echo "ok   CON: q で終わる" || { echo "FAIL CON: q で終わらない"; ok=0; }
+if [ -f "$OUT/con/tvram.bin" ] && ! scr "$OUT/con/tvram.bin" | grep -q -E '^1[5-7][0-9]$'; then echo "ok   CON: q のあとに less の画面が残らない"
+else echo "FAIL CON: q のあとに less の画面が残っている"; scr "$OUT/con/tvram.bin" 2>/dev/null | head -5; ok=0; fi
+
+# 1b. Human68k の CON で Shift_JIS: 2 バイト目が 0xAD の字 (く = 82 AD) が消えないこと、
+#     右端で 2 バイトの字が割れず、次の行に送られること (画面の幅 96 桁で、a の後に 47 字 = 95 桁で折り返す)
+python3 -I - "$OUT/in/J.TXT" <<'PY'
+import sys
+lines = ['abcく表def', 'a' + '漢' * 60 + 'END1']
+open(sys.argv[1], 'wb').write(('\r\n'.join(lines) + '\r\n').encode('cp932'))
+PY
+ZOS_OUT=$OUT/sj ZOS_TIMEOUT=90 FILES="$X/build/x/gnu/less.x $OUT/in/J.TXT" \
+ZOS_KEYS="sleep 20;dump j1.bin 0xE00000 0x80000;key space;sleep 2;type q" \
+  "$K/xeij_run.sh" 'LESS.X J.TXT' > "$OUT/sj.log" 2>&1
+j1=$(scr "$OUT/sj/j1.bin")
+want "CON: く表 が 4 桁で出る (0xAD を消さない)" "$j1" '^abc####def$'
+want "CON: 右端で 2 バイトの字を割らない (95 桁で折り返す)" "$(echo "$j1" | grep -A1 '^a#' | awk '{print length($0)}' | tr '\n' ' ')" '^95 30 $'
 
 # 2. zos.x のペイン (zosh)
 make -s -C "$ZOS/kernel" zos.x >/dev/null 2>&1; make -s -C "$ZOS/shell/src" >/dev/null 2>&1

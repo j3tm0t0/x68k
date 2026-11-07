@@ -1172,8 +1172,10 @@ int tgetnum(const char *id)
     return -1;
 }
 int tgetflag(const char *id) { return !strncmp(id, "am", 2) || !strncmp(id, "bs", 2); }
+/* te (終わるときの列): X68000 の画面には別の画面 (xterm の alternate screen) が無いので、属性を戻して画面を消す。
+   less などの画面が残って、その下にプロンプトが続かないように (残したいときは less -X) */
 static const char *const tcaps[][2] = {
-    { "te", "\033[m" }, { "cl", "\033[H\033[2J" }, { "cm", "\033[%i%d;%dH" }, { "ce", "\033[K" }, { "cd", "\033[J" },
+    { "te", "\033[m\033[2J" }, { "cl", "\033[H\033[2J" }, { "cm", "\033[%i%d;%dH" }, { "ce", "\033[K" }, { "cd", "\033[J" },
     { "ho", "\033[H" }, { "so", "\033[7m" }, { "se", "\033[m" }, { "us", "\033[4m" }, { "ue", "\033[m" },
     { "md", "\033[1m" }, { "me", "\033[m" }, { "mr", "\033[7m" }, { "le", "\b" }, { "nd", "\033[C" },
     { "up", "\033[A" }, { "do", "\n" }, { "cr", "\r" }, { "al", "\033[L" }, { "dl", "\033[M" },
