@@ -317,3 +317,52 @@ for f in ('src/sort.c', 'src/join.c'):
 # sort -n: 比べるたびに free (NULL) を呼んでいた (gnulib の rpl_free を通る)。数の比べ (strnumcmp) も -O2 に
 ed('src/sort.c', '          free (allocated);\n        }\n      else if (ignore)', '          if (allocated)\n            free (allocated);\n        }\n      else if (ignore)', guard='if (allocated)')
 ed('lib/strnumcmp.c', '#include <config.h>\n', '#pragma GCC optimize ("O2")\n#include <config.h>\n', guard='#pragma GCC optimize')
+# join・uniq など: 欄の区切りを調べる c32issep は 1 文字ごとに iswspace を呼ぶ。ASCII は空白とタブだけなので先に答える
+ed('src/system.h', 'c32issep (char32_t wc)\n{\n', 'c32issep (char32_t wc)\n{\n  if (wc < 0x80)\n    return wc == \' \' || wc == \'\\t\';\n', guard='if (wc < 0x80)', pkg='coreutils')
+# getc / putc: newlib (m68k-elf) は getc_unlocked・putc_unlocked を関数でしか持たない。1 文字ごとの呼び出しをやめ、newlib のマクロで直に読み書きする
+# (__SCLE (CR LF の変換) は Cygwin だけで、ここでは定義されない。CR は shim の read・write で扱っている)
+ed('lib/unlocked-io.h', '#endif /* UNLOCKED_IO_H */', '''# if defined __NEWLIB__ && !defined __CUSTOM_FILE_IO__ && !defined __SCLE && defined __sgetc_r
+#  undef getc
+#  undef getc_unlocked
+#  define getc(x) __sgetc_r (_REENT, x)
+#  define getc_unlocked(x) __sgetc_r (_REENT, x)
+#  undef putc
+#  undef putc_unlocked
+#  define putc(x, y) __sputc_r (_REENT, x, y)
+#  define putc_unlocked(x, y) __sputc_r (_REENT, x, y)
+# endif
+
+#endif /* UNLOCKED_IO_H */''', guard='__sgetc_r (_REENT')
+# join・uniq: 欄の区切りを探すとき、1 文字ごとに mcel_t を値で渡して述語を関数ポインタで呼んでいた。ASCII はその場で調べる
+X68_SKIP = '''newline_or_blank (mcel_t g)
+{
+  return g.ch == '\\n' || c32issep (g.ch);
+}
+
+/* skip_buf_matching (P, LIM, newline_or_blank, OK) と同じ。ASCII は関数を呼ばずに調べる */
+static char *
+x68_skip_blanks (char *p, char const *lim, bool ok)
+{
+  while (p < lim)
+    {
+      unsigned char c = *p;
+      if (c < 0x80)
+        {
+          if ((c == ' ' || c == '\\t' || c == '\\n') != ok)
+            break;
+          p++;
+        }
+      else
+        {
+          mcel_t g = mcel_scan (p, lim);
+          if (newline_or_blank (g) != ok)
+            break;
+          p += g.len;
+        }
+    }
+  return p;
+}
+'''
+for f, v in (('src/join.c', 'ptr'), ('src/uniq.c', 'lp')):
+    ed(f, "newline_or_blank (mcel_t g)\n{\n  return g.ch == '\\n' || c32issep (g.ch);\n}\n", X68_SKIP, guard='x68_skip_blanks (char', pkg='coreutils')
+    ed(f, 'skip_buf_matching (%s, lim, newline_or_blank, ' % v, 'x68_skip_blanks (%s, lim, ' % v, count=2, pkg='coreutils')

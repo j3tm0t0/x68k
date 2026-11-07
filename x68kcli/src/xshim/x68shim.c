@@ -928,6 +928,33 @@ ssize_t __wrap_write(int fd, const void *b, size_t n)
     }
     return __real_write(fd, b, n);
 }
+/* fwrite: 小さな書き込みのたびに newlib の __sfvwrite_r を通ると重い (join・cut など欄ごとに呼ぶ)。
+   全部バッファに入る書き込みは、ここで写して済ませる。行バッファ・バッファ無し・文字列・ワイド文字の流れは newlib に任せる
+   (-Wl,--wrap=fwrite,--wrap=fwrite_unlocked) */
+static int fw_fast(const void *b, size_t len, FILE *fp)
+{
+    const char *q = b;
+    unsigned char *p;
+    if ((fp->_flags & (__SWR | __SLBF | __SNBF | __SSTR | __SERR | __SORD)) != (__SWR | __SORD)
+        || (fp->_flags2 & __SWID) || fp->_w <= 0 || (size_t)fp->_w <= len)
+        return 0;
+    p = fp->_p;
+    fp->_p += len; fp->_w -= len;
+    while (len--) *p++ = *q++;
+    return 1;
+}
+size_t __real_fwrite(const void *, size_t, size_t, FILE *);
+size_t __real_fwrite_unlocked(const void *, size_t, size_t, FILE *);
+size_t __wrap_fwrite(const void *b, size_t s, size_t n, FILE *fp)
+{
+    if (s == 1 ? fw_fast(b, n, fp) : n == 1 && fw_fast(b, s, fp)) return n;
+    return __real_fwrite(b, s, n, fp);
+}
+size_t __wrap_fwrite_unlocked(const void *b, size_t s, size_t n, FILE *fp)
+{
+    if (s == 1 ? fw_fast(b, n, fp) : n == 1 && fw_fast(b, s, fp)) return n;
+    return __real_fwrite_unlocked(b, s, n, fp);
+}
 static unsigned char ttyq[8];
 static int ttyqn, ttyqi;
 static void ttyput(const char *k) { ttyqn = strlen(k); ttyqi = 0; memcpy(ttyq, k, ttyqn); }

@@ -14,6 +14,8 @@ printf 'x\n' > "$I/S2.TXT"
 printf '\000\015\012\377' > "$I/BIN.DAT"
 printf 'abcdef\n' > "$I/TR.TXT"
 printf '1 a\n2 b\n' > "$I/J1.TXT"; printf '1 x\n2 y\n' > "$I/J2.TXT"
+printf '1\t\223\372  x\r\n2   b\r\n' > "$I/J3.TXT"; printf ' 1 \226\173\r\n2\ty\r\n' > "$I/J4.TXT"   # タブ・続く空白・日本語の欄
+printf 'a 1\nb 1\n  c\t1\n\223\372 2\n' > "$I/UF.TXT"
 printf 'a\tb\n' > "$I/TAB.TXT"
 printf 'a\nb\n' > "$I/S3.TXT"
 printf 'gz\n' > "$I/G.TXT"
