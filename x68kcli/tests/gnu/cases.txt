@@ -249,6 +249,40 @@ b
 == sed
 SED.X -n 2p IN.TXT
 apple 10
+== sed_lit
+SED.X s/an/AN/ IN.TXT
+bANana 3
+apple 10
+cherry 2
+apple 10
+== sed_lit_g_amp
+SED.X s/an/[&]/g IN.TXT
+b[an][an]a 3
+apple 10
+cherry 2
+apple 10
+== sed_lit_nth
+SED.X s/p/P/2 IN.TXT
+banana 3
+apPle 10
+cherry 2
+apPle 10
+== sed_lit_addr
+SED.X -n /pp/p IN.TXT
+apple 10
+apple 10
+== sed_icase
+SED.X s/APPLE/X/I IN.TXT
+banana 3
+X 10
+cherry 2
+X 10
+== sed_sjis_lit
+SED.X s/語/GO/ SJ.TXT
+日本GO
+== sed_sjis_brace
+SED.X s/日本/NIHON/ SJ.TXT
+NIHON語
 == grep
 GREP.X -c apple IN.TXT
 2

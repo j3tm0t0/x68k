@@ -373,3 +373,51 @@ WC_OLD = "      bool in_word = false;\n      intmax_t linepos = 0;\n\n      for 
 WC_NEW = "      bool in_word = false;\n      intmax_t linepos = 0;\n\n      for (ssize_t bytes_read; (bytes_read = read (fd, buf, IO_BUFSIZE)); )\n        {\n          if (bytes_read < 0)\n            {\n              err = errno;\n              break;\n            }\n\n          bytes += bytes_read;\n          char const *p = buf;\n          long blines = 0, bwords = 0, lp = 0;   /* この read の分 (lp は linepos に足す分) */\n          do\n            {\n              unsigned char c = *p++;\n              switch (c)\n                {\n                case '\\n':\n                  blines++;\n                  FALLTHROUGH;\n                case '\\r':\n                case '\\f':\n                  if (linepos + lp > linelength)\n                    linelength = linepos + lp;\n                  linepos = 0;\n                  lp = 0;\n                  in_word = false;\n                  break;\n\n                case '\\t':\n                  lp += 8 - (((unsigned long) linepos + lp) & 7);\n                  in_word = false;\n                  break;\n\n                case ' ':\n                  lp++;\n                  FALLTHROUGH;\n                case '\\v':\n                  in_word = false;\n                  break;\n\n                default:\n                  lp += wc_isprint[c];\n                  bool in_word2 = !wc_isspace[c];\n                  bwords += !in_word & in_word2;\n                  in_word = in_word2;\n                  break;\n                }\n            }\n          while (--bytes_read);\n          lines += blines;\n          words += bwords;\n          linepos += lp;\n        }\n      if (linepos > linelength)\n        linelength = linepos;\n    }\n"
 ed('src/wc.c', WC_OLD, WC_NEW, pkg='coreutils')
 ed('src/wc.c', '#include <config.h>\n', '#pragma GCC optimize ("O2")\n#include <config.h>\n', guard='#pragma GCC optimize', pkg='coreutils')
+# sed: 特別な文字を含まない正規表現 (s/abc/.../ や /abc/p) は、regex と dfa を通さず memmem で探す。
+# regex は 1 行ごとに状態を作って捨てるので、68000 では 1 行 2 ミリ秒近くかかっていた
+ed('sed/sed.h', '  bool begline;\n  bool endline;\n  char re[1];', '  bool begline;\n  bool endline;\n  bool x68_literal;\n  char re[1];', pkg='sed')
+ed('sed/regexp.c', '''      if (new_regex->re[0] == '$')
+        new_regex->endline = true;
+    }
+}''', '''      if (new_regex->re[0] == '$')
+        new_regex->endline = true;
+    }
+
+  /* X68000: 特別な文字の無いものは文字列として探す (match_regex)。大文字小文字を区別しないものと、
+     ^ / $ だけのもの、行の区切りの文字を含むものは除く */
+  new_regex->x68_literal = new_regex->sz > 0 && !new_regex->begline && !new_regex->endline
+                           && !(new_regex->flags & REG_ICASE);
+  for (size_t i = 0; new_regex->x68_literal && i < new_regex->sz; i++)
+    {
+      unsigned char c = new_regex->re[i];
+      if (c == '\\n' || c == buffer_delimiter || c == '\\0' || strchr (".[]\\\\*^$+?(){}|", c))
+        new_regex->x68_literal = false;
+    }
+}''', pkg='sed')
+ed('sed/regexp.c', '''  /* Optimized handling for '^' and '$' patterns */
+  if (regex->begline || regex->endline)''', '''  if (regex->x68_literal)
+    {
+      const char *p = memmem (buf + buf_start_offset, buflen - buf_start_offset,
+                              regex->re, regex->sz);
+      if (!p)
+        return 0;
+      if (regsize)
+        {
+          size_t i;
+
+          if (!regarray->start)
+            {
+              regarray->start = XCALLOC (1, regoff_t);
+              regarray->end = XCALLOC (1, regoff_t);
+              regarray->num_regs = 1;
+            }
+          regarray->start[0] = p - buf;
+          regarray->end[0] = p - buf + regex->sz;
+          for (i = 1; i < regarray->num_regs; ++i)
+            regarray->start[i] = regarray->end[i] = -1;
+        }
+      return 1;
+    }
+
+  /* Optimized handling for '^' and '$' patterns */
+  if (regex->begline || regex->endline)''', pkg='sed')

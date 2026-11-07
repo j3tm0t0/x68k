@@ -859,6 +859,14 @@ int __real_dup2(int, int);
 int __wrap_dup2(int oldfd, int newfd) { fd_forget(newfd); return __real_dup2(oldfd, newfd); }
 static ssize_t tty_read(void *b, size_t n);
 static unsigned char tty_raw[3];   /* tcsetattr で ICANON を外した標準入力 (vim などはこれを生で読む) */
+/* CR と ^Z を抜いて詰める。返すのは残りの長さ (1 バイト 40 サイクルほど) */
+__attribute__((optimize("O2"))) static int strip_cr(char *b, int n)
+{
+    unsigned char *s = (unsigned char *)b, *e = s + n, *d;
+    while (s < e && *s != '\r' && *s != 0x1a) s++;
+    for (d = s; s < e; s++) if (*s != '\r' && *s != 0x1a) *d++ = *s;
+    return d - (unsigned char *)b;
+}
 ssize_t __wrap_read(int fd, void *b, size_t n)
 {
     if (dirfd_path(fd)) { errno = EISDIR; return -1; }
@@ -868,10 +876,10 @@ ssize_t __wrap_read(int fd, void *b, size_t n)
            くり返し、そのたびに isatty を呼ぶ。ここでは 1 回読んで抜くだけにする (抜いて空になったら次を読む) */
         char *p = b;
         for (;;) {
-            int r = _dos_read(fd, p, n), i, k;
+            int r = _dos_read(fd, p, n), k;
             if (r < 0) { errno = dos2errno_rw(r); return -1; }
             if (r == 0) return 0;
-            for (i = k = 0; i < r; i++) if (p[i] != '\r' && p[i] != 0x1a) p[k++] = p[i];
+            k = strip_cr(p, r);
             if (k) return k;
         }
     }
@@ -908,6 +916,14 @@ static ssize_t tty_write(const void *b, size_t n)
     if (r < 0) { errno = EIO; return -1; }
     return r;
 }
+/* LF の前に CR を足しながら buf (4096 + 2 バイト) に写す。進めた読み位置を返し、写した長さを *k に */
+__attribute__((optimize("O2"))) static const unsigned char *add_cr(char *buf, const unsigned char *p, const unsigned char *e, int *k)
+{
+    char *d = buf, *de = buf + 4096;
+    while (p < e && d < de) { unsigned char c = *p++; if (c == '\n') *d++ = '\r'; *d++ = c; }
+    *k = d - buf;
+    return p;
+}
 ssize_t __real_write(int, const void *, size_t);
 ssize_t __wrap_write(int fd, const void *b, size_t n)
 {
@@ -915,11 +931,10 @@ ssize_t __wrap_write(int fd, const void *b, size_t n)
     if (fd >= 0 && fd < 64 && n > 0 && !(__fd_list[fd].flags & O_BINARY) && !fd_isatty(fd)) {
         /* テキストのファイル・パイプ: LF の前に CR を足す。libx68k は 256 バイトずつ _WRITE するので、4KB ずつにする */
         static char buf[4096 + 2];
-        const char *p = b;
-        size_t i = 0;
-        while (i < n) {
-            int k = 0, r;
-            while (i < n && k < 4096) { if (p[i] == '\n') buf[k++] = '\r'; buf[k++] = p[i++]; }
+        const unsigned char *p = b, *e = p + n;
+        while (p < e) {
+            int k, r;
+            p = add_cr(buf, p, e, &k);
             r = _dos_write(fd, buf, k);
             if (r < 0) { errno = dos2errno_rw(r); return -1; }
             if (r < k) { errno = ENOSPC; return -1; }
@@ -940,7 +955,8 @@ static int fw_fast(const void *b, size_t len, FILE *fp)
         return 0;
     p = fp->_p;
     fp->_p += len; fp->_w -= len;
-    while (len--) *p++ = *q++;
+    if (len > 8) memcpy(p, q, len);
+    else while (len--) *p++ = *q++;
     return 1;
 }
 size_t __real_fwrite(const void *, size_t, size_t, FILE *);
@@ -954,6 +970,62 @@ size_t __wrap_fwrite_unlocked(const void *b, size_t s, size_t n, FILE *fp)
 {
     if (s == 1 ? fw_fast(b, n, fp) : n == 1 && fw_fast(b, s, fp)) return n;
     return __real_fwrite_unlocked(b, s, n, fp);
+}
+/* getdelim: newlib の版は 1 文字ずつ読んで確かめる (sed は 1 行に 1 ミリ秒近くかかっていた)。
+   FILE のバッファを memchr で探し、区切りまでをまとめて写す。バッファが空になったら __srefill_r に任せる
+   (ungetc で戻した文字・端末の行バッファの吐き出し・EOF の記録も newlib がする) (-Wl,--wrap=getdelim) */
+int __srefill_r(struct _reent *, FILE *);
+ssize_t __wrap_getdelim(char **lineptr, size_t *n, int delim, FILE *fp)
+{
+    size_t len = 0;
+    if (!lineptr || !n) { errno = EINVAL; return -1; }
+    for (;;) {
+        unsigned char *p, *q;
+        size_t k, need;
+        if (fp->_r <= 0 && __srefill_r(_REENT, fp)) break;   /* EOF か読み込みのエラー */
+        p = fp->_p;
+        q = memchr(p, delim, fp->_r);
+        k = q ? (size_t)(q - p) + 1 : (size_t)fp->_r;
+        need = len + k + 1;
+        if (!*lineptr || *n < need) {
+            size_t m = *n ? *n : 120;
+            char *b;
+            while (m < need) m *= 2;
+            if (!(b = realloc(*lineptr, m))) { errno = ENOMEM; return -1; }
+            *lineptr = b; *n = m;
+        }
+        memcpy(*lineptr + len, p, k);
+        len += k;
+        fp->_p += k; fp->_r -= k;
+        if (q) break;
+    }
+    if (!len) return -1;
+    (*lineptr)[len] = 0;
+    return len;
+}
+/* stdio のバッファ: newlib は BUFSIZ (1024 バイト) で、ファイルを 1KB ずつ _READ / _WRITE する。DOS の呼び出しが多すぎるので、
+   端末でない流れは 8KB にする。newlib がバッファを作った直後 (まだ読み書きしていない) に取り替える (-Wl,--wrap=__smakebuf_r) */
+void __real___smakebuf_r(struct _reent *, FILE *);
+void __wrap___smakebuf_r(struct _reent *ptr, FILE *fp)
+{
+    __real___smakebuf_r(ptr, fp);
+    if ((fp->_flags & (__SMBF | __SLBF | __SNBF)) == __SMBF && fp->_bf._size < 8192 && fp->_p == fp->_bf._base) {
+        unsigned char *b = malloc(8192);
+        if (b) { free(fp->_bf._base); fp->_bf._base = fp->_p = b; fp->_bf._size = 8192; }
+    }
+}
+/* ungetc: 読んだばかりの 1 文字を戻すとき (sed は 1 行ごとに getc と ungetc で終わりを確かめる) は、バッファの位置を戻すだけ。
+   それ以外は newlib に任せる (-Wl,--wrap=ungetc) */
+int __real_ungetc(int, FILE *);
+int __wrap_ungetc(int c, FILE *fp)
+{
+    if (c != EOF && (fp->_flags & __SRD) && fp->_ub._base == NULL && fp->_bf._base != NULL
+        && fp->_p > fp->_bf._base && fp->_p[-1] == (unsigned char)c) {
+        fp->_p--; fp->_r++;
+        fp->_flags &= ~__SEOF;
+        return (unsigned char)c;
+    }
+    return __real_ungetc(c, fp);
 }
 static unsigned char ttyq[8];
 static int ttyqn, ttyqi;
