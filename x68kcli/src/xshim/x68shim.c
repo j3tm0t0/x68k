@@ -936,7 +936,7 @@ static int fw_fast(const void *b, size_t len, FILE *fp)
     const char *q = b;
     unsigned char *p;
     if ((fp->_flags & (__SWR | __SLBF | __SNBF | __SSTR | __SERR | __SORD)) != (__SWR | __SORD)
-        || (fp->_flags2 & __SWID) || fp->_w <= 0 || (size_t)fp->_w <= len)
+        || (fp->_flags2 & __SWID) || len == 0 || fp->_w <= 0 || (size_t)fp->_w <= len)   /* 大きさ 0 は newlib に任せる (0 を返す) */
         return 0;
     p = fp->_p;
     fp->_p += len; fp->_w -= len;
