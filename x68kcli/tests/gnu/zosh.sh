@@ -18,4 +18,4 @@ m68k-xelf-gcc -Os -I"$X/src/xshim/include" -Wl,--gc-sections $(grep -o -- '-Wl,-
   -o "$OUT/in/popen_t.x" popen_t.c "$OUT/in/x68shim.o" && rm -f "$OUT/in/popen_t.x.elf"
 FILES="$(ls "$X"/build/x/gnu/*.x | tr '\n' ' ') $ZOSH $XEIJCOMMAND $OUT/in/popen_t.x $OUT/in/T.ZSH $OUT/in/in.txt" OUT=$OUT TIMEOUT=${TIMEOUT:-300} \
   "$X/tests/xeij_hfs.sh" 'ZOSH.X T.ZSH > OUT.TXT' > "$OUT/run.log" 2>&1 || cat "$OUT/run.log"
-if diff <(tr -d '\r' < "$OUT/boot/OUT.TXT") t_zosh.exp > "$OUT/diff.txt"; then echo PASS; else echo FAIL; cat "$OUT/diff.txt"; exit 1; fi
+if diff <(LC_ALL=C tr -d '\r' < "$OUT/boot/OUT.TXT") t_zosh.exp > "$OUT/diff.txt"; then echo PASS; else echo FAIL; cat "$OUT/diff.txt"; exit 1; fi

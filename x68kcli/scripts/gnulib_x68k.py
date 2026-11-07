@@ -390,6 +390,18 @@ ed('sed/regexp.c', '''      if (new_regex->re[0] == '$')
   for (size_t i = 0; new_regex->x68_literal && i < new_regex->sz; i++)
     {
       unsigned char c = new_regex->re[i];
+      /* BRE では Shift_JIS の 2 バイト目の ] ^ { | } は regex でも普通の字なので、そのまま文字列として探してよい
+         ([ と \\ は regex が特別に扱うので除く。ERE の { | は特別なので、ERE ではこの扱いをしない) */
+      if (!(extended_regexp_flags & REG_EXTENDED) && i + 1 < new_regex->sz
+          && ((c >= 0x81 && c <= 0x9f) || (c >= 0xe0 && c <= 0xfc)))
+        {
+          unsigned char t = new_regex->re[i + 1];
+          if (t != '[' && t != '\\\\' && t != '\\n' && t != buffer_delimiter && t != '\\0')
+            {
+              i++;
+              continue;
+            }
+        }
       if (c == '\\n' || c == buffer_delimiter || c == '\\0' || strchr (".[]\\\\*^$+?(){}|", c))
         new_regex->x68_literal = false;
     }
@@ -421,3 +433,44 @@ ed('sed/regexp.c', '''  /* Optimized handling for '^' and '$' patterns */
 
   /* Optimized handling for '^' and '$' patterns */
   if (regex->begline || regex->endline)''', pkg='sed')
+# less: Unicode の「表示しない文字」の表 (omit.uni、U+00AD のソフトハイフン) を、UTF-8 でない (1 バイトずつの) ときにも当てていた。
+# Shift_JIS の 2 バイト目が 0xAD の字 (く = 82 AD など) の 2 バイト目が消え、後ろがずれる。UTF-8 のときだけ当てる
+ed('charset.c', 'public lbool is_omit_char(LWCHAR ch)\n{\n', 'public lbool is_omit_char(LWCHAR ch)\n{\n\tif (!utf_mode) return FALSE;   /* X68000: Shift_JIS の 2 バイト目の 0xAD を消さない */\n', pkg='less')
+# less: 行が画面の幅で折り返すとき、Shift_JIS の 2 バイトの字が右端で割れて、次の行の頭の ESC [ K などと組になって化けていた。
+# 1 バイト目が右端の桁に来るときは、その字から次の行に送る (UTF-8 でないときだけ)
+ed('line.c', '''public void prewind(lbool contig)
+{''', '''#ifdef __human68k__
+static int x68_sjis_lead;   /* 直前に置いたのが Shift_JIS の 1 バイト目 */
+#endif
+public void prewind(lbool contig)
+{''', guard='x68_sjis_lead;', pkg='less')
+ed('line.c', '''	if (!fits_on_screen(w, a))
+		return (1);
+
+	if (rep == NULL)''', '''#ifdef __human68k__
+	if (!utf_mode && a != AT_ANSI && w == 1)
+	{
+		if (x68_sjis_lead)
+			x68_sjis_lead = 0;   /* 2 バイト目 */
+		else if ((ch >= 0x81 && ch <= 0x9f) || (ch >= 0xe0 && ch <= 0xfc))
+		{
+			if (!fits_on_screen(2, a))
+				return (1);   /* 2 バイトとも入らないので、この字から次の行へ */
+			x68_sjis_lead = 1;
+		}
+	}
+#endif
+	if (!fits_on_screen(w, a))
+		return (1);
+
+	if (rep == NULL)''', guard='2 バイトとも入らないので', pkg='less')
+ed('line.c', '''	end_column = 0;
+	right_curr = 0;
+	right_column = 0;
+	cshift = 0;''', '''	end_column = 0;
+	right_curr = 0;
+	right_column = 0;
+	cshift = 0;
+#ifdef __human68k__
+	x68_sjis_lead = 0;
+#endif''', guard='\tx68_sjis_lead = 0;\n#endif', pkg='less')
