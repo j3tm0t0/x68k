@@ -283,6 +283,23 @@ SED.X s/語/GO/ SJ.TXT
 == sed_sjis_brace
 SED.X s/日本/NIHON/ SJ.TXT
 NIHON語
+== sed_lit_multiline
+SED.X "N;s/a 1/X/" UF.TXT
+X
+b 1
+  c	1
+日 2
+== sed_lit_z
+SED.X -z s/b/B/ S.TXT
+a
+a
+B
+== sed_ere_brace
+SED.X -E s/p{2}/PP/ IN.TXT
+banana 3
+aPPle 10
+cherry 2
+aPPle 10
 == grep
 GREP.X -c apple IN.TXT
 2

@@ -390,6 +390,18 @@ ed('sed/regexp.c', '''      if (new_regex->re[0] == '$')
   for (size_t i = 0; new_regex->x68_literal && i < new_regex->sz; i++)
     {
       unsigned char c = new_regex->re[i];
+      /* BRE では Shift_JIS の 2 バイト目の ] ^ { | } は regex でも普通の字なので、そのまま文字列として探してよい
+         ([ と \\ は regex が特別に扱うので除く。ERE の { | は特別なので、ERE ではこの扱いをしない) */
+      if (!(extended_regexp_flags & REG_EXTENDED) && i + 1 < new_regex->sz
+          && ((c >= 0x81 && c <= 0x9f) || (c >= 0xe0 && c <= 0xfc)))
+        {
+          unsigned char t = new_regex->re[i + 1];
+          if (t != '[' && t != '\\\\' && t != '\\n' && t != buffer_delimiter && t != '\\0')
+            {
+              i++;
+              continue;
+            }
+        }
       if (c == '\\n' || c == buffer_delimiter || c == '\\0' || strchr (".[]\\\\*^$+?(){}|", c))
         new_regex->x68_literal = false;
     }
