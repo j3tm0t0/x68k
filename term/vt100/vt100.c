@@ -1246,6 +1246,16 @@ static void break_pair(int r, int c)
 }
 
 /* 遅延折り返し・自動改行: 行頭へ戻り、下端ならスクロール */
+/* 1: 右端に字を置いた後 (遅延折り返し待ち) の EL / ED / ECH は、先に次の行へ折り返してから消す。
+ * Human68k のコンソール (IOCS) は右端に置くとすぐ次の行へ進むので、その上で動くプログラム (termcap が am で xn 無し) は、
+ * 画面の幅ちょうどの行の後に、もう次の行にいるつもりで ESC [ K を出す (less)。VT100 の遅延折り返しのままだと右端の字を
+ * 消してしまい、全角の字は左端 (COLS-2) から消えた。zos.x のペイン (VT_ZOS) は Human68k のプログラムを映すので既定で 1。
+ * ssh.x などの VT100 の端末は 0 (xterm と同じ) */
+#ifdef VT_ZOS
+int vt_conwrap = 1;
+#else
+int vt_conwrap;
+#endif
 static void wrap_line(void)
 {
   cx = 0;
@@ -1492,12 +1502,14 @@ static void do_csi(unsigned char f)
     case 'H': case 'f':
       cy = p_def(0, 1) - 1; cx = p_def(1, 1) - 1; clamp_cursor(); pend_wrap = 0; break;
     case 'J':
+      if (pend_wrap && vt_conwrap) wrap_line();
       a = p_def(0, 0);
       if (a == 0) { erase_cells(cy, cx, COLS - 1); for (n = cy + 1; n < ROWS; n++) erase_cells(n, 0, COLS - 1); }
       else if (a == 1) { for (n = 0; n < cy; n++) erase_cells(n, 0, COLS - 1); erase_cells(cy, 0, cx); }
       else if (a == 2) { for (n = 0; n < ROWS; n++) erase_cells(n, 0, COLS - 1); }
       break;   /* 3 (スクロールバック消去) は持っていないので何もしない */
     case 'K':
+      if (pend_wrap && vt_conwrap) wrap_line();
       a = p_def(0, 0);
       if (a == 0) erase_cells(cy, cx, COLS - 1);
       else if (a == 1) erase_cells(cy, 0, cx);
@@ -1515,7 +1527,7 @@ static void do_csi(unsigned char f)
       touch_span(cy, cx, COLS - 1);
       for (c = cx; c + cnt < COLS; c++) cur[cy][c] = cur[cy][c + cnt];
       erase_cells(cy, COLS - cnt, COLS - 1); pend_wrap = 0; break; }
-    case 'X': { int cnt = p_def(0, 1); if (cnt > COLS - cx) cnt = COLS - cx; erase_cells(cy, cx, cx + cnt - 1); break; }  /* ECH */
+    case 'X': { int cnt = p_def(0, 1); if (pend_wrap && vt_conwrap) wrap_line(); if (cnt > COLS - cx) cnt = COLS - cx; erase_cells(cy, cx, cx + cnt - 1); break; }  /* ECH */
     case 'S': scroll(p_def(0, 1)); break;
     case 'T': scroll(-p_def(0, 1)); break;
     case 'r':
