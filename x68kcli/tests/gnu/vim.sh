@@ -40,9 +40,12 @@ else echo "FAIL CON: テキスト VRAM が取れない"; ok=0; fi
 make -s -C "$ZOS/kernel" zos.x >/dev/null 2>&1; make -s -C "$ZOS/shell/src" >/dev/null 2>&1
 ZOS_OUT=$OUT/zos ZOS_STAGE=$STG ZOS_CONFIG='ENVSET = 8192' ZOS_TIMEOUT=200 \
 FILES="$ZOS/kernel/zos.x $ZOS/shell/src/zosh.x $VIM $OUT/in/VIMRC $OUT/in/T.TXT" \
-ZOS_KEYS="waittext A: 60;sleep 3;type vim.x T.TXT\n;waittext def $((WAIT * 4));sleep 2;$EDIT;type :wq\n;sleep 3;dump zv.bin 0xE00000 0x80000;type exit\n" \
+ZOS_KEYS="waittext A: 60;sleep 3;type vim.x T.TXT\n;waittext def $((WAIT * 4));sleep 12;dump zc.bin 0xE00000 0x80000;$EDIT;type :wq\n;sleep 3;dump zv.bin 0xE00000 0x80000;type exit\n" \
   "$K/xeij_run.sh" 'ZOS.X -x -o SNAP.TXT A:\ZOSH.X' > "$OUT/zos.log" 2>&1
 check zos "$OUT/zos/boot/T.TXT"
+# キーを待っている間に CPU を使い切らない (zos.x の上の行の CPU xx%。vim 3.0 は scripts/vim3wait.py で直したもの)
+cpu=$(python3 -I "$K/tvram2txt.py" "$OUT/zos/zc.bin" 2>/dev/null | head -1 | sed -n 's/.*CPU *\([0-9]*\)%.*/\1/p')
+if [ -n "$cpu" ] && [ "$cpu" -lt 50 ]; then echo "ok   zos: キーを待つ間の CPU ${cpu}%"; else echo "FAIL zos: キーを待つ間の CPU ${cpu:-?}%"; ok=0; fi
 # zos.x のペインは別の画面 (CSI ? 1049 h / l) を持つので、vim 9 は終わったあと vim の前の画面 (vim.x T.TXT と打った行) に戻る。
 # vim 3.0 は t_ti を出さない (vimrc を読む前に端末を準備する) ので、t_te で画面を消すだけ。どちらも vim の画面 (~) は残らない
 zv=$(python3 -I "$K/tvram2txt.py" "$OUT/zos/zv.bin" 2>/dev/null)

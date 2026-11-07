@@ -846,6 +846,17 @@ void __wrap_exit(int st)
 ssize_t __real_read(int, void *, size_t);
 /* 番号ごとの isatty の控え (DOS の _IOCTRL を毎回呼ばない)。close で忘れる */
 static signed char isatty_cache[64];   /* 0 = まだ、1 = 端末でない、2 = 端末 */
+/* isatty: libx68k は「文字デバイスで、NUL でも CLOCK でもない」を端末とみなす。zos.x のパイプ (デバイス PIPE0〜7) も
+   文字デバイスなので端末に見え、ls | cat が段組みになっていた。パイプは _IOCTRL で 0x80e0 (生のモード、標準入出力の印なし) を返す。
+   標準入出力の印が無く生のモードの文字デバイスは端末とみなさない (生のモードにした AUX も同じ形になるが、COMMAND.X は AUX を
+   生のモードにしない) */
+int isatty(int fd)
+{
+    int a = _dos_ioctrlgt(fd);
+    if (a < 0) { errno = EBADF; return 0; }
+    if ((a & 0x800c) != 0x8000 || (a & 0x23) == 0x20) { errno = ENOTTY; return 0; }
+    return 1;
+}
 static int fd_isatty(int fd)
 {
     if (!isatty_cache[fd]) isatty_cache[fd] = isatty(fd) ? 2 : 1;
