@@ -93,6 +93,8 @@ jobs:
         run: VENV=$RUNNER_TEMP/venv net/ssh/crypto68k/tests/run.sh
       - name: chacha68k (Musashi の csim、dropbear の chachapoly.o、RFC 8439)
         run: PY=$RUNNER_TEMP/venv/bin/python .github/ci/chacha68k.sh
+      - name: x68kcli の x68str.S (memcpy・memcmp など、Musashi の csim)
+        run: x68kcli/tests/str/run.sh
 
   zmux:
     name: net/zmux (cargo test、zmux.sys のビルド、にせの X68000 の e2e)
