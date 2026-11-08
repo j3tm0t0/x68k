@@ -351,6 +351,16 @@ SEQ.X 200 | XARGS.X ECHO.X | WC.X -w
 == xargs_split
 SEQ.X 200 | XARGS.X ECHO.X | WC.X -l
 ~[2-9]
+== xargs_n1
+XARGS.X -n1 ECHO.X < ABC.TXT
+a
+b
+c
+== xargs_n1_lf
+XARGS.X -n1 ECHO.X < ABL.TXT
+a
+b
+c
 == diff
 DIFF.X S.TXT S3.TXT
 2d1

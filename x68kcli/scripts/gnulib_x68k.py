@@ -138,6 +138,7 @@ ed('xargs/xargs.c', '      wait_for_proc (false, 0u);\n\n      if (pipe (fd))', 
                    quotearg_n_style (0, locale_quoting_style, argv[0]));
             exit (errno == ENOENT ? XARGS_EXIT_COMMAND_NOT_FOUND : XARGS_EXIT_COMMAND_CANNOT_BE_RUN);
           }
+        procs_executed = true;  /* add_proc を通らないので、ここで「動かした」とする (無いと終わりに引数なしでもう 1 回動かす。xargs -n1 の空行) */
         if (r == 255)
           {
             error (0, 0, _("%s: exited with status 255; aborting"),
