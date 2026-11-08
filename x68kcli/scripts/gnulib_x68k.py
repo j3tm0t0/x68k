@@ -284,6 +284,13 @@ ed('src/util.c', '''      for (char const *p = last; *p; p++)
 
 # --- file: der.h の宣言は int、der.c の定義は int32_t。m68k の newlib では int32_t が long なので合わない ---
 ed('src/der.h', 'file_protected int der_offs(struct magic_set *, struct magic *, size_t);', 'file_protected int32_t der_offs(struct magic_set *, struct magic *, size_t);')
+# file: 型の判定で読む長さの上限が 7MB で、zos.x のペイン (主記憶 2.5MB) では malloc が失敗する。失敗しても libmagic はエラーの文を
+# 設定せずに NULL を返し、file.c は printf("ERROR: %s", NULL) で newlib の strlen がバスエラーになっていた (zerr が出す "file: Bus error")。
+# 上限は 128KB (型の判定に要るのは先頭の数 KB)。malloc の失敗は file_oomem で文を設定する
+ed('src/file.h', '# define FILE_BYTES_MAX (7 * 1024 * 1024)/* how much of the file to look at */',
+   '# ifdef __human68k__\n#  define FILE_BYTES_MAX (128 * 1024)\n# else\n#  define FILE_BYTES_MAX (7 * 1024 * 1024)\n# endif')
+ed('src/magic.c', '\tif ((buf = CAST(unsigned char *, malloc(ms->bytes_max + SLOP))) == NULL)\n\t\treturn NULL;',
+   '\tif ((buf = CAST(unsigned char *, malloc(ms->bytes_max + SLOP))) == NULL) {\n\t\tfile_oomem(ms, ms->bytes_max + SLOP);\n\t\treturn NULL;\n\t}')
 # file: MAGIC の区切りは ; (A:/... の : で切れる)。名前は argv[0] (A:\USR\BIN\FILE.X) から "file" を作る
 ed('src/file.h', '#if defined(__EMX__) || defined (WIN32)\n#define PATHSEP\t\';\'', '#if defined(__EMX__) || defined (WIN32) || defined(__human68k__)\n#define PATHSEP\t\';\'')
 ed('src/file.c', "\tif ((progname = strrchr(argv[0], '/')) != NULL)\n\t\tprogname++;\n\telse\n\t\tprogname = argv[0];",
