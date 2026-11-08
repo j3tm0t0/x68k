@@ -19,6 +19,7 @@ printf 'a 1\nb 1\n  c\t1\n\223\372 2\n' > "$I/UF.TXT"
 printf 'a\tb\n' > "$I/TAB.TXT"
 awk 'BEGIN{for(i=1;i<=2500;i++) printf "word%d\tz q\n", i; printf "L"; for(i=0;i<5000;i++) printf "ab\t"; printf "\nend\n"}' > "$I/W40.TXT"   # 46KB (wc は 32KB ずつ読む。長い行が境目をまたぐ)
 printf 'a\nb\n' > "$I/S3.TXT"
+printf 'a b c\r\n' > "$I/ABC.TXT"; printf 'a b c\n' > "$I/ABL.TXT"   # xargs -n1 (CRLF と LF)
 printf 'gz\n' > "$I/G.TXT"
 printf 'a\nb\nc\n' > "$I/D1.TXT"; printf 'a\nB\nc\n' > "$I/D2.TXT"; printf 'a\nb\nC\n' > "$I/D3.TXT"
 printf '2^10\nscale=3\n1/3\nquit\n' > "$I/BCIN.TXT"

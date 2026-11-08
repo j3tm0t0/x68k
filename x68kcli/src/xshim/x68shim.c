@@ -324,7 +324,9 @@ int x68_spawnvp(const char *file, char *const argv[])
     if (findprog(file, full, sizeof full) < 0) { errno = ENOENT; return -1; }
     if (mkcomline(argv, &cl) < 0) return -1;
     if (!(env = mkenv())) { errno = ENOMEM; return -1; }
-    fflush(NULL);
+    /* 書く側だけ流す。fflush(NULL) は読む側 (stdin) も流し、newlib は読み残しの分だけ lseek で戻す。テキストの読み込みは
+       CR を除くので戻す量がずれ、xargs -n1 が読みかけの入力を取りこぼした (CRLF で b が消える、LF で空の 1 回が増える) */
+    fflush(stdout); fflush(stderr);
     r = _dos_loadexec(full, &cl, env);
     free(env);
     if (r < 0 && (unsigned)r >= 0xffffff00u) { errno = r == -2 ? ENOENT : ENOEXEC; return -1; }
@@ -1264,7 +1266,9 @@ static int run_line(const char *prog, const char *args)
     cl.len = n;
     if (findprog(prog, full, sizeof full) < 0) { errno = ENOENT; return -1; }
     if (!(env = mkenv())) { errno = ENOMEM; return -1; }
-    fflush(NULL);
+    /* 書く側だけ流す。fflush(NULL) は読む側 (stdin) も流し、newlib は読み残しの分だけ lseek で戻す。テキストの読み込みは
+       CR を除くので戻す量がずれ、xargs -n1 が読みかけの入力を取りこぼした (CRLF で b が消える、LF で空の 1 回が増える) */
+    fflush(stdout); fflush(stderr);
     r = _dos_loadexec(full, &cl, env);
     free(env);
     return r < 0 ? -1 : (r & 0xff);
