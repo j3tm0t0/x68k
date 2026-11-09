@@ -57,6 +57,16 @@ want "zos: ↑ で 31 から" "$(echo "$z3" | head -1)" '^31$'
 want "zos: Ctrl+C で less は終わらない (31 から、下に :)" "$(scr "$OUT/zos/z5.bin" | sed 1d | head -1) $(scr "$OUT/zos/z5.bin" | tail -1)" '^31 :'
 want "zos: q の後に zosh に戻る" "$z4" '^back'
 want "zos: q の後に less の前の画面に戻る (別の画面、CSI ? 1049)" "$(echo "$z4" | grep -c 'less\.x N\.TXT') $(echo "$z4" | grep -c -E '^3[0-9]$')" '^1 0$'
+# 2b. 終わり (EOF) まで行くファイル: 短いファイルと、長いファイルの G。(END) が出て q で戻る
+#     (テキストのまま開くと CR を抜いた分だけ lseek の長さと合わず、終わりで読み直し続けて止まっていた)
+printf 'one\r\ntwo\r\n' > "$OUT/in/E.TXT"
+ZOS_OUT=$OUT/eof ZOS_CONFIG='ENVSET = 8192' ZOS_TIMEOUT=150 \
+FILES="$ZOS/kernel/zos.x $ZOS/shell/src/zosh.x $X/build/x/gnu/less.x $OUT/in/E.TXT $OUT/in/N.TXT" \
+ZOS_KEYS='waittext A: 60;sleep 3;type less.x E.TXT\n;sleep 10;dump e1.bin 0xE00000 0x80000;type q;sleep 3;type less.x N.TXT\n;sleep 15;type G;sleep 8;dump e2.bin 0xE00000 0x80000;type q;sleep 3;type echo back\n;sleep 3;dump e3.bin 0xE00000 0x80000;type exit\n' \
+  "$K/xeij_run.sh" 'ZOS.X -x -o SNAP.TXT A:\ZOSH.X' > "$OUT/eof.log" 2>&1
+want "eof: 短いファイルで (END) が出る" "$(scr "$OUT/eof/e1.bin" | tail -1)" '\(END\)'
+want "eof: G で 200 と (END)" "$(scr "$OUT/eof/e2.bin" | tail -2 | tr '\n' ' ')" '^200 .*\(END\)'
+want "eof: q の後に zosh に戻る" "$(scr "$OUT/eof/e3.bin")" '^back'
 # 3. 左右に割った zos.x のペイン (右は 48 桁): a と 23 字 = 47 桁で折り返し (24 字目は 48・49 桁目にかかるので次の行へ)、
 #    3 行目は 13 字と END1 = 30 桁 (2 行目の 24 字はペインの 48 桁ちょうど。term/vt100 は右端ちょうどで終わる 2 バイトの字を
 #    描かないので、2 行目の幅は見ない)

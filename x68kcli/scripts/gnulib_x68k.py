@@ -441,6 +441,10 @@ ed('sed/regexp.c', '''  /* Optimized handling for '^' and '$' patterns */
 
   /* Optimized handling for '^' and '$' patterns */
   if (regex->begline || regex->endline)''', pkg='sed')
+# less: ファイルをテキストのまま開くと、newlib (src/xshim の read の包み) が CR を抜くので、lseek で見た長さより読める量が少なく、
+# 終わり (EOF) に来ると「まだ続きがある」として読み直し続けて止まっていた (短いファイルと G。CPU 95%、q も効かない)。
+# MS-DOS と同じくバイナリで開く (CR LF の CR は less が消して出す)
+ed('less.h', '#if MSDOS_COMPILER || OS2\n#define OPEN_READ       (O_RDONLY|O_BINARY)', '#if MSDOS_COMPILER || OS2 || defined(__human68k__)\n#define OPEN_READ       (O_RDONLY|O_BINARY)', pkg='less')
 # less: Unicode の「表示しない文字」の表 (omit.uni、U+00AD のソフトハイフン) を、UTF-8 でない (1 バイトずつの) ときにも当てていた。
 # Shift_JIS の 2 バイト目が 0xAD の字 (く = 82 AD など) の 2 バイト目が消え、後ろがずれる。UTF-8 のときだけ当てる
 ed('charset.c', 'public lbool is_omit_char(LWCHAR ch)\n{\n', 'public lbool is_omit_char(LWCHAR ch)\n{\n\tif (!utf_mode) return FALSE;   /* X68000: Shift_JIS の 2 バイト目の 0xAD を消さない */\n', pkg='less')
