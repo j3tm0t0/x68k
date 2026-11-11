@@ -112,6 +112,7 @@ netpipe のレコード `[0xA8][3][ID のビット]` (HIDE) を送る。ビッ�
 - 橋 (PicoBridge) は SCSI の選択のたびに picosim に「この ID は応答するか」(要求の path = 2、応答の status 0xff = しない) を
   聞き、しない ID は XEiJ の SPC で選択のタイムアウトにする。picosim に無い ID もこれでタイムアウトになる
 - XEiJ は SPC の RST 出力をまねないので、XEiJ のリセットのたびに橋が path = 3 でバスリセットを知らせる。
+  picosim につながっていない間のリセットは保留し、次の選択か命令の前に届ける。
   試験からのリセットは `xeijcmd.sh call xeij.PicoBridge reset`
 - ディスクを 3 つ出す例: `picosim -0 id0.hds -H 1:id1.hds -H 4:id4.hds` と `-Dpicosim.ids=0,1,4,6`
   (試験は x68k-zos の `boot/tests/bootmenu_test.sh`)

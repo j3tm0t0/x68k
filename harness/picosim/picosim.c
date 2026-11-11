@@ -460,6 +460,8 @@ static int serve_one(int fd)
     if (path == 3) {
       if (hidden_ids)
         picosim_log("bootctl: bus reset, hidden IDs 0x%02x are back\n", hidden_ids);
+      else if (picosim_verbose)
+        picosim_log("bootctl: bus reset\n");
       hidden_ids = 0;
     } else {
       if (use_pzl)
