@@ -230,6 +230,44 @@ static int z_write(int id, uint32_t lba, const uint8_t *buf)
   return r;
 }
 
+/* ---- 起動の制御 (netpipe のレコード 0xA8。x68k-zos #172 の起動メニューが ID 0 の IPL から送る) ----
+ *   要求 [0xA8][op][引数]  応答 [0xA8][op][status][値]
+ *   op 0 PING        -> [版 1][隠している ID のビット]
+ *   op 3 HIDE [ビット] -> [隠している ID のビット]。ビット n の ID は、次の SCSI バスリセットまで選択に応答しない
+ *                        (ID 6 自身は隠さない)。BlueSCSI の x68k-bootsel のファーム (BlueSCSI_x68np.cpp) と同じ決まり。
+ * XEiJ はバスリセット (SPC の RST 出力) をまねないので、橋 (PicoBridge) が XEiJ のリセットのたびに path 3 で知らせる */
+#define BOOT_MARK 0xa8
+static uint8_t hidden_ids;
+
+static int bootctl_exchange(const uint8_t *req, int reqlen, uint8_t *res, int resmax, int *more)
+{
+  if (reqlen < 2 || resmax < 5)
+    return 0;
+  res[0] = BOOT_MARK;
+  res[1] = req[1];
+  res[2] = 0;
+  switch (req[1]) {
+  case 0:
+    res[3] = 1;
+    res[4] = hidden_ids;
+    return 5;
+  case 3:
+    if (reqlen < 3) {
+      res[2] = 2;
+      return 3;
+    }
+    hidden_ids = req[2] & ~(1 << 6);
+    picosim_log("bootctl: SCSI IDs hidden until the next bus reset, mask 0x%02x\n", hidden_ids);
+    res[3] = hidden_ids;
+    return 4;
+  }
+  res[2] = 3;
+  return 3;
+}
+
+static const struct picosim_svc bootctl_svc = { "bootctl", BOOT_MARK, NULL, bootctl_exchange, NULL };
+__attribute__((constructor)) static void bootctl_reg(void) { picosim_register_svc(&bootctl_svc); }
+
 /* ---- 命令 ---- */
 static void check(struct ps_result *r, struct target *t, int key, int asc, int ascq)
 {
@@ -248,8 +286,8 @@ static void scsi(int id, const uint8_t *cdb, const uint8_t *out, uint32_t outlen
   memset(r, 0, sizeof *r);
   if (use_pzl)
     t->present = pzlh_present(id & 7);
-  if (!t->present) {
-    /* 対象の無い ID: 選択のタイムアウトは XEiJ 側で作れないので、LUN が無いことにする */
+  if (!t->present || (hidden_ids >> (id & 7) & 1)) {
+    /* 対象の無い ID・隠している ID: 新しい橋は先に path 2 で確かめて選択のタイムアウトにする。古い橋のために LUN が無いことにする */
     static struct target none;
     check(r, &none, 5, 0x25, 0);
     return;
@@ -416,9 +454,25 @@ static int serve_one(int fd)
   int id = h[8] & 7, path = h[9];
   if (outlen > PS_DATA_MAX || readn(fd, ibuf, outlen) < 0)
     return -1;
-  scsi(id, h + 16, ibuf, outlen, &r, obuf);
+  if (path == 2 || path == 3) {
+    /* path 2: この ID は選択に応答するか (status 0 = する、0xff = しない)。path 3: SCSI のバスリセット */
+    memset(&r, 0, sizeof r);
+    if (path == 3) {
+      if (hidden_ids)
+        picosim_log("bootctl: bus reset, hidden IDs 0x%02x are back\n", hidden_ids);
+      else if (picosim_verbose)
+        picosim_log("bootctl: bus reset\n");
+      hidden_ids = 0;
+    } else {
+      if (use_pzl)
+        tg[id].present = pzlh_present(id);
+      if (!tg[id].present || (hidden_ids >> id & 1))
+        r.status = 0xff;
+    }
+  } else
+    scsi(id, h + 16, ibuf, outlen, &r, obuf);
   st_cmds++;
-  if (path)
+  if (path == 1)
     st_mbx++;
   else
     st_spc++;

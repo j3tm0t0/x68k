@@ -100,8 +100,27 @@ public class PicoBridge {
     t.start ();
   }
 
+  //XEiJ のリセット (メニューの「リセット」と同じ)。試験からは xeijcmd.sh call xeij.PicoBridge reset
+  public static void reset () {
+    XEiJ.mpuReset (-1, -1);
+  }
+
+  //バスリセットを picosim に知らせる (path 3)。届かなければ保留のままにして、次の transact の前にもう一度試す
+  static volatile boolean resetPending;
+  static synchronized void flushReset () {
+    if (resetPending) {
+      resetPending = false;
+      if (transact (0, 3, new byte[16], 6, null, 0, 0) == null) {
+        resetPending = true;
+      }
+    }
+  }
+
   //1 命令を picosim に渡す。つながらなければ null (呼び出し側が NOT READY にする)
   static synchronized Reply transact (int id, int path, byte[] cdb, int cdblen, byte[] data, int off, int len) {
+    if (resetPending && path != 3) {
+      flushReset ();  //つながっていない間に出たバスリセットを、次の選択や命令より先に届ける
+    }
     long t0 = System.nanoTime ();
     for (int attempt = 0; attempt < 2; attempt++) {
       if (sock == null) {
@@ -242,6 +261,28 @@ public class PicoBridge {
       super (number, null);
       abuConnected = true;
       abuInserted = true;
+    }
+
+    //選択に応答するか。picosim に対象が無い ID と、起動メニューが隠した ID (0xA8 HIDE) は選択のタイムアウトにする。
+    //古い picosim は path 2 を TEST UNIT READY として扱い 0 か 2 を返すので、これまでどおり応答する
+    @Override public boolean isConnected () {
+      if (scuChip == null) {
+        return abuConnected;
+      }
+      Reply r = transact (abuNumber, 2, new byte[16], 6, null, 0, 0);
+      return r == null || r.status != 0xff;
+    }
+
+    //XEiJ のリセット (SPC.spcReset)。実機ではここで ROM が SCSI のバスリセットを出すので、picosim に知らせる (隠した ID が戻る)
+    @Override public void scuReset (SPC.SPCChip chip) {
+      super.scuReset (chip);
+      if (chip != null) {
+        //つながっていなければ保留にして、次の選択か命令の前に届ける (ここでは接続を待たない)。ID ごとに呼ばれるが、知らせるのは 1 回
+        resetPending = true;
+        if (sock != null) {
+          flushReset ();
+        }
+      }
     }
 
     @Override public void scuCommand (int oc) {

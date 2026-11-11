@@ -100,6 +100,23 @@ make -C driver bootwait1.bin bootwait.bin hdsboot.bin settingui.bin scsiremote.b
 | `-p lan.pcap` | | LAN を流れた Ethernet フレームを pcap に (`tcpdump -nn -r`) |
 | `-s 秒` `-v` | | 統計を定期的に (`kill -USR1` でも) / `-vv` で命令ごと、`-vvv` でフレームごとの記録 |
 
+## ID を隠す (起動メニュー、0xA8)
+
+x68k-zos #172 の起動メニュー (SCSI ID 0 の IPL に入れるローダー) は、別の ID へ乗り換える直前に、ID 6 へ
+netpipe のレコード `[0xA8][3][ID のビット]` (HIDE) を送る。ビットの立った ID は、次の SCSI バスリセットまで選択に
+応答しなくなり、Human68k は残った ID の小さい順にドライブ名を付ける (乗り換えた先が A: になる)。BlueSCSI の
+自前のファーム (x68k-bootsel) と同じ決まりを picosim も持つ。
+
+- 要求 `[0xA8][op][引数]`、応答 `[0xA8][op][status][値]`。op 0 = PING (`[版][隠している ID]`)、op 3 = HIDE。ID 6 は隠さない
+- 起動メニューは IP を知らないので、見出しの stat が 0 の交換でも 0xA8 だけは受ける
+- 橋 (PicoBridge) は SCSI の選択のたびに picosim に「この ID は応答するか」(要求の path = 2、応答の status 0xff = しない) を
+  聞き、しない ID は XEiJ の SPC で選択のタイムアウトにする。picosim に無い ID もこれでタイムアウトになる
+- XEiJ は SPC の RST 出力をまねないので、XEiJ のリセットのたびに橋が path = 3 でバスリセットを知らせる。
+  picosim につながっていない間のリセットは保留し、次の選択か命令の前に届ける。
+  試験からのリセットは `xeijcmd.sh call xeij.PicoBridge reset`
+- ディスクを 3 つ出す例: `picosim -0 id0.hds -H 1:id1.hds -H 4:id4.hds` と `-Dpicosim.ids=0,1,4,6`
+  (試験は x68k-zos の `boot/tests/bootmenu_test.sh`)
+
 ## Pico Z Loader の起動 (bootwait.c)
 
 フォーク (yunkya2/x68kzremotedrv の j3tm0t0 版、branch bootwait 8f91624) の `src/bootwait.c`・`virtual_disk.c`・

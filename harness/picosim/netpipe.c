@@ -314,6 +314,23 @@ static void exchange(void)
   memcpy(&z, reqbuf + 12, 4);
   int r = z != 0 && magic == MAGIC_R;
   st_xchg++;
+  if (z == 0 && magic == MAGIC_R && txlen >= 4 && reqbuf[18] == 0xa8) {
+    /* 起動メニュー (ID 0 の IPL) の 0xA8 は、IP の無い交換 (stat = 0) でも受ける。npd.x が来る前なので、運び方の状態は変えない */
+    svc_res_len = 0;
+    svc_more = 0;
+    if (rxmax > NP_DATAMAX)             /* 応答は resbuf + 16 に写す。下の通常の交換と同じ上限 */
+      rxmax = NP_DATAMAX;
+    out_rec(reqbuf + 16, txlen);
+    if (svc_res_len > rxmax)
+      svc_res_len = 0;
+    memcpy(resbuf + 16, svc_res, svc_res_len);
+    p32(resbuf, magic);
+    p32(resbuf + 4, seq);
+    p16(resbuf + 8, svc_res_len);
+    p16(resbuf + 10, 0);
+    p32(resbuf + 12, 0);
+    return;
+  }
   if (z != zip || r != raw) {
     zip = z;
     raw = r;

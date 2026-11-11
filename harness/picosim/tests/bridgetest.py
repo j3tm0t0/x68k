@@ -190,6 +190,38 @@ if "echo" in os.path.basename(PICOSIM):
     check("DNS from an attached interface (lan_send) is answered", r and r[0][2] == 0 and r[0][3] >= 1,
           "rcode=%d answers=%d" % (r[0][2], r[0][3]) if r else "no reply")
 
+# ---- 起動の制御 (0xA8、x68k-zos #172 の起動メニュー): ID を隠す、バスリセットで戻る ----
+check("select probe (path 2): id6 answers", cmd(6, bytes(6), path=2)[0] == 0)
+check("select probe (path 2): absent id does not answer", cmd(3, bytes(6), path=2)[0] == 0xff)
+_, data = xchg(zrec(bytes([0xa8, 3, 0x41])))
+r = [x for x in recs(data) if x and x[0] == 0xa8]
+check("0xA8 HIDE 0x41 -> hidden 0x01 (id6 is never hidden)", r == [bytes([0xa8, 3, 0, 0x01])], repr(r))
+_, data = xchg(zrec(bytes([0xa8, 0])))
+r = [x for x in recs(data) if x and x[0] == 0xa8]
+check("0xA8 PING reports the hidden ids", r == [bytes([0xa8, 0, 0, 1, 0x01])], repr(r))
+check("bus reset (path 3)", cmd(0, bytes(6), path=3)[0] == 0)
+_, data = xchg(zrec(bytes([0xa8, 0])))
+r = [x for x in recs(data) if x and x[0] == 0xa8]
+check("hidden ids are back after the bus reset", r == [bytes([0xa8, 0, 0, 1, 0])], repr(r))
+# 起動メニューは IP を知らない (stat = 0)。0xA8 だけはそれでも受ける
+req = (struct.pack(">IIHHI", 0x58364e52, 0x5a5a0001, 6, 496, 0) + zrec(bytes([0xa8, 3, 0x02]))).ljust(512, b"\0")
+write10(6, 0x100000, req)
+_, _, d = read10(6, 0x110000, 1)
+check("0xA8 HIDE in an exchange without an IP (stat = 0)", d[:8] == req[:8] and d[32:36] == bytes([0xa8, 3, 0, 0x02]), d[:40].hex())
+cmd(0, bytes(6), path=3)
+# rxmax = 4096 に PING 186 個: 応答のレコードが 4092 バイトになり、応答の置き場 (4080 バイト) に入らない。あふれさせずに空で返す
+many = zrec(bytes([0xa8, 0])) * 186
+req = (struct.pack(">IIHHI", 0x58364e52, 0x5a5a0002, len(many), 4096, 0) + many)
+req = req.ljust((len(req) + 511) // 512 * 512, b"\0")
+write10(6, 0x100000, req)
+zsect -= 64                             # 先読みで覚えられていない所から読む
+st, _, d = read10(6, zsect, 8)
+n = struct.unpack(">H", d[8:10])[0] if len(d) >= 16 else -1
+check("0xA8 x186 with rxmax 4096 does not overflow the answer", st == 0 and d[:8] == req[:8] and 0 <= n <= 4080, "len %d" % n)
+_, data = xchg(zrec(bytes([0xa8, 0])))
+r = [x for x in recs(data) if x and x[0] == 0xa8]
+check("0xA8 PING still answers after that", r == [bytes([0xa8, 0, 0, 1, 0])], repr(r))
+
 # Mac -> Z の転送 (rcmd.x の 2323): SYN が Z に届く
 c = socket.socket()
 c.setblocking(False)
