@@ -50,7 +50,7 @@ def read10(id, lba, n): return cmd(id, struct.pack(">BBIBHB", 0x28, 0, lba, 0, n
 def write10(id, lba, data): return cmd(id, struct.pack(">BBIBHB", 0x2a, 0, lba, 0, len(data) // 512, 0), data)
 
 st, _, d = cmd(6, bytes([0x12, 0, 0, 0, 36, 0]), path=0)
-check("inquiry id6", st == 0 and d[8:16] == b"PICOSIM " and len(d) == 36)
+check("inquiry id6", st == 0 and d[8:16] == b"PICOSIM " and d[16:32] == b"X68NP netpipe   " and len(d) == 36)
 st, _, d = cmd(6, bytes([0x25] + [0] * 9), path=0)
 check("read capacity id6", st == 0 and struct.unpack(">II", d) == (0x3fffff, 512))
 st, _, d = read10(6, 0, 1)
