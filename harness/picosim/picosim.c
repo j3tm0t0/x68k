@@ -332,7 +332,14 @@ static void scsi(int id, const uint8_t *cdb, const uint8_t *out, uint32_t outlen
     in[3] = 2;
     in[4] = 31;
     memcpy(in + 8, "PICOSIM ", 8);
-    memcpy(in + 16, id == 6 ? "netpipe ID6     " : "HDS image       ", 16);
+    /* ID 6 の製品名は "X68NP" で始める。起動メニュー (x68k-zos boot/bootmenu) が、要求を書く前に netpipe の装置かを
+     * これで見分ける。BlueSCSI の x68k-bootsel のファームも同じ製品名を返す */
+    memcpy(in + 16, id == 6 ? "X68NP netpipe   " : "HDS image       ", 16);
+    if (id == 6 && getenv("PICOSIM_ID6_PRODUCT")) {   /* 試験用: 目印の無い古いファームのまね */
+      size_t n = strlen(getenv("PICOSIM_ID6_PRODUCT"));
+      memset(in + 16, ' ', 16);
+      memcpy(in + 16, getenv("PICOSIM_ID6_PRODUCT"), n < 16 ? n : 16);
+    }
     memcpy(in + 32, "1.0 ", 4);
     r->len = alloc < 36 ? alloc : 36;
     return;
