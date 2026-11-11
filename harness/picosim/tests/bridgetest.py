@@ -209,6 +209,18 @@ write10(6, 0x100000, req)
 _, _, d = read10(6, 0x110000, 1)
 check("0xA8 HIDE in an exchange without an IP (stat = 0)", d[:8] == req[:8] and d[32:36] == bytes([0xa8, 3, 0, 0x02]), d[:40].hex())
 cmd(0, bytes(6), path=3)
+# rxmax = 4096 に PING 186 個: 応答のレコードが 4092 バイトになり、応答の置き場 (4080 バイト) に入らない。あふれさせずに空で返す
+many = zrec(bytes([0xa8, 0])) * 186
+req = (struct.pack(">IIHHI", 0x58364e52, 0x5a5a0002, len(many), 4096, 0) + many)
+req = req.ljust((len(req) + 511) // 512 * 512, b"\0")
+write10(6, 0x100000, req)
+zsect -= 64                             # 先読みで覚えられていない所から読む
+st, _, d = read10(6, zsect, 8)
+n = struct.unpack(">H", d[8:10])[0] if len(d) >= 16 else -1
+check("0xA8 x186 with rxmax 4096 does not overflow the answer", st == 0 and d[:8] == req[:8] and 0 <= n <= 4080, "len %d" % n)
+_, data = xchg(zrec(bytes([0xa8, 0])))
+r = [x for x in recs(data) if x and x[0] == 0xa8]
+check("0xA8 PING still answers after that", r == [bytes([0xa8, 0, 0, 1, 0])], repr(r))
 
 # Mac -> Z の転送 (rcmd.x の 2323): SYN が Z に届く
 c = socket.socket()

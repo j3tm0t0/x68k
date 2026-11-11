@@ -318,6 +318,8 @@ static void exchange(void)
     /* 起動メニュー (ID 0 の IPL) の 0xA8 は、IP の無い交換 (stat = 0) でも受ける。npd.x が来る前なので、運び方の状態は変えない */
     svc_res_len = 0;
     svc_more = 0;
+    if (rxmax > NP_DATAMAX)             /* 応答は resbuf + 16 に写す。下の通常の交換と同じ上限 */
+      rxmax = NP_DATAMAX;
     out_rec(reqbuf + 16, txlen);
     if (svc_res_len > rxmax)
       svc_res_len = 0;
