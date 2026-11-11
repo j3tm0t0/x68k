@@ -259,6 +259,10 @@ static int bootctl_exchange(const uint8_t *req, int reqlen, uint8_t *res, int re
     hidden_ids = req[2] & ~(1 << 6);
     picosim_log("bootctl: SCSI IDs hidden until the next bus reset, mask 0x%02x\n", hidden_ids);
     res[3] = hidden_ids;
+    if (hidden_ids && getenv("PICOSIM_HIDE_BADREPLY")) {   /* 試験用: 隠したのに、応答は失敗にする (取り消しの試験) */
+      res[2] = 1;
+      return 3;
+    }
     return 4;
   }
   res[2] = 3;

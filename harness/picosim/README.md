@@ -111,6 +111,7 @@ netpipe のレコード `[0xA8][3][ID のビット]` (HIDE) を送る。ビッ�
 - 起動メニューは IP を知らないので、見出しの stat が 0 の交換でも 0xA8 だけは受ける
 - ID 6 の INQUIRY の製品名は `X68NP netpipe` (製造元は `PICOSIM`)。起動メニューは、製品名が `X68NP` で始まるかを見て、
   要求を書いてよい装置かを決める。環境変数 `PICOSIM_ID6_PRODUCT=名前` で製品名を替えられる (目印の無い古いファームのまね)
+- 環境変数 `PICOSIM_HIDE_BADREPLY=1` を付けると、HIDE で ID を隠したうえで応答だけ失敗にする (起動メニューが取り消しを送る場合の試験)
 - 橋 (PicoBridge) は SCSI の選択のたびに picosim に「この ID は応答するか」(要求の path = 2、応答の status 0xff = しない) を
   聞き、しない ID は XEiJ の SPC で選択のタイムアウトにする。picosim に無い ID もこれでタイムアウトになる
 - XEiJ は SPC の RST 出力をまねないので、XEiJ のリセットのたびに橋が path = 3 でバスリセットを知らせる。
