@@ -3,7 +3,7 @@
  *            XEiJ (harness/xeij/agent/PicoBridge.java) が SCSI の命令を TCP で渡してくる
  *
  *   picosim [-l 127.0.0.1:6868] [-n 192.168.1.0/24] [-g 192.168.1.1] [-D DNS] [-L [u]PORT:ZPORT]...
- *           [-0 disk.hds] [-H ID:データの HDS]... [-T Wi-Fi,SMB,HDS の秒] [-N 秒] [-B 控え] [-F ファームの driver/] [-C 制御] [-K 設定] [-R B: の中身]... [-c MB] [-r KB] [-d µs] [-a 倍率] [-s 秒] [-p lan.pcap] [-v]
+ *           [-0 disk.hds] [-H ID:データの HDS]... [-G ID:ゲームの DIR] [-T Wi-Fi,SMB,HDS の秒] [-N 秒] [-B 控え] [-F ファームの driver/] [-C 制御] [-K 設定] [-R B: の中身]... [-c MB] [-r KB] [-d µs] [-a 倍率] [-s 秒] [-p lan.pcap] [-v]
  *
  * 受け持つ SCSI ID:
  *   ID 6 = netpipe (netpipe.c)。LBA 0x100000 の要求と 0x110000〜0x1ffff7 の応答。ほかの LBA は 0 を返し、書き込みは捨てる
@@ -28,6 +28,8 @@
 #include <time.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <dirent.h>
+#include <strings.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
@@ -235,9 +237,170 @@ static int z_write(int id, uint32_t lba, const uint8_t *buf)
  *   op 0 PING        -> [版 1][隠している ID のビット]
  *   op 3 HIDE [ビット] -> [隠している ID のビット]。ビット n の ID は、次の SCSI バスリセットまで選択に応答しない
  *                        (ID 6 自身は隠さない)。BlueSCSI の x68k-bootsel のファーム (BlueSCSI_x68np.cpp) と同じ決まり。
+ *   op 1 LIST [ID][番号]   -> [数][今の番号][長さ][表示名]。ゲーム用の ID (-G ID:DIR) に見せられるイメージの番号番目
+ *   op 2 SELECT [ID][番号] -> [番号]。その ID のイメージを番号番目のファイルに替える (下の「ゲーム用の ID」)
  * XEiJ はバスリセット (SPC の RST 出力) をまねないので、橋 (PicoBridge) が XEiJ のリセットのたびに path 3 で知らせる */
 #define BOOT_MARK 0xa8
 static uint8_t hidden_ids;
+
+/* ---- ゲーム用の ID (-G ID:DIR。x68k-zos の起動メニューの「イメージを選ぶ」項目) ----
+ * DIR の *.hds (と *.hda) を名前順 (大文字小文字は区別しない) に並べたものが一覧。'.' で始まる名前と、39 バイトを
+ * 超える名前は入れない。64 個まで。表示名は、同じ名前の .txt があればその 1 行目 (40 バイトまで)、無ければ拡張子を
+ * 除いたファイル名。選んだファイル名は DIR/lastgame.txt に書き、次に起動したときはそのイメージから始める。
+ * LIST の番号 0 で DIR を読み直す。SELECT の番号は、最後に読み直したときの一覧のもの。
+ * status: 0 = 済んだ、2 = 要求が短い、3 = 知らない op、4 = その ID はゲーム用でない、5 = 番号が一覧の外、
+ *         6 = 開けない (前のイメージのまま) */
+#define GAME_MAX   64
+#define GAME_NAME  40
+#define GAME_LABEL 40
+static int game_id = -1, game_n, game_cur = -1;
+static const char *game_dir;
+static char game_name[GAME_MAX][GAME_NAME], game_now[GAME_NAME];
+
+static void game_scan(void)
+{
+  DIR *d = opendir(game_dir);
+  struct dirent *e;
+  game_n = 0;
+  game_cur = -1;
+  if (!d)
+    return;
+  while ((e = readdir(d)) != NULL) {    /* 名前順に差し込む。64 個を超えたら、名前順で後ろのものを落とす */
+    size_t n = strlen(e->d_name);
+    int pos = game_n;
+    if (e->d_name[0] == '.' || n < 5 || n >= GAME_NAME ||
+        (strcasecmp(e->d_name + n - 4, ".hds") && strcasecmp(e->d_name + n - 4, ".hda")))
+      continue;
+    while (pos > 0 && strcasecmp(game_name[pos - 1], e->d_name) > 0)
+      pos--;
+    if (pos >= GAME_MAX)
+      continue;
+    if (game_n < GAME_MAX)
+      game_n++;
+    memmove(game_name[pos + 1], game_name[pos], (size_t)(game_n - 1 - pos) * GAME_NAME);
+    strcpy(game_name[pos], e->d_name);
+  }
+  closedir(d);
+  for (int i = 0; i < game_n; i++)
+    if (!strcasecmp(game_name[i], game_now))
+      game_cur = i;
+}
+
+static int game_label(int i, uint8_t *out)
+{
+  char path[1200], line[GAME_LABEL + 1];
+  int n = (int)strlen(game_name[i]) - 4;
+  FILE *f;
+  snprintf(path, sizeof path, "%s/%.*s.txt", game_dir, n, game_name[i]);
+  if ((f = fopen(path, "rb")) != NULL) {
+    size_t k = fread(line, 1, GAME_LABEL, f);
+    fclose(f);
+    line[k] = 0;
+    k = strcspn(line, "\r\n\x1a");
+    if (k) {
+      memcpy(out, line, k);
+      return (int)k;
+    }
+  }
+  memcpy(out, game_name[i], n);
+  return n;
+}
+
+static int game_open(int i, int first)
+{
+  char path[1200];
+  struct stat st;
+  snprintf(path, sizeof path, "%s/%s", game_dir, game_name[i]);
+  if (stat(path, &st) < 0 || st.st_size < 512)
+    return -1;
+  if (first)
+    pz_hds_add(game_id, strdup(path));
+  else if (pz_hds_switch(game_id, path) < 0)
+    return -1;
+  tg[game_id].present = 1;
+  tg[game_id].name = "game";
+  tg[game_id].sects = (uint32_t)(st.st_size / 512);
+  strcpy(game_now, game_name[i]);
+  game_cur = i;
+  return 0;
+}
+
+/* -G: 前に選んだもの (lastgame.txt) があればそれ、無ければ一覧の先頭を開く */
+static void game_init(int id, const char *dir)
+{
+  char path[1200], last[GAME_NAME + 2] = "";
+  FILE *f;
+  int i, pick = 0;
+  game_id = id;
+  game_dir = dir;
+  game_scan();
+  snprintf(path, sizeof path, "%s/lastgame.txt", dir);
+  if ((f = fopen(path, "rb")) != NULL) {
+    if (fgets(last, sizeof last, f))
+      last[strcspn(last, "\r\n")] = 0;
+    fclose(f);
+  }
+  for (i = 0; i < game_n; i++)
+    if (!strcasecmp(game_name[i], last))
+      pick = i;
+  if (game_n == 0 || game_open(pick, 1) < 0) {
+    picosim_log("games: no image in %s, id%d is not a game slot\n", dir, id);
+    game_id = -1;
+    return;
+  }
+  picosim_log("games: id%d = %s/%s (%d images, %u sectors)\n", id, dir, game_now, game_n, tg[id].sects);
+}
+
+static int game_exchange(const uint8_t *req, int reqlen, uint8_t *res)
+{
+  int i;
+  if (reqlen < 4) {
+    res[2] = 2;
+    return 3;
+  }
+  if (game_id < 0 || req[2] != game_id) {
+    res[2] = 4;
+    return 3;
+  }
+  i = req[3];
+  if (req[1] == 1) {                    /* LIST */
+    if (i == 0)
+      game_scan();
+    res[3] = game_n;
+    res[4] = game_cur < 0 ? 0xff : game_cur;
+    res[5] = 0;
+    if (i >= game_n) {
+      res[2] = 5;
+      return 6;
+    }
+    res[5] = game_label(i, res + 6);
+    return 6 + res[5];
+  }
+  res[3] = i;                           /* SELECT */
+  if (i >= game_n) {
+    res[2] = 5;
+    return 4;
+  }
+  if (i != game_cur) {
+    if (game_open(i, 0) < 0) {
+      picosim_log("games: cannot open %s, id%d stays on %s\n", game_name[i], game_id, game_now);
+      res[2] = 6;
+      return 4;
+    }
+    picosim_cache_clear();
+  }
+  {                                     /* 今のイメージを選び直したときも書く (lastgame.txt がまだ無いことがある) */
+    char path[1200];
+    FILE *f;
+    snprintf(path, sizeof path, "%s/lastgame.txt", game_dir);
+    if ((f = fopen(path, "wb")) != NULL) {
+      fprintf(f, "%s\r\n", game_now);
+      fclose(f);
+    }
+  }
+  picosim_log("games: id%d = %s (%u sectors)\n", game_id, game_now, tg[game_id].sects);
+  return 4;
+}
 
 static int bootctl_exchange(const uint8_t *req, int reqlen, uint8_t *res, int resmax, int *more)
 {
@@ -251,6 +414,10 @@ static int bootctl_exchange(const uint8_t *req, int reqlen, uint8_t *res, int re
     res[3] = 1;
     res[4] = hidden_ids;
     return 5;
+  case 1: case 2:
+    if (resmax < 6 + GAME_LABEL)
+      return 0;
+    return game_exchange(req, reqlen, res);
   case 3:
     if (reqlen < 3) {
       res[2] = 2;
@@ -552,7 +719,7 @@ static void usage(void)
 {
   fprintf(stderr,
           "usage: picosim [--pzl[=config.txt] [--pzl-root=DIR] [--pzl-flash=F] [--pzl-ip=A] [--pzl-zip=A]] [-l 127.0.0.1:6868] [-n 192.168.1.0/24] [-g GW] [-D DNS] [-L [u]PORT:ZPORT|none]...\n"
-          "               [-0 disk.hds] [-H ID:data.hds]... [-T wifi,smb,hds] [-N sec] [-B snap] [-F fwdir] [-C ctlfile] [-K config] [-R dir]... [-c MB] [-r KB] [-d us] [-a scale] [-s sec] [-p lan.pcap] [-v]\n");
+          "               [-0 disk.hds] [-H ID:data.hds]... [-G ID:gamedir] [-T wifi,smb,hds] [-N sec] [-B snap] [-F fwdir] [-C ctlfile] [-K config] [-R dir]... [-c MB] [-r KB] [-d us] [-a scale] [-s sec] [-p lan.pcap] [-v]\n");
   exit(2);
 }
 
@@ -590,7 +757,7 @@ int main(int argc, char **argv)
   lan_cfg.net = ip_arg("192.168.1.0");
   lan_cfg.gw = ip_arg("192.168.1.1");
   lan_cfg.dns = 0;
-  while ((o = getopt(argc, argv, "l:n:g:D:L:0:H:Q:N:T:B:F:C:K:R:Pc:r:d:a:s:p:vh")) != -1) {
+  while ((o = getopt(argc, argv, "l:n:g:D:L:0:H:G:Q:N:T:B:F:C:K:R:Pc:r:d:a:s:p:vh")) != -1) {
     switch (o) {
     case 'l': listen_spec = optarg; break;
     case 'n': {
@@ -639,6 +806,16 @@ int main(int argc, char **argv)
       tg[id].name = pz_hds_path(id);
       tg[id].sects = (uint32_t)(st.st_size / 512);
       picosim_log("id%d: %s (%u sectors)\n", id, c + 1, tg[id].sects);
+      break;
+    }
+    case 'G': {                         /* -G ID:DIR (ID 1〜5): ゲーム用の ID。DIR の *.hds から 0xA8 LIST / SELECT で選ぶ */
+      int id = atoi(optarg);
+      const char *c = strchr(optarg, ':');
+      if (id < 1 || id > 5 || !c) {
+        fprintf(stderr, "picosim: -G ID:DIR (ID 1-5): %s\n", optarg);
+        exit(2);
+      }
+      game_init(id, c + 1);
       break;
     }
     case 'N': nr_sec = atoi(optarg); break;

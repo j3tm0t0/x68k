@@ -51,6 +51,7 @@ int pz_id0_write(uint32_t lba, const uint8_t *buf);
 int pz_id6_read(uint32_t lba, uint8_t *buf);
 void pz_hds_add(int id, const char *path);   /* ID 1〜5 のデータの HDS (-H、末尾 :hold / :after-remote) */
 const char *pz_hds_path(int id);
+int pz_hds_switch(int id, const char *path);   /* 開いているイメージを替える。0 = 替えた、-1 = 開けない (前のまま) */
 void pz_remote_init_seen(void);
 int pz_hds_ready(int id);
 int pz_hds_read(int id, uint32_t lba, uint8_t *buf);

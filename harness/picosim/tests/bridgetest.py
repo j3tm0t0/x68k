@@ -20,7 +20,15 @@ def check(name, cond, extra=""):
     if not cond:
         fails += 1
 
-p = subprocess.Popen([PICOSIM] + (["-vvv", "-p", "/tmp/bt.pcap"] if os.environ.get("DBG") else []) + ["-l", "127.0.0.1:%d" % PORT, "-L", "%d:2323" % FWD], stderr=open(os.path.join(HERE, "picosim.log"), "w"))
+# ゲーム用の ID (-G 5:DIR) の試験のイメージ: 名前順は alpha.hds、Bravo.HDS、charlie.hda。ほかは一覧に入らない
+import shutil, tempfile
+GAMES = tempfile.mkdtemp(prefix="picosim-games.")
+for name, size, mark in (("Bravo.HDS", 4, b"BRAVO"), ("alpha.hds", 2, b"ALPHA"), ("charlie.hda", 3, b"CHARLIE"),
+                         ("._alpha.hds", 1, b"x"), ("notes.img", 1, b"x"), ("a-name-that-is-longer-than-39-bytes-in-all.hds", 1, b"x")):
+    with open(os.path.join(GAMES, name), "wb") as f: f.write(mark.ljust(512 * size, b"\0"))
+with open(os.path.join(GAMES, "alpha.txt"), "wb") as f: f.write("Alpha の題名\r\n2 行目\r\n".encode("cp932"))
+with open(os.path.join(GAMES, "lastgame.txt"), "wb") as f: f.write(b"Bravo.HDS\r\n")
+p = subprocess.Popen([PICOSIM] + (["-vvv", "-p", "/tmp/bt.pcap"] if os.environ.get("DBG") else []) + ["-l", "127.0.0.1:%d" % PORT, "-L", "%d:2323" % FWD, "-G", "5:" + GAMES], stderr=open(os.path.join(HERE, "picosim.log"), "w"))
 for _ in range(50):
     try:
         s = socket.create_connection(("127.0.0.1", PORT)); break
@@ -203,6 +211,43 @@ check("bus reset (path 3)", cmd(0, bytes(6), path=3)[0] == 0)
 _, data = xchg(zrec(bytes([0xa8, 0])))
 r = [x for x in recs(data) if x and x[0] == 0xa8]
 check("hidden ids are back after the bus reset", r == [bytes([0xa8, 0, 0, 1, 0])], repr(r))
+# ---- ゲーム用の ID (0xA8 の LIST / SELECT): 一覧、イメージの切り替え、選んだ名前の保存 ----
+def boot(*b):
+    _, data = xchg(zrec(bytes([0xa8]) + bytes(b)))
+    r = [x for x in recs(data) if x and x[0] == 0xa8]
+    return r[0] if len(r) == 1 else b""
+def cap(id): return struct.unpack(">I", cmd(id, bytes([0x25]) + bytes(9))[2][:4])[0] + 1
+check("game slot starts on the image named in lastgame.txt", read10(5, 0, 1)[2][:5] == b"BRAVO" and cap(5) == 4)
+r = boot(1, 5, 0)
+check("0xA8 LIST 0: 3 images, current 1, title from alpha.txt", r == bytes([0xa8, 1, 0, 3, 1, 12]) + "Alpha の題名".encode("cp932"), repr(r))
+r = boot(1, 5, 1)
+check("0xA8 LIST 1: file name without the extension", r == bytes([0xa8, 1, 0, 3, 1, 5]) + b"Bravo", repr(r))
+r = boot(1, 5, 2)
+check("0xA8 LIST 2", r == bytes([0xa8, 1, 0, 3, 1, 7]) + b"charlie", repr(r))
+r = boot(1, 5, 3)
+check("0xA8 LIST past the end -> status 5", r == bytes([0xa8, 1, 5, 3, 1, 0]), repr(r))
+check("0xA8 LIST for an ID that is not the game slot -> status 4", boot(1, 4, 0) == bytes([0xa8, 1, 4]))
+check("0xA8 LIST too short -> status 2", boot(1, 5) == bytes([0xa8, 1, 2]))
+check("0xA8 SELECT past the end -> status 5", boot(2, 5, 3) == bytes([0xa8, 2, 5, 3]))
+check("the image did not change", read10(5, 0, 1)[2][:5] == b"BRAVO")
+r = boot(2, 5, 0)
+check("0xA8 SELECT 0", r == bytes([0xa8, 2, 0, 0]), repr(r))
+check("id5 is now alpha.hds (not the cached sector of the old image)", read10(5, 0, 1)[2][:5] == b"ALPHA" and cap(5) == 2)
+check("lastgame.txt has the new name", open(os.path.join(GAMES, "lastgame.txt"), "rb").read() == b"alpha.hds\r\n")
+check("0xA8 LIST reports the new current", boot(1, 5, 1)[:5] == bytes([0xa8, 1, 0, 3, 0]))
+os.unlink(os.path.join(GAMES, "lastgame.txt"))
+check("0xA8 SELECT of the current image writes lastgame.txt again", boot(2, 5, 0) == bytes([0xa8, 2, 0, 0]) and
+      open(os.path.join(GAMES, "lastgame.txt"), "rb").read() == b"alpha.hds\r\n" and read10(5, 0, 1)[2][:5] == b"ALPHA")
+os.unlink(os.path.join(GAMES, "charlie.hda"))
+r = boot(2, 5, 2)
+check("0xA8 SELECT of a file that is gone -> status 6, the image stays", r == bytes([0xa8, 2, 6, 2]) and read10(5, 0, 1)[2][:5] == b"ALPHA", repr(r))
+check("0xA8 LIST 0 reads the directory again", boot(1, 5, 0)[:5] == bytes([0xa8, 1, 0, 2, 0]))
+for i in range(70):
+    with open(os.path.join(GAMES, "z%02d.hds" % i), "wb") as f: f.write(b"Z".ljust(512, b"\0"))
+boot(1, 5, 0)
+r = boot(1, 5, 63)
+check("70 more files: the list is the first 64 by name", r[:6] == bytes([0xa8, 1, 0, 64, 0, 3]) and r[6:] == b"z61" and boot(1, 5, 64)[2] == 5, repr(r))
+shutil.rmtree(GAMES)
 # 起動メニューは IP を知らない (stat = 0)。0xA8 だけはそれでも受ける
 req = (struct.pack(">IIHHI", 0x58364e52, 0x5a5a0001, 6, 496, 0) + zrec(bytes([0xa8, 3, 0x02]))).ljust(512, b"\0")
 write10(6, 0x100000, req)

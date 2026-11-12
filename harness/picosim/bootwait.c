@@ -198,6 +198,23 @@ void pz_hds_add(int id, const char *path)
 
 const char *pz_hds_path(int id) { return xhds[id].path; }
 
+/* ID のイメージを別のファイルに替える (ゲーム用の ID、picosim.c の 0xA8 SELECT)。開けなければ前のまま -1 */
+int pz_hds_switch(int id, const char *path)
+{
+  static char buf[8][1024];
+  int fd = open(path, O_RDWR);
+  if (fd < 0)
+    return -1;
+  if (xhds[id].fd >= 0)
+    close(xhds[id].fd);
+  snprintf(buf[id], sizeof buf[id], "%s", path);
+  xhds[id].path = buf[id];
+  xhds[id].fd = fd;
+  xhds[id].hold = 0;
+  picosim_log("pz: HDS%d %s open (switched)\n", id, path);
+  return 0;
+}
+
 /* Z が B: (scsiremote.sys) を組み込んだ (remote.c の INIT から) */
 void pz_remote_init_seen(void)
 {
