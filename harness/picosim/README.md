@@ -85,6 +85,7 @@ make -C driver bootwait1.bin bootwait.bin hdsboot.bin settingui.bin scsiremote.b
 | `-n net/len` `-g gw` `-D dns` | 192.168.1.0/24, .1, .3 | slirp の LAN。ゲートウェイは Mac の 127.0.0.1 に。DNS の口とゲートウェイの UDP 53 番 (zshrc の `NETDNS` の既定) は picosim が Mac の resolver (getaddrinfo / getnameinfo) で答える (A と PTR。仮想の LAN のアドレスの PTR は picosim が名付ける) |
 | `-L [u]PORT:ZPORT` | `2323:2323` | Mac の 127.0.0.1:PORT → Z:ZPORT。`u` で UDP、`none` で無し。何度でも |
 | `-H ID:file.hds[:hold\|:after-remote]` | | ID 1〜5 をデータの HDS に (ファームの HDS1〜、SD のデータディスクの真似)。sysstatus 5 まで NOT READY。`:hold` は制御 (`-C` に `hds N ready`) まで、`:after-remote` は Z が B: (scsiremote.sys) を組み込むまで NOT READY。何度でも |
+| `-G ID:DIR` | | ゲーム用の ID (1〜5)。DIR の中のディスクイメージ (`*.hds`、`*.hda`) を 1 つずつその ID に見せ、0xA8 の LIST / SELECT で替える (下記) |
 | `-Q N` | 6 | リモートドライブの「顔」(LBA 0 の署名・LBA 4 の分割表・LBA 6〜 の scsiremote.sys) を出す ID。運ぶ道は ID 6 のまま (下記「ドライブ名」) |
 | `-0 file.hds` `-N 秒` | | ID 0 を HDS ファイルで答える / 最初の N 秒 NOT READY (`-T 0,0,N` と同じ) |
 | `-T w,s,h` | | Pico Z Loader の起動待ち: 起動から w 秒で Wi-Fi、s 秒で SMB、h 秒で HDS が開く (下記) |
@@ -119,6 +120,28 @@ netpipe のレコード `[0xA8][3][ID のビット]` (HIDE) を送る。ビッ�
   試験からのリセットは `xeijcmd.sh call xeij.PicoBridge reset`
 - ディスクを 3 つ出す例: `picosim -0 id0.hds -H 1:id1.hds -H 4:id4.hds` と `-Dpicosim.ids=0,1,4,6`
   (試験は x68k-zos の `boot/tests/bootmenu_test.sh`)
+
+## ゲーム用の ID (イメージの一覧と切り替え、0xA8 の LIST / SELECT)
+
+x68k-zos #179。起動メニューの「イメージを選ぶ」項目は、1 つの SCSI ID (BlueSCSI では ID 5) に見せるディスクイメージを、
+ディレクトリの中のファイルから選ぶ。picosim では `-G 5:DIR` で、DIR が BlueSCSI の SD カードの `/games` の代わりになる。
+BlueSCSI の自前のファームと同じ決まり:
+
+| | 要求 | 応答 |
+|---|---|---|
+| LIST | `A8 01 ID 番号` | `A8 01 status 数 今の番号 長さ 表示名` |
+| SELECT | `A8 02 ID 番号` | `A8 02 status 番号` |
+
+- 一覧は、DIR の `*.hds` と `*.hda` をファイル名の順 (大文字と小文字は区別しない) に並べたもの。64 個まで。`.` で始まる名前
+  (Mac が作る `._*`) と、39 バイトを超える名前は入れない
+- 表示名は、同じ名前で拡張子が `.txt` のファイルがあればその 1 行目 (40 バイトまで、Shift_JIS のまま)、無ければ拡張子を除いたファイル名
+- 「今の番号」は、その ID に今見せているイメージの番号 (一覧に無ければ 0xFF)
+- SELECT で選んだファイル名は `DIR/lastgame.txt` に書く。次に picosim を起動したときは、そのイメージから始める (無ければ一覧の先頭)
+- status: 0 = 済んだ、2 = 要求が短い、4 = その ID はゲーム用でない、5 = 番号が一覧の外、6 = 開けない (前のイメージのまま)
+- picosim は LIST の番号 0 で DIR を読み直し、SELECT の番号はそのときの一覧で決める。ファームは一覧を覚えず、要求のたびに
+  ディレクトリを読んで順番を数える (RP2040 の RAM に一覧を置く余裕が無い)。ファイルを足したり消したりしなければ同じ結果になる
+- イメージを替えたら、Z の Linux の読み込みキャッシュ (`-c`) は捨てる
+
 
 ## Pico Z Loader の起動 (bootwait.c)
 
