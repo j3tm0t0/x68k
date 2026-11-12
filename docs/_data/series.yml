@@ -13,3 +13,10 @@
   title_en: X68000 on a PSP Diary
   page_en: /en/psp/
   description_en: Five days of dragging px68k, an X68000 emulator, on a PSP up to something close to full speed.
+- id: cannonball
+  title: Cannonball for x68 日記
+  page: /cannonball/
+  description: OutRun のエンジン Cannonball を X68000 に移植した Cannonball for x68 を、作者の Mattsuan-Z さんと一緒に速くしていく記録。
+  title_en: Cannonball for x68 Diary
+  page_en: /en/cannonball/
+  description_en: Working with Mattsuan-Z to speed up Cannonball for x68, an X68000 port of the OutRun engine Cannonball.

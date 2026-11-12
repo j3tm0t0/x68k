@@ -8,9 +8,11 @@ show_excerpts: true   # トップページの一覧に各記事の最初の段�
 header_pages:   # ヘッダーにはシリーズのページだけを出す
   - x68000z.md
   - psp.md
+  - cannonball.md
 header_pages_en:   # 英語版 (en/) のページのヘッダー
   - en/x68000z.md
   - en/psp.md
+  - en/cannonball.md
 defaults:   # 記事はファイル名でシリーズに振り分ける (_data/series.yml の id)。英語版は en/_posts に同じファイル名で置く
   - scope:
       path: "_posts"
@@ -40,3 +42,11 @@ defaults:   # 記事はファイル名でシリーズに振り分ける (_data/s
       path: "en/_posts/*-psp-diary-*"
     values:
       series: psp
+  - scope:
+      path: "_posts/*-cannonball-diary-*"
+    values:
+      series: cannonball
+  - scope:
+      path: "en/_posts/*-cannonball-diary-*"
+    values:
+      series: cannonball
