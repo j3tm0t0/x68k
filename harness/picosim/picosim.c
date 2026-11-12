@@ -257,8 +257,6 @@ static int game_id = -1, game_n, game_cur = -1;
 static const char *game_dir;
 static char game_name[GAME_MAX][GAME_NAME], game_now[GAME_NAME];
 
-static int game_cmp(const void *a, const void *b) { return strcasecmp(a, b); }
-
 static void game_scan(void)
 {
   DIR *d = opendir(game_dir);
@@ -267,15 +265,22 @@ static void game_scan(void)
   game_cur = -1;
   if (!d)
     return;
-  while ((e = readdir(d)) != NULL && game_n < GAME_MAX) {
+  while ((e = readdir(d)) != NULL) {    /* 名前順に差し込む。64 個を超えたら、名前順で後ろのものを落とす */
     size_t n = strlen(e->d_name);
+    int pos = game_n;
     if (e->d_name[0] == '.' || n < 5 || n >= GAME_NAME ||
         (strcasecmp(e->d_name + n - 4, ".hds") && strcasecmp(e->d_name + n - 4, ".hda")))
       continue;
-    strcpy(game_name[game_n++], e->d_name);
+    while (pos > 0 && strcasecmp(game_name[pos - 1], e->d_name) > 0)
+      pos--;
+    if (pos >= GAME_MAX)
+      continue;
+    if (game_n < GAME_MAX)
+      game_n++;
+    memmove(game_name[pos + 1], game_name[pos], (size_t)(game_n - 1 - pos) * GAME_NAME);
+    strcpy(game_name[pos], e->d_name);
   }
   closedir(d);
-  qsort(game_name, game_n, GAME_NAME, game_cmp);
   for (int i = 0; i < game_n; i++)
     if (!strcasecmp(game_name[i], game_now))
       game_cur = i;

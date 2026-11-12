@@ -239,6 +239,11 @@ os.unlink(os.path.join(GAMES, "charlie.hda"))
 r = boot(2, 5, 2)
 check("0xA8 SELECT of a file that is gone -> status 6, the image stays", r == bytes([0xa8, 2, 6, 2]) and read10(5, 0, 1)[2][:5] == b"ALPHA", repr(r))
 check("0xA8 LIST 0 reads the directory again", boot(1, 5, 0)[:5] == bytes([0xa8, 1, 0, 2, 0]))
+for i in range(70):
+    with open(os.path.join(GAMES, "z%02d.hds" % i), "wb") as f: f.write(b"Z".ljust(512, b"\0"))
+boot(1, 5, 0)
+r = boot(1, 5, 63)
+check("70 more files: the list is the first 64 by name", r[:6] == bytes([0xa8, 1, 0, 64, 0, 3]) and r[6:] == b"z61" and boot(1, 5, 64)[2] == 5, repr(r))
 shutil.rmtree(GAMES)
 # 起動メニューは IP を知らない (stat = 0)。0xA8 だけはそれでも受ける
 req = (struct.pack(">IIHHI", 0x58364e52, 0x5a5a0001, 6, 496, 0) + zrec(bytes([0xa8, 3, 0x02]))).ljust(512, b"\0")
