@@ -382,14 +382,16 @@ static int game_exchange(const uint8_t *req, int reqlen, uint8_t *res)
     return 4;
   }
   if (i != game_cur) {
-    char path[1200];
-    FILE *f;
     if (game_open(i, 0) < 0) {
       picosim_log("games: cannot open %s, id%d stays on %s\n", game_name[i], game_id, game_now);
       res[2] = 6;
       return 4;
     }
     picosim_cache_clear();
+  }
+  {                                     /* 今のイメージを選び直したときも書く (lastgame.txt がまだ無いことがある) */
+    char path[1200];
+    FILE *f;
     snprintf(path, sizeof path, "%s/lastgame.txt", game_dir);
     if ((f = fopen(path, "wb")) != NULL) {
       fprintf(f, "%s\r\n", game_now);
