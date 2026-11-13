@@ -6,7 +6,7 @@ X68000 (Compact XVI) と Raspberry Pi の間の RS-232C 1 本で、コンソー�
 実装済みなのは、段階 1 (シリアル回線とコンソール)、段階 2 (チャネル 3 で `tis.x -p` のソケット要求と暗号の要求を Pi 側で処理)、
 段階 3 (Z-OS の画面に出ないペインで動く zosh に `zmux attach` でつなぐ)、キー入力の注入 (チャネル 1)、
 tmux のような画面 (`zmux`、下の「zmux の画面」)、リモートドライブ (チャネル 2、`zrmt.sys`、下の「リモートドライブ」)。
-画面とリモートドライブは、XEiJ の代わりに線の約束を話す「にせの X68000」(`test/fakex68k.py`) で端から端まで通した。XEiJ と実機ではまだ (下の「XEiJ での確認」)。
+画面とリモートドライブは、XEiJ の代わりに線の約束を話す「にせの X68000」(`test/fakex68k.py`) で端から端まで通した。リモートドライブは XEiJ でも通した (下の「XEiJ での確認」)。実機ではまだ。
 
 | 置き場所 | 中身 |
 |---|---|
@@ -15,7 +15,7 @@ tmux のような画面 (`zmux`、下の「zmux の画面」)、リモートド�
 | `test/fakex68k.py` | XEiJ の代わりの「にせの X68000」: 線の約束を TCP で話し、COMMAND.X・zos.x の 0xA7・zrmt.sys・キーの受け口のふりをする。19200bps の速さの真似もする |
 | `test/e2e_fake.py` | にせの X68000 で、線、`zmux attach 0`、リモートドライブの全命令と速さ、画面 (pty で `zmux` を動かし pyte で読む) を試す。XEiJ も elf2x68k も要らない |
 | `test/e2e_tui.py` | XEiJ で画面を試す (ZOS_X / ZOSH_X があれば zosh のタブも)。**まだ通していない** |
-| `test/e2e_rdrive.py` | XEiJ で zrmt.sys を試す (dir / type / copy の往復と照合 / md / del / rd / ren、copy の速さ)。**まだ通していない** |
+| `test/e2e_rdrive.py` | XEiJ で zrmt.sys を試す (dir / type / copy の往復と照合 / md / del / rd / ren、copy の速さ)。`BAUD=78125` で実機 XVI と同じ速さ |
 | `test/e2e.py` | XEiJ で、素の文字 → zmux → 素の文字の切り替えと、バイトを壊す線での再送を試す |
 | `test/e2e_key.py` | XEiJ で、Pi から注入したキー (`zmux key`) が本体のキーボード入力として COMMAND.X に届くかを試す |
 | `test/e2e_zss.py` | XEiJ (主記憶 12MB) で、zos.x を起動して `zmux attach` で zosh のセッションを開き、echo、2 つ同時、exit の終了コードを試す |
@@ -146,10 +146,12 @@ Pi            zmux daemon --port /dev/ttyUSB0 --drive ~/x68k-drive
 - できること: dir、type、copy (両方向)、md / rd、del、ren、属性、日付、空き容量。ファイル名は Shift_JIS で 18 + 3 文字まで (Human68k の制限)。
   Pi の名前が Shift_JIS にできないもの (絵文字など) や `/ \ , ; < = > [ ] |` を含むものは見えない。
 - READ / WRITE は 1 回 4084 バイト (フレーム 4 つ = 窓 1 つ分)。小さな読み書きは `zrmt.sys` の中の 4084 バイトのキャッシュ (2 つ) でまとめる。
-- zmuxd が居ない・線が UP でない・5 秒応答が無いときは「ドライブの準備ができていません」(0x1002) で失敗する (止まらない)。
+- zmuxd が居ない・線が UP でない・応答が無い (5 秒待って 1 回送り直し、計 10 秒) ときは、DOS のエラー -15 で失敗する (止まらない。
+  0x1002 だと Human68k の「中止/再実行/無視」の箱が出てキー待ちになるため)。
+  zmuxd が途中で止まった場合、X68000 は 60 秒 (zmux.c の T_DEAD) 受信が無いと線を切る。それまでの間は、D: への要求 1 つごとに 10 秒待ってから失敗する。
   時間切れのあとで遅れて来た応答は捨てる。要求は同時に 1 つ。
 - 速さ: にせの X68000 (19200bps の速さの真似、下) で READ 1.82 KB/s、WRITE 1.82 KB/s (40000 バイト)。線の見出し込みで 19200bps の上限は約 1.9 KB/s。
-  XEiJ / 実機では 68000 の処理とフロッピーの読み書きが乗るので、`test/e2e_rdrive.py` で測り直す。
+  XEiJ では下の「リモートドライブ」の表。
 
 ## キー
 
@@ -207,6 +209,31 @@ zmux.x は常駐するときに CON デバイスを横取りする (zmux.sys 0.3
 | `ver`、`type config.sys`、`dir` x5 (0.03% 破損) | 欠けずに届く。13 秒、送り直し 7、壊れたフレーム 8 |
 | 同じことを 0.3% 破損で | 欠けずに届く。33 秒、送り直し 19、壊れたフレーム 59 |
 | zmuxd を止めてから素の文字に戻るまで | 11〜14 秒 |
+
+### リモートドライブ (`test/e2e_rdrive.py`、zmuxd は Mac で `--tcp`)
+
+`BAUD=78125 test/e2e_rdrive.py RUNDIR` で、実機 XVI の rc と同じ `RX -B78125 -K1` と `zmuxd --baud 78125` になる (既定は 19200)。
+起動フロッピーは COMMAND.X で、XEiJ の機種は Compact。全項目 PASS (dir / type / .x の実行 / copy の往復と照合 / md / del / rd / ren / 無いディレクトリ)。
+
+| 64KB の copy | 19200bps | 78125bps |
+|---|---|---|
+| C: → NUL (読み込み) | 1.72 KB/s | 3.29 KB/s |
+| A: → C: (書き込み、フロッピーの読み込み込み) | 1.65 KB/s | 2.93 KB/s |
+
+Z-OS の起動ディスク (XVI、主記憶 12MB、CONFIG.SYS の ZMUX8.SYS の次に `DEVICE = \SYS\ZRMT.SYS`) でも確かめた。
+XEiJ ではドライブは D: (起動時に zrmt.sys が出す文字。実機ではつないだディスクの数で変わる)。zmux.sys は d2d7478 からこのディレクトリで変わっておらず、ビルドしたものは実機の ZMUX8.SYS とバイト単位で同じ。
+
+| 項目 | 結果 |
+|---|---|
+| zmuxd なしで起動 | プロンプトまで出る。rc の `-f D:/ZOSLOCAL` などは待たずに失敗する |
+| zmuxd ありで起動 | プロンプトまで出る。rc は D: を 2 回引く (見つからない) |
+| zosh で `ls -l D:/`、`cat`、`D:/TCSET.X` の実行、`mkdir` / `cp` / `mv` / `rm` / `rmdir` | 動く |
+| zosh の `cp` 64KB (78125bps) | 読み込み 3.45 KB/s、書き込み 3.16 KB/s、照合一致 |
+| zmuxd を止めた直後の `ls D:/` | 10〜20 秒で失敗して戻る。線が切れた後 (60 秒後) はすぐ戻る |
+
+- rc は B: から Z: まで `ZOSLOCAL` と `ZOSHOME` を探すので、`--drive` のディレクトリにこれらを置くと /usr/local や /home にマウントされる。
+- `zmux key` で打つと、Z-OS ではキーが本体のキー入力に届くのが遅れることがある (数十秒、本体のキーを 1 つ押すと流れる)。
+  キーのフレームを X68000 が受け取らない間は、番号の続くチャネル 2 の応答も止まるので、D: の要求も待たされる。
 
 ### 段階 2 (`test/e2e_tsp.py`、19200bps、RSDRV の受信バッファは zmux.sys が 32KB に広げる)
 

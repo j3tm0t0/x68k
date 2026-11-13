@@ -21,6 +21,7 @@ fails = []
 REAL = bool(os.environ.get("REAL"))
 CON = bool(os.environ.get("CON"))                  # CTTY AUX にしない (画面が CON のまま。Z-OS の下と同じ)
 SMALL = REAL or bool(os.environ.get("SMALL"))     # 空きの少ないフロッピーへ小さいファイルを写す場面
+BAUD = os.environ.get("BAUD", "19200")              # 78125 で実機 XVI の rc と同じ (RX -B78125 -K1、zmuxd --baud 78125)
 
 
 def check(name, cond, extra=""):
@@ -68,7 +69,7 @@ def mkfloppy():
             b"FILES     = 30\r\nBUFFERS   = 20 1024\r\nPROCESS   = 8 10 20\r\n"
             b"DEVICE    = \\SYS\\RSDRV.SYS\r\nDEVICE    = \\SYS\\ZMUX.SYS\r\nDEVICE    = \\SYS\\ZRMT.SYS\r\n")
         open(os.path.join(t, "AUTOEXEC.BAT"), "wb").write(
-            b"ECHO OFF\r\nPATH A:\\\r\nRX -B19200\r\n" + (b"ZMUX -c\r\n" if CON else b"ZMUX\r\nCTTY AUX\r\n"))
+            b"ECHO OFF\r\nPATH A:\\\r\nRX -B" + BAUD.encode() + (b" -K1" if BAUD != "19200" else b"") + b"\r\n" + (b"ZMUX -c\r\n" if CON else b"ZMUX\r\nCTTY AUX\r\n"))
     out = os.path.join(run, "zmuxrd.xdf")
     free = subprocess.run([sys.executable, os.path.join(serial, "floppy", "mkxdf.py"), out, xdf, t],
                           capture_output=True, text=True, check=True).stdout.strip()
@@ -154,7 +155,7 @@ try:
     m = re.search(r"zrmt\.sys[^\n]*?([A-Z]): ", s)
     dl = m.group(1) if m else "C"
     check("zrmt.sys installed (drive %s:)" % dl, "zrmt.sys" in s and "組み込みません" not in s, "\n".join(l for l in s.splitlines() if "zrmt" in l))
-    zd = subprocess.Popen([ZBIN, "daemon", "--tcp", "127.0.0.1:%d" % XPORT, "--drive", drive, "-v"], env=env,
+    zd = subprocess.Popen([ZBIN, "daemon", "--tcp", "127.0.0.1:%d" % XPORT, "--drive", drive, "--baud", BAUD, "-v"], env=env,
                           stderr=open(os.path.join(run, "zmuxd.log"), "w"))
     for _ in range(100):
         time.sleep(0.2)
