@@ -46,11 +46,11 @@ On XEiJ, a write to the PCG takes about 1.1µs per long (4 bytes), and raising t
 - The limit per line is decided by measuring the PCG write time at startup ([#7](https://github.com/j3tm0t0/CannonballForX68/pull/7))
 - One write may run over into the next line, and the limit is "the amount that can be written in one line's time on average" ([#20](https://github.com/j3tm0t0/CannonballForX68/pull/20))
 
-Lowering the limit makes the writes finish in time, but more objects can't be shown. So when not everything fits, tiles with the least drawn in them are dropped first ([#15](https://github.com/j3tm0t0/CannonballForX68/pull/15)). Before that, tiles on the right side of the screen were dropped regardless of their contents, which left a rectangular hole on the right just after the start. The number of pixels that couldn't be shown went down by 76% (counted on the PC build: 330,019 → 78,657).
+Lowering the limit makes the writes finish in time, but more objects can't be shown. So when not everything fits, tiles with the least drawn in them are dropped first ([#15](https://github.com/j3tm0t0/CannonballForX68/pull/15)). Before that, tiles on the right side of the screen were dropped regardless of their contents, which left a rectangular hole on the right just after the start. The number of pixels that couldn't be shown went down by 76% (counted on the build that runs on a PC, the PC build from here on: 330,019 → 78,657).
 
 ## What made frames heavy
 
-Last time I wrote that building the drawing data took up to 128ms in some frames. The cause was in the scene before the start. That scene has about 330 objects, and almost the only thing moving is the person waving the flag.
+Last time I wrote that building the drawing data took up to 128ms in some frames. The heavy frames were in the scene before the start. That scene has about 330 sprites, and almost the only thing moving is the person waving the flag.
 
 - Once every 8 frames, there is a pass that records which colors each palette actually used. In that frame alone, every tile was converted again even if nothing on screen had changed, and it took about 200ms. The other frames took about 18ms (16MHz). Now, if the colors have already been recorded, the previous frame's conversion result is used ([#4](https://github.com/j3tm0t0/CannonballForX68/pull/4))
 - If even one sprite changed, all of the roughly 330 were redrawn (115 to 130ms per frame at 50MHz). Now only the rows (in units of 16 lines) that the changed sprites overlap are redrawn ([#11](https://github.com/j3tm0t0/CannonballForX68/pull/11), [#14](https://github.com/j3tm0t0/CannonballForX68/pull/14), [#16](https://github.com/j3tm0t0/CannonballForX68/pull/16))
@@ -58,7 +58,7 @@ Last time I wrote that building the drawing data took up to 128ms in some frames
 
 Redrawing fewer rows means more draws fit into the scene before the start. Draws in the first 400 steps went from 39 to 57–65 with #14. Draws in the first 500 steps went from 62–77 to 87–90 with #16 (both at 50MHz).
 
-I also made changes that cut CPU time. The tile conversion was rewritten in assembly ([#3](https://github.com/j3tm0t0/CannonballForX68/pull/3); at 16MHz, preparing everything except the road got 23.6% shorter than v0.2). The text display, such as the score, skips rows that haven't changed ([#8](https://github.com/j3tm0t0/CannonballForX68/pull/8)). The compiler optimization option went from `-O2` to `-O3` ([#18](https://github.com/j3tm0t0/CannonballForX68/pull/18); CPU time went down by about 5%).
+I also made changes that cut CPU time. The tile conversion was rewritten in assembly ([#3](https://github.com/j3tm0t0/CannonballForX68/pull/3); at 16MHz, the tile conversion went from 20.4ms to 10.2ms per draw). The text display, such as the score, skips rows that haven't changed ([#8](https://github.com/j3tm0t0/CannonballForX68/pull/8)). The compiler optimization option went from `-O2` to `-O3` ([#18](https://github.com/j3tm0t0/CannonballForX68/pull/18); CPU time went down by about 5%).
 
 ## Skipping draws to keep the game at speed
 
@@ -117,7 +117,7 @@ The 060turbo has its own memory on the board (local memory). When reading data t
 - With 060turbo.sys 0.61, the call that reports the mode did not return the documented 1 in extended mode (it returned 518). Anything other than 0 and -1 is now treated as extended mode
 - The DMA controller used for ADPCM playback (the circuit that sends memory contents to the chip automatically) can't read local memory. Only the playback buffer is allocated from main memory
 
-Along with this, I fixed two things about skipping draws. In a step whose draw is skipped, the work that only builds data for drawing is no longer run ([#26](https://github.com/j3tm0t0/CannonballForX68/pull/26); draws went from 447 to 506). The other is how the wait at the end of a step is calculated. The decision to skip a draw and the wait used different deadlines. Because of that, about 20% of the total time went into waiting even though draws were being skipped ([#28](https://github.com/j3tm0t0/CannonballForX68/pull/28)).
+Along with this, I fixed two things about skipping draws. In a step whose draw is skipped, the work that only builds data for drawing is no longer run ([#26](https://github.com/j3tm0t0/CannonballForX68/pull/26); the time for the game's calculation went from 27.2 to 20.9 seconds). The other is how the wait at the end of a step is calculated. The decision to skip a draw and the wait used different deadlines. Because of that, about 20% of the total time went into waiting even though draws were being skipped ([#28](https://github.com/j3tm0t0/CannonballForX68/pull/28)).
 
 Last, I made the Sega PCM mixing faster ([#29](https://github.com/j3tm0t0/CannonballForX68/pull/29)). Comparing draws with and without sound showed that sound alone was costing about 15% of the draws (in local memory: 1,412 without sound, 1,196 with).
 
@@ -129,7 +129,7 @@ Draws in 4,000 steps (XEiJ, 060turbo, 50MHz. In the measurements for #27 and #28
 | Waits on, local memory | 947–975 | 1,196 | 1,241 |
 | Waits off | 1,763 | 1,839 | 1,852 |
 
-Which steps skip their draw changes a little from build to build, so a difference of a few draws is noise (measuring the same program again stays within 1,196 to 1,198). Converting the #29 values to draws per second gives about 9.5 in main memory, about 18.6 in local memory, and about 27.8 with waits off.
+Each PR was measured on its own, so the last value in the previous section's table (465) and the first value in this one (536) don't connect. Also, which steps skip their draw changes a little from build to build, so a difference of a few draws is noise (measuring the same program again stays within 1,196 to 1,198). Converting the #29 values to draws per second gives about 9.5 in main memory, about 18.6 in local memory, and about 27.8 with waits off.
 
 ## A separate machine for measuring
 
@@ -148,7 +148,7 @@ Results of 2,000 steps on the Pi 5 (060turbo configuration, 060turbo.sys 0.61):
 | Draws in compatible mode | 813 | 789 | 712 |
 | Draws in extended mode (local memory) | 808 | 790 | 710 |
 
-Under every condition, the raster interrupts ran to the last line in every frame except the first frame of the measurement, the vertical blank interrupt never failed to finish before the next vertical blank, and the PCM playback position never had to be resynchronized. In extended mode, Human68k didn't boot at first because of a bug in pix68k. The runs were done after that was fixed.
+Under every condition, the raster interrupts ran to the last line in every frame except the first frame of the measurement, the vertical blank interrupt never failed to finish before the next vertical blank, and the PCM playback position never had to be resynchronized. In extended mode, Human68k (the X68000's OS) didn't boot at first because of a bug in pix68k. The runs were done after that was fixed.
 
 These numbers don't indicate the speed of a real machine. pix68k's 68060 uses approximate times per instruction and has no I/O waits. I think draws don't go up in extended mode because it doesn't reproduce the speed difference between main memory and local memory. What this does show is that on an implementation other than XEiJ, the raster interrupts that draw the road and the sound playback keep running to the end of the measurement.
 
