@@ -175,7 +175,7 @@ These numbers don't indicate the speed of a real machine. pix68k's 68060 uses ap
 
 ## Next
 
-- Run it on a real machine with a 060turbo. The numbers so far are what XEiJ reproduces, and I don't know whether they match the real machine. Nor have I confirmed that #31's setting of an interrupt several lines ahead behaves on the real machine as it does on XEiJ. The statistics printed at exit now include I/O write times and where things are in memory, so I'll compare them with the results on the real machine
+- Run it on a real machine with a 060turbo. I don't have one, so someone who does would have to run it. The numbers so far are what XEiJ reproduces, and I don't know whether they match the real machine. Nor have I confirmed that #31's setting of an interrupt several lines ahead behaves on the real machine as it does on XEiJ. The statistics printed at exit now include I/O write times and where things are in memory, so if someone sends them, I can compare them with the XEiJ results
 - Listen to the sound. It has only been recorded and measured for level. Nobody has listened to the FM or the PCM yet
 - All 29 PRs were merged into my own fork. How to hand them to Mattsuan-Z, the author, is yet to be decided
 - I haven't tried PhantomX (a board that plugs a Raspberry Pi in place of the X68000's CPU), which I wrote about last time
