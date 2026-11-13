@@ -131,6 +131,7 @@ int main(void)
     {0xf00000, 1, "CGROM $F00000"},
     {0xff0000, 1, "IPL ROM $FF0000"},
   };
+  /* どれもユーザーモードではバスエラー、スーパーバイザでは読める (XEiJ と Z で確かめた。README の結果) */
   printf("\n[1] 読み出し (ユーザー / スーパーバイザ)\n");
   for (unsigned i = 0; i < sizeof areas / sizeof areas[0]; i++) {
     int u = areas[i].w ? probe_rw(areas[i].a) : probe_rb(areas[i].a);
@@ -140,6 +141,7 @@ int main(void)
     if (u == 2)
       printf(" (addr=%06lx info=%04x pc-命令=%ld)", fa, info,
              (long)(pc - (unsigned long)(areas[i].w ? insn_rw : insn_rb)));
+    if (u != 2 || s != 0) { printf("  <== 期待と違う (user=BUSERR super=ok のはず)"); ng++; }
     printf("\n");
   }
 
@@ -162,12 +164,15 @@ int main(void)
   {
     int r = probe_movesr();
     expect("move to SR", r, 8);
-    if (r == 8)
+    if (r == 8) {
       printf("    PC=%06lx 命令=%06lx %s\n", f_pc, (unsigned long)insn_movesr,
-             f_pc == (unsigned long)insn_movesr ? "(違反した命令を指す: やり直せる)" : "(違う所を指す)");
+             f_pc == (unsigned long)insn_movesr ? "(違反した命令を指す: やり直せる)" : "(違う所を指す)  <== 期待と違う");
+      if (f_pc != (unsigned long)insn_movesr) ng++;
+    }
     int v = probe_movefromsr();
     printf("  %-44s %s\n", "move from SR", v & 0x10000 ? kname(v & 0xffff) : "ok (68000 では特権でない)");
-    if (!(v & 0x10000)) printf("    SR=%04x (S ビット=%d)\n", v & 0xffff, (v >> 13) & 1);
+    if (v & 0x10000) { printf("    <== 期待と違う (68000 では通るはず)\n"); ng++; }
+    else printf("    SR=%04x (S ビット=%d)\n", v & 0xffff, (v >> 13) & 1);
   }
 
   /* 4. $E86001: 境界と値の関係を実測で決め (XEiJ は (値+1)x8KB、Z は 値x8KB だった)、
@@ -234,11 +239,14 @@ int main(void)
   skip4:;
   }
 
-  /* 5. $EAFF81-$EAFF89: 2MB 以降を 256KB 単位で守る (増設メモリの機能) */
+  /* 5. $EAFF81-$EAFF89: 2MB 以降を 256KB 単位で守る (増設メモリの機能)
+   *    今の値を読み出す方法が無い (書き込み専用として扱う) ので、元の値には戻せない。書いたポート ($EAFF81 と、試したブロックの
+   *    ポート) は最後に 0 (どこも守らない) になる。ほかのプログラムがこのポートで守っていた範囲は外れる。README にも書いた */
   printf("\n[5] 増設メモリのスーパーバイザ領域設定 $EAFF81-$EAFF89\n");
   {
     int r = sup_wb(0xeaff81, 0);
-    printf("  $EAFF81 へ書く (スーパーバイザ): %s\n", r == 0 ? "ok (ポートがある)" : kname(r));
+    printf("  $EAFF81 へ 0 を書く (スーパーバイザ): %s\n", r == 0 ? "ok (ポートがある)" : kname(r));
+    if (r == 0) printf("  注意: このポートは今の値を読めないので元に戻せない。書いたポートは 0 (守らない) のまま終わる\n");
     if (r == 0 && ram <= 0x200000) {
       printf("  主記憶が 2MB 以下なので試せない\n");
     } else if (r == 0) {
@@ -263,8 +271,8 @@ int main(void)
         expect("守ったあと ブロック を読む", probe_rw(blk), 2);
         expect("守ったあと ブロックの末尾 を読む", probe_rw(blk + 0x3fffe), 2);
         expect("守ったあと すぐ上 (守っていない) を読む", probe_rw(blk + 0x40000 < (unsigned long)p + 0x80000 ? blk + 0x40000 : blk - 2), 0);
-        sup_wb(port, 0);
-        expect("戻したあと ブロック を読む", probe_rw(blk), 0);
+        sup_wb(port, 0);   /* 元の値は読めないので 0 (守らない) にする */
+        expect("0 に戻したあと ブロック を読む", probe_rw(blk), 0);
         _dos_mfree(p);
       }
       while (nh > 0) _dos_mfree(hold[--nh]);
