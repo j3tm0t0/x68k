@@ -1,11 +1,11 @@
 ---
 layout: post
 title: "Cannonball for x68 Diary (2) The road, the sound, and measuring again closer to the real machine"
-excerpt: "I merged 27 PRs in two days. The road no longer disappears when a raster interrupt runs late, and sound now plays through the FM chip and ADPCM. When I turned on the emulator's I/O wait states and measured again, it was far slower than the earlier numbers. I got the game back to running in real time under that condition too. It has not run on a real machine yet."
-date: 2026-11-14 01:30:00 +0900
+excerpt: "I merged 29 PRs in a little over two days. The road no longer disappears when a raster interrupt runs late, and sound now plays through the FM chip and ADPCM. When I turned on the emulator's I/O wait states and measured again, it was far slower than the earlier numbers. I got the game back to running in real time under that condition too. It has not run on a real machine yet."
+date: 2026-11-14 03:00:00 +0900
 ---
 
-At the end of the [previous post]({{ site.baseurl }}{% post_url en/2026-11-09-cannonball-diary-1 %}) I wrote down two things to do next: reduce the I/O per raster interrupt, and find out what makes some frames heavy. Over two days, November 12 and 13, I had the AI (Claude) continue, and merged 27 PRs ([#3](https://github.com/j3tm0t0/CannonballForX68/pull/3) to [#29](https://github.com/j3tm0t0/CannonballForX68/pull/29)) into my own fork. The target is v0.2 of [Cannonball for x68](https://github.com/Mattsuan-Z/CannonballForX68) by Mattsuan-Z (an X68000 port of Cannonball, the OutRun engine). The goal I set: make it run at a playable speed on a real X68030 with a 060turbo (a 68060 accelerator board).
+At the end of the [previous post]({{ site.baseurl }}{% post_url en/2026-11-09-cannonball-diary-1 %}) I wrote down two things to do next: reduce the I/O per raster interrupt, and find out what makes some frames heavy. From November 12 to the early hours of the 14th, I had the AI (Claude) continue, and merged 29 PRs ([#3](https://github.com/j3tm0t0/CannonballForX68/pull/3) to [#31](https://github.com/j3tm0t0/CannonballForX68/pull/31)) into my own fork. The target is v0.2 of [Cannonball for x68](https://github.com/Mattsuan-Z/CannonballForX68) by Mattsuan-Z (an X68000 port of Cannonball, the OutRun engine). The goal I set: make it run at a playable speed on a real X68030 with a 060turbo (a 68060 accelerator board).
 
 The conclusion first: it has not run on a real machine yet. Every number in this post was measured on an emulator.
 
@@ -121,15 +121,36 @@ Along with this, I fixed two things about skipping draws. In a step whose draw i
 
 Last, I made the Sega PCM mixing faster ([#29](https://github.com/j3tm0t0/CannonballForX68/pull/29)). Comparing draws with and without sound showed that sound alone was costing about 15% of the draws (in local memory: 1,412 without sound, 1,196 with).
 
+## No raster interrupts where none are needed
+
+With #19, raster interrupts write only the registers whose value differs from the previous line. Even so, the scroll positions of the two BG planes (the X68000's tile layers) differed from the previous line on almost every line. Out of 223 lines, one plane changed on 210 and the other on 221. But most lines of the road are displayed from the graphics screen, with both BG planes hidden. Even on lines where the BG is hidden, the scroll position was calculated and written to the register.
+
+So within a run of lines where the BG is hidden, the scroll position is no longer written ([#30](https://github.com/j3tm0t0/CannonballForX68/pull/30)). When the first version was run on XEiJ and compared with the screen before the change, a 48-pixel-wide piece of road texture showed up on the first line of the road. On the first and last lines of a run, the value written to the register does show on screen. Those two lines now get the same values as before. After that fix, at all three steps compared (600, 1800 and 3000), every pixel of the screen matched the one before the change.
+
+That left more lines with nothing to write to any register, so next, raster interrupts are not raised at all on such lines ([#31](https://github.com/j3tm0t0/CannonballForX68/pull/31)). On a line with no register writes and no writes to the PCG and so on for roadside objects, the interrupt is skipped, and the next one is raised on the next line that has something to write. Raster interrupts per screen update went from 224 to about 88.
+
+One difference on screen remains after #31. The comparison used a build that stops at a given step and keeps displaying the same frame. In that state, 80 screens were saved and compared. At step 3000, in 8 of the 80, 6 pixels differed on the first scan line of the 196th line (one line here is 2 scan lines). 60 of the 80 were the same screen, and it matched the screen that appeared most often before the change. The cause hasn't been confirmed. The AI's guess is that the interrupt is now sometimes accepted about 1.8µs later. I judged this difference acceptable and left it as is.
+
+## Results so far
+
 Draws in 4,000 steps (XEiJ, 060turbo, 50MHz. In the measurements for #27 and #28, every condition took 4,001 to 4,006 screen updates, so the game runs in real time):
 
-| Condition | #27 | #28 | #29 |
-|---|---:|---:|---:|
-| Waits on, main memory | 536 | 589 | 635 |
-| Waits on, local memory | 947–975 | 1,196 | 1,241 |
-| Waits off | 1,763 | 1,839 | 1,852 |
+| Condition | #27 | #28 | #29 | #30 | #31 |
+|---|---:|---:|---:|---:|---:|
+| Waits on, main memory | 536 | 589 | 635 | 677 | 755 |
+| Waits on, local memory | 947–975 | 1,196 | 1,241 | 1,273 | 1,352 |
+| Waits off | 1,763 | 1,839 | 1,852 | 1,851 | 1,855 |
 
-Each PR was measured on its own, so the last value in the previous section's table (465) and the first value in this one (536) don't connect. Also, which steps skip their draw changes a little from build to build, so a difference of a few draws is noise (measuring the same program again stays within 1,196 to 1,198). Converting the #29 values to draws per second gives about 9.5 in main memory, about 18.6 in local memory, and about 27.8 with waits off.
+Each PR was measured on its own, so the last value in the earlier table (465) and the first value in this one (536) can't be compared directly. Converting the #31 values to draws per second gives about 11.3 in main memory, about 20.3 in local memory, and about 27.8 with waits off.
+
+These draw counts are not good for comparing small differences in speed, though. Measuring the same program again stays within 1,196 to 1,198, but a different build skips different steps, so the draw count moves by about ±3% even when the speed is the same. So from #29 on, the comparison is made by drawing all 2,000 frames without skipping and counting the screen updates that 4,000 steps take. Fewer screen updates means faster, and the same program gives the same value every time.
+
+| Condition (waits on) | Before #29 | #29 | #30 | #31 |
+|---|---:|---:|---:|---:|
+| Main memory | 11,966 | 11,220 | 10,738 | 9,921 |
+| Local memory | 6,837 | 6,566 | 6,399 | 6,069 |
+
+Some changes were tried and dropped. Replacing the C library's `memcmp` with a comparison 4 bytes at a time was 2.4% slower, and adding a directive to align data to 4-byte boundaries was 0.9% slower.
 
 ## A separate machine for measuring
 
@@ -154,7 +175,7 @@ These numbers don't indicate the speed of a real machine. pix68k's 68060 uses ap
 
 ## Next
 
-- Run it on a real machine with a 060turbo. The numbers so far are what XEiJ reproduces, and I don't know whether they match the real machine. The statistics printed at exit now include I/O write times and where things are in memory, so I'll compare them with the results on the real machine
+- Run it on a real machine with a 060turbo. The numbers so far are what XEiJ reproduces, and I don't know whether they match the real machine. Nor have I confirmed that #31's setting of an interrupt several lines ahead behaves on the real machine as it does on XEiJ. The statistics printed at exit now include I/O write times and where things are in memory, so I'll compare them with the results on the real machine
 - Listen to the sound. It has only been recorded and measured for level. Nobody has listened to the FM or the PCM yet
-- All 27 PRs were merged into my own fork. How to hand them to Mattsuan-Z, the author, is yet to be decided
+- All 29 PRs were merged into my own fork. How to hand them to Mattsuan-Z, the author, is yet to be decided
 - I haven't tried PhantomX (a board that plugs a Raspberry Pi in place of the X68000's CPU), which I wrote about last time
