@@ -129,7 +129,7 @@ So within a run of lines where the BG is hidden, the scroll position is no longe
 
 That left more lines with nothing to write to any register, so next, raster interrupts are not raised at all on such lines ([#31](https://github.com/j3tm0t0/CannonballForX68/pull/31)). On a line with no register writes and no writes to the PCG and so on for roadside objects, the interrupt is skipped, and the next one is raised on the next line that has something to write. Raster interrupts per screen update went from 224 to about 88.
 
-One difference on screen remains after #31. The comparison used a build that stops at a given step and keeps displaying the same frame. In that state, 80 screens were saved and compared. At step 3000, in 8 of the 80, 6 pixels differed on the first scan line of the 196th line (one line here is 2 scan lines). 60 of the 80 were the same screen, and it matched the screen that appeared most often before the change. The cause hasn't been confirmed. The AI's guess is that the interrupt is now sometimes accepted about 1.8µs later. I judged this difference acceptable and left it as is.
+One difference on screen remains after #31. The comparison used a build that stops at a given step and keeps displaying the same frame. In that state, 80 screens were saved and compared. At step 3000, in 8 of the 80, 6 pixels differed on the first of the two lines handled by the 196th raster interrupt from the top. 60 of the 80 were the same screen, and it matched the screen that appeared most often before the change. The cause hasn't been confirmed. The AI's guess is that the interrupt is now sometimes accepted about 1.8µs later. I judged this difference acceptable and left it as is.
 
 ## Results so far
 
