@@ -64,6 +64,8 @@ jobs:
         run: python3 -m venv "$RUNNER_TEMP/venv" && "$RUNNER_TEMP/venv/bin/pip" install -q -r .github/ci/requirements.txt
       - name: net/accel tests/run.sh
         run: VENV=$RUNNER_TEMP/venv TMPDIR=$RUNNER_TEMP net/accel/tests/run.sh
+      - name: x68kcli の mkhds.py (にせの FORMAT.X から SCSI のドライバを取り出す)
+        run: x68kcli/tests/mkhds/run.sh
       - name: net/tistack hostsim (API 層 + ループバック)
         run: make -s -C net/tistack/tests host && net/tistack/tests/hostsim
       - name: lwIP (固定コミット)

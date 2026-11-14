@@ -28,7 +28,7 @@ main への push と PR のたびに、次のジョブが ubuntu-24.04 (x86-64) 
 |---|---|
 | vt100 | `term/vt100/tests/run.sh`。CGROM が無いので glyph の 2 項目は SKIP。Linux の ASan のリーク検出は切る (`ASAN_OPTIONS=detect_leaks=0`) |
 | zterm | `cargo build --release` と `cargo test`、`term/zterm/tests/replay.sh` |
-| host | `net/accel/tests/run.sh`、`net/tistack/tests` の hostsim と picosim (lwIP 2.2.0 を固定コミットで取る) |
+| host | `net/accel/tests/run.sh`、`x68kcli/tests/mkhds/run.sh` (にせの FORMAT.X で SCSI のドライバの取り出しを確かめる)、`net/tistack/tests` の hostsim と picosim (lwIP 2.2.0 を固定コミットで取る) |
 | m68k | elf2x68k で ssh.x (`ZTERM=1 FAST=1 ACCEL=1`)、npd、tis.x をビルドし、`net/ssh/crypto68k/tests/run.sh` と chacha68k の試験 (`.github/ci/chacha68k.sh`、Musashi で 68000 のコードを動かす) |
 | picosim | `make -C harness/picosim test-host`。driver/ のバイナリは yunkya2/x68kzremotedrv 3afd408 に `net/x68kzremotedrv-netpipe/patches` を当ててビルドする (`.github/ci/yunkya2.sh`) |
 
