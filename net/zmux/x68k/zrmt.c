@@ -262,7 +262,7 @@ static long rd_init(struct req_header *req)
     dos_print(":-");
     dos_putchar('A' + *(uint8_t *)&req->fcb + units - 1);
   }
-  dos_print(": は zmux (RS-232C) の先の Pi のディレクトリです\r\n");
+  dos_print(": は zmux の線の先 (zmuxd) のディレクトリです\r\n");
   req->attr = units;
   req->addr = (uint8_t *)&_end;
   return 0;

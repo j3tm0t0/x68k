@@ -189,3 +189,42 @@ Pi に ssh で入るか iTerm2 のペインで `zmux` を実行すると、tmux 
 - `net/zmux/x68k/`: zmux.sys / zmux.x (elf2x68k、C とアセンブラ)。npd.x / slipd.x のコードを元にする。
 - 開発の環境: raspi5 で zmuxd を動かし、XEiJ の RS-232C の TCP をそこへつなぐ。XEiJ を raspi5 の Docker で動かせるかは別に測る
   (遅ければ Mac の XEiJ から TCP で raspi5 へ)。
+
+## 9. RS-232C の代わりに BlueSCSI の SCSI ID6 を線にする (x68k-zos の BlueSCSI 改良 5)
+
+XVI の BlueSCSI v2 (Pico 2 W 版) の ID6 を線にして、zmuxd が Wi-Fi (TCP) でつなぐ。シリアルのケーブルと Raspberry Pi が要らなくなる。
+
+**BlueSCSI はバイトの列を運ぶだけ**にする。zmux のフレーム、CRC、送り直し (§1)、チャネル (コンソール、キー、リモートドライブ、netpipe、画面) は変えない。
+zmuxd から見ると、XEiJ の RS-232C (`--tcp`) と同じ TCP の線になる。
+
+```
+X68000 zmux.sys --SCSI ID6 (READ/WRITE の LBA)--> BlueSCSI --TCP 6871 (Wi-Fi)--> zmuxd (Mac / raspi2)
+```
+
+- 形は `x68zl_proto.h`。READ `0x230000` で TCP から来たバイトと BlueSCSI の受け取れる数 (txfree) を受け、WRITE `0x220000` で txfree までのバイトを送る。
+  どちらも見出し 16 バイト + データ (最大 8 セクタ)。番号や送り直しは持たない。SCSI のエラーで落ちたバイトは zmux の送り直しで戻る。
+- **zmux.sys**: `DEVICE = \SYS\ZMUX.SYS /S` (ID は `/I6`、既定 6) で、線の読み書き (`_ISNS232C` / `_INP232C` / `_OUT232C`) を SCSI の READ / WRITE に替える。
+  組み込むときに INQUIRY で X68NP を確かめる。zl_poll ごとに READ 1 セクタ (rxmore があれば 8 セクタまで読み足す)、送るものがあれば WRITE 1 回。
+  AUX の入力ステータスなどで zl_poll が続けて呼ばれても、受けるものも送るものも無ければ SCSI は 1/100 秒に 1 回だけにする。
+  `grow_rsdrv` と 78125bps の見張りは RS-232C のときだけ。
+- **BlueSCSI**: lwIP (改良 4 の x68k-ota と同じスタック) で TCP 6871 を待ち受ける (ini `X68kZmuxPort`、0 で無効)。
+  X68000 からのバイトは 1KB の送りの輪に入れ、`tcp_write` できる分ずつ出す。TCP から来たバイトは lwIP の pbuf のまま持ち、X68000 が読んだ分だけ
+  `tcp_recved` で窓を開ける (RAM を増やさない)。zmux の窓は 4 x 1024 バイトなので、持つのは pbuf 数個。
+- **zmuxd**: 今の `--tcp HOST:PORT` のまま使う。Wi-Fi は切れることがあるので、`--retry` を足して、線が切れたら終わらずにつなぎ直す
+  (セッションと TUI の配置は残る。zmux の線は HELLO で上がり直す)。
+- **試験**: picosim に `-Z PORT` (ID6 の 0x220000 / 0x230000 を TCP に渡す) を足し、XEiJ + picosim + zmuxd で e2e_rdrive.py を `ZL=1` で流す
+  (コンソール・リモートドライブ・速さ)。BlueSCSI 側は輪と pbuf の扱いをホストの試験で確かめる。
+- **速さの見込み**: SCSI の 1 回の READ / WRITE は 1〜2ms、Wi-Fi は 1.1MB/秒 (日記 19) なので、線の速さは zmux の窓 (4KB) と往復の時間で決まる。
+  往復 10ms なら 400KB/秒ほど。19200bps (1.9KB/秒) の 100 倍以上。
+
+- **ほかの ID6 の使い手と混ざらないこと**: zmux.sys の SCSI はどれもスーパーバイザ (デバイスドライバ、SR 0x2000 のスレッド) から呼び、
+  割り込みの中 (IPL が 0 でない) では呼ばない。Human68k も Z-OS もスーパーバイザの間は切り替えない (Z-OS が横取りするのはユーザモードのときだけ、
+  x68k-zos kernel/preempt.S) ので、1 回の READ / WRITE (1 つの SCSI の命令) の途中にほかの SCSI が入ることはない。
+  npd.x は交換の WRITE と READ の間で譲る (_CHANGE_PR) ので、その間に zmux の READ / WRITE が入ることはある。BlueSCSI は zmux の LBA を
+  netpipe (0x100000 / 0x110000) や bsrmt.sys (0x200000 / 0x210000) とは別に扱い、互いの状態を変えないので混ざらない
+  (picosim の zltest.py で、bsrmt.sys の交換の間に zmux の READ / WRITE を入れて確かめる)。
+- **WRITE の番号**: SCSI の終わりで失敗に見えた WRITE が実は届いていた場合、そのまま送り直すと素の文字 (フレームの番号で守られない) が
+  二重になる。WRITE に番号を付け、失敗したら同じ番号・同じ中身で送り直し、BlueSCSI は直前と同じ番号なら捨てる。
+  picosim の `ZL_WFAIL=N` (N 回に 1 回、受け取ったうえでエラーを返す) で確かめる。
+- **zmuxd --retry**: つなぎ直したら読みかけのフレームと組み立て中のブロック (チャネル 2 / 3 / 4) を捨てる。X68000 が起動し直して
+  UP のまま HELLO が来たときも、組み立て中のブロックを捨てる (前の要求の続きとして新しい要求をつなげない)。

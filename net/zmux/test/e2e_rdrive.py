@@ -21,7 +21,11 @@ fails = []
 REAL = bool(os.environ.get("REAL"))
 CON = bool(os.environ.get("CON"))                  # CTTY AUX にしない (画面が CON のまま。Z-OS の下と同じ)
 SMALL = REAL or bool(os.environ.get("SMALL"))     # 空きの少ないフロッピーへ小さいファイルを写す場面
-BAUD = os.environ.get("BAUD", "19200")              # 78125 で実機 XVI の rc と同じ (RX -B78125 -K1、zmuxd --baud 78125)
+ZL = bool(os.environ.get("ZL"))                    # 線を RS-232C ではなく SCSI ID6 (picosim -Z、BlueSCSI のまね) に: zmux.sys /S
+ZPORT = int(os.environ.get("ZPORT", "26874"))
+BRIDGE = int(os.environ.get("BRIDGE", "26975"))
+PICOSIM = os.environ.get("PICOSIM", os.path.join(top, "harness", "picosim", "build", "picosim"))
+BAUD = os.environ.get("BAUD", "1000000" if ZL else "19200")              # 78125 で実機 XVI の rc と同じ (RX -B78125 -K1、zmuxd --baud 78125)
 
 
 def check(name, cond, extra=""):
@@ -67,9 +71,10 @@ def mkfloppy():
     else:
         open(os.path.join(t, "CONFIG.SYS"), "wb").write(
             b"FILES     = 30\r\nBUFFERS   = 20 1024\r\nPROCESS   = 8 10 20\r\n"
-            b"DEVICE    = \\SYS\\RSDRV.SYS\r\nDEVICE    = \\SYS\\ZMUX.SYS\r\nDEVICE    = \\SYS\\ZRMT.SYS\r\n")
+            b"DEVICE    = \\SYS\\RSDRV.SYS\r\nDEVICE    = \\SYS\\ZMUX.SYS" + (b" /S" if ZL else b"") + b"\r\nDEVICE    = \\SYS\\ZRMT.SYS\r\n")
+        rx = b"" if ZL else b"RX -B" + BAUD.encode() + (b" -K1" if BAUD != "19200" else b"") + b"\r\n"
         open(os.path.join(t, "AUTOEXEC.BAT"), "wb").write(
-            b"ECHO OFF\r\nPATH A:\\\r\nRX -B" + BAUD.encode() + (b" -K1" if BAUD != "19200" else b"") + b"\r\n" + (b"ZMUX -c\r\n" if CON else b"ZMUX\r\nCTTY AUX\r\n"))
+            b"ECHO OFF\r\nPATH A:\\\r\n" + rx + (b"ZMUX -c\r\n" if CON else b"ZMUX\r\nCTTY AUX\r\n"))
     out = os.path.join(run, "zmuxrd.xdf")
     free = subprocess.run([sys.executable, os.path.join(serial, "floppy", "mkxdf.py"), out, xdf, t],
                           capture_output=True, text=True, check=True).stdout.strip()
@@ -140,7 +145,15 @@ for f in ("fd0.xdf", "cgrom.bin"):
     if os.path.exists(os.path.join(run, f)):
         os.remove(os.path.join(run, f))
 sh("cp", xdf, os.path.join(run, "fd0.xdf"))
-xe = subprocess.Popen([os.path.join(serial, "test", "xeij-fd.sh"), run], env=dict(env, XEIJ_RSBUF="64"), stdin=subprocess.DEVNULL)
+ps = None
+zl_errs = -1
+xenv = dict(env, XEIJ_RSBUF="64")
+if ZL:
+    ps = subprocess.Popen([PICOSIM, "-l", "127.0.0.1:%d" % BRIDGE, "-L", "none", "-Z", str(ZPORT), "-v"],
+                          stderr=open(os.path.join(run, "picosim.log"), "w"))
+    time.sleep(1)
+    xenv["XEIJ_JOPTS"] = "-Dpicosim=127.0.0.1:%d -Dpicosim.ids=6" % BRIDGE
+xe = subprocess.Popen([os.path.join(serial, "test", "xeij-fd.sh"), run], env=xenv, stdin=subprocess.DEVNULL)
 zd = None
 try:
     t0 = time.time()
@@ -155,7 +168,7 @@ try:
     m = re.search(r"zrmt\.sys[^\n]*?([A-Z]): ", s)
     dl = m.group(1) if m else "C"
     check("zrmt.sys installed (drive %s:)" % dl, "zrmt.sys" in s and "組み込みません" not in s, "\n".join(l for l in s.splitlines() if "zrmt" in l))
-    zd = subprocess.Popen([ZBIN, "daemon", "--tcp", "127.0.0.1:%d" % XPORT, "--drive", drive, "--baud", BAUD, "-v"], env=env,
+    zd = subprocess.Popen([ZBIN, "daemon", "--tcp", "127.0.0.1:%d" % (ZPORT if ZL else XPORT), "--drive", drive, "--baud", BAUD, "-v"], env=env,
                           stderr=open(os.path.join(run, "zmuxd.log"), "w"))
     for _ in range(100):
         time.sleep(0.2)
@@ -213,6 +226,10 @@ try:
         check("console echo %d: %d chars arrive intact" % (i, len(word)), out is not None and out.count(word) >= 2, repr(out)[-80:])
     out, _ = a.cmd("zmux -s", 30)
     m = re.search(r"AUX read bytes (\d+)", out or "")
+    if ZL:
+        me = re.search(r"scsi errors (\d+)", out or "")
+        zl_errs = int(me.group(1)) if me else -1
+        print("e2e: zmux -s (scsi): " + " | ".join(l.strip() for l in (out or "").splitlines() if l.startswith("scsi")))
     check("zmux -s shows the console counters", m is not None and int(m.group(1)) > 300 and "ch0 rx bytes" in out and "key_peek calls" in out, repr(out)[-200:])
     out, _ = a.cmd("ver", 30)
     check("ver over the console", out is not None and "Human68k version 3.02" in out, repr(out)[-80:])
@@ -279,10 +296,26 @@ try:
     check("dir of a missing directory gives an error, not a hang", out is not None, repr(out)[-80:])
     print("e2e: " + status())
     a.close()
+    if ZL and (os.environ.get("ZL_WFAIL") or os.environ.get("ZL_DROP")):
+        ps.terminate()
+        ps.wait()
+        log = open(os.path.join(run, "picosim.log")).read()
+        m = re.findall(r"write errors on purpose (\d+), repeated writes dropped (\d+) \(mismatch (\d+)\)", log)
+        print("e2e: picosim: " + (" ".join(m[-1]) if m else "no stats"))
+        if os.environ.get("ZL_WFAIL") and zl_errs == 0:
+            # XEiJ の橋 (PicoBridge) は WRITE の CHECK CONDITION を X68000 に返さない (zmux -s の scsi errors が 0)。
+            # 送り直しは picosim の zltest.py (BlueSCSI のまね) と BlueSCSI の x68zl_test.c で確かめる
+            print("SKIP repeated WRITEs end to end: the X68000 saw no SCSI errors under XEiJ")
+        elif os.environ.get("ZL_WFAIL"):
+            check("failed WRITEs were sent again with the same number and dropped once, with the same bytes",
+                  bool(m) and int(m[-1][0]) > 0 and int(m[-1][1]) > 0 and int(m[-1][2]) == 0, str(m[-1:]))
+        ps = None
     print("ZMUX RDRIVE E2E %s (%d failures)" % ("PASS" if not fails else "FAIL", len(fails)))
 finally:
     if zd:
         zd.terminate()
     xe.terminate()
     subprocess.run(["pkill", "-f", run + "/agent.cmd"])
+    if ps:
+        ps.terminate()
 sys.exit(1 if fails else 0)

@@ -36,9 +36,9 @@ SVCFLAGS ?=
 
 all: build/picosim
 
-build/picosim: picosim.c netpipe.c lan_slirp.c bootwait.c ../../net/npd/zss.h picosim.h build/libslirp.a $(SVC) $(REMOTE_SRC) $(TSP)
+build/picosim: picosim.c netpipe.c lan_slirp.c bootwait.c zl.c ../../net/npd/zss.h ../../net/zmux/x68zl_proto.h picosim.h build/libslirp.a $(SVC) $(REMOTE_SRC) $(TSP)
 	cc $(CFLAGS) -I$(SLIRP_DIR)/src -I$(ACCEL) -I$(ACCEL)/monocypher $(GLIB_CFLAGS) $(SVCFLAGS) -o $@ \
-	  picosim.c netpipe.c lan_slirp.c bootwait.c $(SVC) $(REMOTE_SRC) $(TSP) $(ACCEL)/accel_ops.c $(ACCEL)/monocypher/monocypher.c \
+	  picosim.c netpipe.c lan_slirp.c bootwait.c zl.c $(SVC) $(REMOTE_SRC) $(TSP) $(ACCEL)/accel_ops.c $(ACCEL)/monocypher/monocypher.c \
 	  $(ACCEL)/monocypher/monocypher-ed25519.c build/libslirp.a $(GLIB_LIBS) -lresolv $(LIBICONV)
 
 $(TSPDIR)/build/tsp_all.o: $(TSPDIR)/tsp_glue.c $(wildcard $(TSPDIR)/../tsp_svc.c $(TSPDIR)/../tsp_svc.h)
@@ -102,6 +102,7 @@ test-host: build/picosim build/picosim-echo
 	python3 -I tests/zsstest.py build/picosim
 	python3 -I tests/bootwaittest.py build/picosim $(FW)
 	python3 -I tests/remotetest.py build/picosim $(FW)
+	python3 -I tests/zltest.py build/picosim
 	@if [ -n "$(REMOTE_SRC)" ]; then python3 -I tests/x68rdtest.py build/picosim; else echo "SKIP x68rdtest: no remoteserv.c (RS=)"; fi
 	@if [ -d "$(PZLREPO)" ] || [ -n "$(PZLSRC)" ]; then $(MAKE) build/picosim-pzl PZLREPO=$(PZLREPO) PZLSRC=$(PZLSRC) && \
 	  python3 -I tests/pzltest.py build/picosim-pzl; else echo "SKIP pzltest: no PZL repo ($(PZLREPO))"; fi

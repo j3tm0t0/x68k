@@ -201,9 +201,10 @@ int zmux_main(void)
       static const char *n2[] = { "ch0 rx bytes", "ch0 rx rejected (ring full)", "AUX read bytes", "AUX cmd4 (read)", "AUX cmd5 (peek)", "AUX cmd6 (status)",
                                   "key_peek calls", "(unused)", "busy sent", "rx ring count now",
                                   "CON reads", "CON writes", "CON bytes mirrored", "CON bytes dropped", "tab 0 keys", "console (1=CON 2=mirror off 4=CON hooked)",
-                                  "screen requests", "screen bytes" };
+                                  "screen requests", "screen bytes",
+                                  "scsi line (256+ID, 0 = RS-232C)", "scsi reads", "scsi writes", "scsi errors" };
       int k;
-      for (k = 0; k < 18; k++) {
+      for (k = 0; k < 22; k++) {
         ssp = _dos_super(0);
         i = s[24 + k];
         if (ssp > 0) _dos_super(ssp);
