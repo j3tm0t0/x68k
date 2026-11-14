@@ -4,6 +4,7 @@
  *   3. 特権命令 (move to SR / move from SR) がどう扱われるか
  *   4. スーパーバイザ領域設定 $E86001 で主記憶の下側を守れるか (守ったまま DOS / IOCS が使えるか)
  *   5. 増設メモリのスーパーバイザ領域設定 $EAFF81-$EAFF89 (256KB 単位) で守れるか
+ *   6. ユーザーモードから守られた所へ jsr (An) したとき、戻り番地を積んでからバスエラーになるか (Z-OS の prot_ti_fault)
  * 例外は trap.S のハンドラで受けて記録し、続きから戻る。最後にベクタと設定を元に戻す。
  * 68000 専用 (バスエラーのフレームの形が 68010 以降と違う)。
  */
@@ -15,7 +16,10 @@
 extern void buserr_h(void), addrerr_h(void), priv_h(void);
 extern int probe_rb(unsigned long a), probe_rw(unsigned long a);
 extern int probe_wb(unsigned long a, int v), probe_ww(unsigned long a, int v);
-extern int probe_movesr(void), probe_movefromsr(void);
+extern int probe_movesr(void), probe_movefromsr(void), probe_jsr(unsigned long a);
+extern char insn_jsr[];
+extern volatile unsigned short f_frame[7];
+extern volatile unsigned long f_usp, f_usptop, f_usp0;
 extern char insn_rb[], insn_rw[], insn_wb[], insn_ww[], insn_movesr[];
 extern volatile unsigned short f_kind, f_info, f_ir, f_sr;
 extern volatile unsigned long f_addr, f_pc;
@@ -276,6 +280,49 @@ int main(void)
         _dos_mfree(p);
       }
       while (nh > 0) _dos_mfree(hold[--nh]);
+    }
+  }
+
+  /* 6. jsr (An) で守られた所へ飛ぶ。命令の先読みでバスエラーになるとき、戻り番地を USP に積んだ後か前か。
+   *    積んだ後: USP = 前 - 4、[USP] = jsr の次の番地。積む前: USP = 前のまま。どちらでも NG にはしない (どちらかでなければ NG)。
+   *    Z-OS の prot_ti_fault は、フレームの PC の 2 / 4 バイト前が jsr (An) (0x4E90-0x4E97) ならそこから戻り番地を決め、
+   *    [USP] がそれと同じときだけ積んだとみなす。その判定が実機で合うかもここで見る */
+  printf("\n[6] ユーザーモードから守られた所へ jsr (a1)\n");
+  {
+    static const struct { unsigned long a; const char *name; } tg[] = {
+      {0x002000, "主記憶 $002000 ($E86001 で守られた所)"},
+      {0xff0000, "IPL ROM $FF0000"},
+    };
+    for (unsigned i = 0; i < sizeof tg / sizeof tg[0]; i++) {
+      unsigned long ret = (unsigned long)insn_jsr + 2;
+      printf("  %s\n", tg[i].name);
+      if (probe_rw(tg[i].a) != 2) { printf("    ユーザーモードで読めてしまうので飛ばない\n"); ng++; continue; }
+      int r = probe_jsr(tg[i].a);
+      expect("jsr (a1)", r, 2);
+      if (r != 2) continue;
+      unsigned long fpc = ((unsigned long)f_frame[5] << 16) | f_frame[6];
+      unsigned long fa = ((unsigned long)f_frame[1] << 16) | f_frame[2];
+      printf("    frame: info=%04x addr=%06lx ir=%04x sr=%04x pc=%06lx\n", f_frame[0], fa, f_frame[3], f_frame[4], fpc);
+      printf("    jsr の番地=%06lx 次の番地=%06lx pc-jsr=%ld pc-飛び先=%ld\n", (unsigned long)insn_jsr, ret,
+             (long)(fpc - (unsigned long)insn_jsr), (long)(fpc - tg[i].a));
+      printf("    USP 前=%06lx 後=%06lx [USP]=%08lx\n", f_usp0, f_usp, f_usptop);
+      int pushed = f_usp == f_usp0 - 4 && f_usptop == ret;
+      int notpushed = f_usp == f_usp0;
+      printf("    → %s\n", pushed ? "戻り番地を積んでからバスエラー" : notpushed ? "戻り番地を積む前にバスエラー" : "どちらでもない  <== 期待と違う");
+      if (!pushed && !notpushed) ng++;
+      /* prot_ti_fault の判定をまねる */
+      unsigned long z = 0;
+      if (!(fpc & 1) && fpc >= 4) {
+        int ssp = _dos_super(0);
+        unsigned short w2 = *(volatile unsigned short *)(fpc - 2), w4 = *(volatile unsigned short *)(fpc - 4);
+        _dos_super(ssp);
+        if ((w2 & 0xfff8) == 0x4e90) z = fpc; else if ((w4 & 0xfff8) == 0x4e90) z = fpc - 2;
+      }
+      int zpushed = z ? f_usptop == z : 1;
+      unsigned long zret = z && !zpushed ? z : f_usptop;
+      printf("    Z-OS の判定: %s、戻り番地=%06lx %s\n", zpushed ? "積んだ" : "積んでいない", zret,
+             zret == ret && zpushed == pushed ? "(合っている)" : "  <== 合わない");
+      if (zret != ret || zpushed != pushed) ng++;
     }
   }
 

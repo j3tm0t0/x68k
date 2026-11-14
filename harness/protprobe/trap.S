@@ -5,7 +5,8 @@
 	.text
 	.globl	buserr_h, addrerr_h, priv_h
 	.globl	probe_rb, probe_rw, probe_wb, probe_ww
-	.globl	probe_movesr, probe_movefromsr
+	.globl	probe_movesr, probe_movefromsr, probe_jsr, insn_jsr
+	.globl	f_frame, f_usp, f_usptop, f_usp0, f_jtarget
 	.globl	insn_rb, insn_rw, insn_wb, insn_ww, insn_movesr
 	.globl	f_kind, f_info, f_addr, f_ir, f_sr, f_pc, recover_pc
 	.globl	old_bus, old_adr, old_priv
@@ -14,8 +15,16 @@
 | (OS の裏のタスクなど、ほかのプログラムの例外を横取りしないため)
 
 | グループ 0 のフレーム: +0 情報 (R/W, I/N, FC) +2 アクセス番地 +6 命令 +8 SR +10 PC
+| probe_jsr の間は、PC が試験の関数の外 (飛び先) でも、アクセス番地が飛び先なら受ける
 buserr_h:
-	cmp.l	#probe_begin,10(%sp)
+	tst.l	f_jtarget
+	beq.s	2f
+	move.l	%d0,-(%sp)
+	move.l	4+2(%sp),%d0		| アクセス番地
+	cmp.l	f_jtarget,%d0
+	movem.l	(%sp)+,%d0		| movem はフラグを変えない
+	beq.s	jsrgrp0
+2:	cmp.l	#probe_begin,10(%sp)
 	bcs.s	1f
 	cmp.l	#probe_end,10(%sp)
 	bcc.s	1f
@@ -39,6 +48,23 @@ grp0:
 	move.w	8(%sp),f_sr
 	move.l	10(%sp),f_pc
 	addq.l	#8,%sp			| 普通の 6 バイトのフレームにする
+	move.l	recover_pc,2(%sp)
+	rte
+
+| probe_jsr のバスエラー: フレーム 14 バイトをそのまま、USP と USP の先頭のロングワードを記録して fault_jsr へ
+jsrgrp0:
+	move.w	#2,f_kind
+	move.l	(%sp),f_frame
+	move.l	4(%sp),f_frame+4
+	move.l	8(%sp),f_frame+8
+	move.w	12(%sp),f_frame+12
+	move.l	%a0,-(%sp)
+	move.l	%usp,%a0
+	move.l	%a0,f_usp
+	move.l	(%a0),f_usptop
+	move.l	(%sp)+,%a0
+	clr.l	f_jtarget
+	addq.l	#8,%sp
 	move.l	recover_pc,2(%sp)
 	rte
 
@@ -120,6 +146,25 @@ fault2:
 	add.l	#0x10000,%d0
 	rts
 
+| int probe_jsr(target): ユーザーモードから jsr (a1) で target へ飛ぶ。target は守られた所 (バスエラーになる所) に限る。
+| jsr が戻り番地を積んでからバスエラーになるか、積む前になるかを、記録した USP とフレームで見る (Z-OS の prot_ti_fault)
+probe_jsr:
+	move.l	4(%sp),%a1
+	clr.w	f_kind
+	move.l	#fault_jsr,recover_pc
+	move.l	%sp,f_usp0
+	move.l	%a1,f_jtarget
+insn_jsr:
+	jsr	(%a1)
+	clr.l	f_jtarget		| 戻ってきた (飛び先が守られていなかった)
+	moveq	#0,%d0
+	rts
+fault_jsr:
+	move.l	f_usp0,%sp		| jsr が積んだ分を捨てる
+	moveq	#0,%d0
+	move.w	f_kind,%d0
+	rts
+
 fault:
 	moveq	#0,%d0
 	move.w	f_kind,%d0
@@ -138,3 +183,8 @@ recover_pc: .ds.l 1
 old_bus: .ds.l	1
 old_adr: .ds.l	1
 old_priv: .ds.l	1
+f_frame: .ds.w	7
+f_usp:	.ds.l	1
+f_usptop: .ds.l	1
+f_usp0:	.ds.l	1
+f_jtarget: .ds.l 1
