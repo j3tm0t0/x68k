@@ -41,6 +41,13 @@ build/picosim: picosim.c netpipe.c lan_slirp.c bootwait.c ../../net/npd/zss.h pi
 	  picosim.c netpipe.c lan_slirp.c bootwait.c $(SVC) $(REMOTE_SRC) $(TSP) $(ACCEL)/accel_ops.c $(ACCEL)/monocypher/monocypher.c \
 	  $(ACCEL)/monocypher/monocypher-ed25519.c build/libslirp.a $(GLIB_LIBS) -lresolv $(LIBICONV)
 
+# BlueSCSI v2 (Pico 2 W) の大きさの tsp_svc を載せた版 (npd.x -s + tis.x -p の試験、net/tistack/tests/xeij_pico.sh BLUESCSI=1)
+build/picosim-bs: picosim.c netpipe.c lan_slirp.c bootwait.c ../../net/npd/zss.h picosim.h build/libslirp.a $(SVC) $(REMOTE_SRC) FORCE
+	$(MAKE) -C $(TSPDIR) build-bs/tsp_all.o BS=1 LWIP=$(LWIP)
+	cc $(CFLAGS) -I$(SLIRP_DIR)/src -I$(ACCEL) -I$(ACCEL)/monocypher $(GLIB_CFLAGS) $(SVCFLAGS) -o $@ \
+	  picosim.c netpipe.c lan_slirp.c bootwait.c $(SVC) $(REMOTE_SRC) $(TSPDIR)/build-bs/tsp_all.o $(ACCEL)/accel_ops.c \
+	  $(ACCEL)/monocypher/monocypher.c $(ACCEL)/monocypher/monocypher-ed25519.c build/libslirp.a $(GLIB_LIBS) -lresolv $(LIBICONV)
+
 $(TSPDIR)/build/tsp_all.o: $(TSPDIR)/tsp_glue.c $(wildcard $(TSPDIR)/../tsp_svc.c $(TSPDIR)/../tsp_svc.h)
 	$(MAKE) -C $(TSPDIR) build/tsp_all.o LWIP=$(LWIP)
 

@@ -472,6 +472,34 @@ x68put の書き先はどちらも B: (SMB のリモートドライブ。同じ 
 7. Wi-Fi が切れたときの tsp_shutdown → tsp_init (Z に Network is down が出るか)
 8. 無修正の rcmd.x / ssh.x を実機の tis.x -p で (XEiJ + picosim では通った)
 
+### 本物の X68000 + BlueSCSI v2 (Pico 2 W) で (npd.x -s)
+
+XVI のように Z の疑似 SCSI のメールボックスが無い機械では、BlueSCSI v2 (Pico 2 W 版) の SCSI ID6 が Pico の代わりをする。
+BlueSCSI の Wi-Fi の lwIP にこの tsp_svc.c をそのまま載せる (BlueSCSI-v2 のフォークの `lib/X68kTsp`、GPL-3、公開していない)。
+
+```
+TIS.X -p
+NPD.X -s
+```
+
+- npd.x -s は SCSI IOCS (_S_WRITEEXT / _S_READEXT) で交換する。BlueSCSI は書き込みの命令の中で答えを作るので、答えは同じ交換で返る。
+  tis.x が居るときは、送るものが無くても Z と同じ間隔 (60ms) で問い合わせる。IP アドレスは要らない。
+- X68000 の待ち受け (rcmd.x の 2323 など) は BlueSCSI の番地に出る。
+- BlueSCSI は RAM が少ないので小さくしてある (`tsp_svc.c` の `#ifndef` の値を BlueSCSI の lwipopts.h で決める):
+  - Pico 側のソケット 8 (Z の Pico は 40)
+  - 応答 1504 バイト (4064)
+  - 送信の上限 2KB (12KB)
+  - ソケット 1 本の受信窓 4 × MSS (TSP_PCB_WND)
+  - 256 バイト以下の受信は PBUF_RAM に写す (TSP_RX_COPY)
+- 使えないもの:
+  - `.local` の名前 (mDNS)
+  - 同時に 3 つ以上の名前の問い合わせ
+  - 64 バイト以上の名前
+  - Pico の zsshd (0xA7)
+- 試験:
+  - `make -C tests picosim-bs && tests/picosim-bs`: 同じ 117 項目を BlueSCSI の大きさで。
+  - `BLUESCSI=1 tests/xeij_pico.sh`: XEiJ の SPC の経路 (メールボックスなし) で npd.x -s と tis.x -p を使う。picosim は `build/picosim-bs` (lwIP の表もファームと同じ大きさ) を読み込みキャッシュなしで動かす。
+
 ## ファイル
 
 - `start.S`: text 先頭の `"TCP/IP\0\0"` と入口 (text+8)、起動処理
