@@ -25,6 +25,9 @@ void dos_putchar(int c) { (void)c; }
 static uint8_t disk[65536];
 static long disk_len, cap;
 static int log_ops[64], nlog;           /* 届いた命令の順番 */
+static int open_files;                  /* 開いているファイルの数 (CLOSE が届いたか) */
+static int write_zero;                  /* 1: WRITE に 0 バイト書けたと答える (進まない応答) */
+static int write_calls;
 
 static void logop(int op) { if (nlog < 64) log_ops[nlog++] = op; }
 
@@ -37,13 +40,16 @@ long call_entry(void *e, long cmd, long *a)
   logop(op);
   switch (op) {
   case 0x49: case 0x4a: case 0x4b:      /* create, open, close */
-    if (op == 0x49) disk_len = 0;
-    if (op == 0x4a) { struct res_open *ro = (void *)rb; ro->res = 0; ro->size = disk_len; return sizeof *ro; }
+    if (op == 0x49) { disk_len = 0; open_files++; }
+    if (op == 0x4b) open_files--;
+    if (op == 0x4a) { open_files++; struct res_open *ro = (void *)rb; ro->res = 0; ro->size = disk_len; return sizeof *ro; }
     rb[0] = 0;
     return 1;
   case 0x4d: {                          /* write: 空きを超えた分は書けない (remoteserv.c / rdrive.rs と同じくエラーを返す) */
     struct cmd_write *cw = (void *)w;
     struct res_write *rw = (void *)rb;
+    write_calls++;
+    if (write_zero && cw->len > 0) { rw->len = 0; return 2; }
     if (cw->len == 0) { disk_len = cw->pos; rw->len = 0; return 2; }
     if (cw->pos + cw->len > cap) { rw->len = _DOSE_DISKFULL; return 2; }
     memcpy(disk + cw->pos, cw->data, cw->len);
@@ -98,7 +104,8 @@ static void reset(long capacity)
 {
   memset(dcache, 0, sizeof dcache);
   memset(fcb, 0, sizeof fcb);
-  disk_len = 0; cap = capacity; nlog = 0;
+  memset(disk, 0, sizeof disk);
+  disk_len = 0; cap = capacity; nlog = 0; open_files = 0; write_zero = 0; write_calls = 0;
   call(0x09, namebuf, 0, 0x20);         /* create */
 }
 
@@ -120,6 +127,7 @@ int main(void)
   reset(512);
   check("write 1000 (cached)", write_small(1000), 1000);
   check("close on a full disk", call(0x0b, 0, 0, 0), _DOSE_DISKFULL);
+  check("the file is closed on the Pi after the error", open_files, 0);
 
   /* 2. 空きが十分なら CLOSE は 0、中身も届く */
   reset(sizeof disk);
@@ -152,6 +160,41 @@ int main(void)
     ;
   check("write reaches the Pi before filedate", i < nlog && (i + 1 < nlog && log_ops[i + 1] == 0x4f), 1);
   check("close after filedate", call(0x0b, 0, 0, 0), 0);
+
+  /* 7. FILEDATE の前の送り出しの失敗 */
+  reset(100);
+  write_small(500);
+  check("filedate after a failed flush", call(0x0f, 0, 0x56781234, 0), _DOSE_DISKFULL);
+
+  /* 8. 失敗の後の READ は、Pi が受け取らなかった中身をキャッシュから返さない */
+  reset(100);
+  write_small(500);
+  call(0x0e, 0, 0, 0);                  /* seek 0: 送り出しに失敗 (位置は 500 のまま) */
+  fcb_fpos(fcb) = 0;                    /* キャッシュの範囲を読む */
+  check("read after the failure gets what the Pi has", call(0x0c, rbuf, sizeof rbuf, 0), 0);
+
+  /* 9. 失敗の後に続きの位置へ WRITE しても、受け取られなかった中身を送り直さない */
+  reset(100);
+  write_small(500);                     /* 0〜499 はキャッシュ */
+  call(0x0e, 0, 0, 1);                  /* seek (現在位置 500 のまま): 送り出しに失敗 */
+  cap = sizeof disk;
+  check("write after the failure", write_small(10), 10);
+  check("close", call(0x0b, 0, 0, 0), 0);
+  check("only the new 10 bytes reach the Pi", disk[0] == 0 && disk[499] == 0 && disk[500] == 'a' && disk_len == 510, 1);
+
+  /* 10. Pi が 0 バイトしか書けないと答えても、同じ要求を繰り返さない */
+  reset(sizeof disk);
+  write_zero = 1;
+  {
+    static uint8_t big[CONFIG_DATASIZE + 100];
+    check("large write that makes no progress", call(0x0d, big, sizeof big, 0), 0);
+    check("one request for it", write_calls, 1);
+    check("file size is not cut", fcb_size(fcb), 0);
+  }
+  write_calls = 0;
+  write_small(100);
+  check("close when the cache makes no progress", call(0x0b, 0, 0, 0), _DOSE_DISKFULL);
+  check("one request for the cache", write_calls, 1);
 
   printf(fails ? "%d failure(s)\n" : "all passed\n", fails);
   return fails != 0;

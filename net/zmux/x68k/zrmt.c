@@ -171,6 +171,8 @@ static long send_write(uint32_t fcb, const uint8_t *buf, uint32_t pos, long len)
       return -1;
     if (r.res_write.len < 0)
       return r.res_write.len;
+    if (r.res_write.len == 0)           /* 1 バイトも書けなかった: 同じ要求を繰り返さず、書けた分を返す (呼んだ側がディスクフルにする) */
+      break;
     buf += r.res_write.len;
     total += r.res_write.len;
     pos += r.res_write.len;
@@ -210,6 +212,10 @@ static long dcache_flush(uint32_t fcb, int clean)
         else if (n < dcache[i].len)
           res = _DOSE_DISKFULL;
         dcache[i].dirty = 0;
+        if (res < 0) {                  /* Pi が受け取らなかった中身を、後の READ で返したり WRITE で送り直したりしない */
+          dcache[i].fcb = 0;
+          continue;
+        }
       }
       if (clean)
         dcache[i].fcb = 0;
@@ -396,8 +402,8 @@ long rd_interrupt(struct req_header *req)
     if ((len = dcache_flush((uint32_t)req->fcb, 0)) < 0)
       goto ok_write;
     len = send_write((uint32_t)req->fcb, req->addr, *pp, req->status);
-    if (len == 0)
-      *sp = *pp;                        /* 0 バイトの書き込みは切り詰め */
+    if (req->status == 0)
+      *sp = *pp;                        /* 0 バイトの書き込みは切り詰め (書けずに 0 が返った WRITE ではない) */
   ok_write:
     if (len > 0) {
       *pp += len;
