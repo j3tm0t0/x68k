@@ -14,7 +14,10 @@ XEIJ=${XEIJ:-$TOP/x68kcli/tools/xeij}; AGENT=${AGENT:-$TOP/x68kcli/tools/xeijage
 [ -f "$XEIJ/XEiJ.jar" ] || XEIJ=$MAIN/x68kcli/tools/xeij
 [ -f "$AGENT" ] || AGENT=$MAIN/x68kcli/tools/xeijagent.jar
 [ -f "$XEIJ/XEiJ.jar" ] && [ -f "$AGENT" ] || skip "no XEiJ / agent in x68kcli/tools"
-[ "$(nm build/picosim 2>/dev/null | grep -c remote_serv)" -gt 0 ] || skip "build/picosim has no remoteserv.c (RS=)"
+# PICOSIM=: another picosim with the same -X (for example one with the BlueSCSI firmware's server, which writes
+# the card back to the -X directory when it gets SIGTERM)
+PICOSIM=${PICOSIM:-build/picosim}
+[ "$(nm "$PICOSIM" 2>/dev/null | grep -c -e remote_serv -e x68rd_port)" -gt 0 ] || skip "$PICOSIM has no remoteserv.c (RS=)"
 make -s -C "$TOP/net/bsrmt" || { echo "FAIL build bsrmt.sys"; exit 1; }
 . "$(dirname "$0")/benchlock.sh"
 benchlock_take bsrmttest || skip "bench locked by $(cat "$XEIJLOCK")"
@@ -54,7 +57,8 @@ D=${DRV:-D:}
   printf 'COPY CONFIG.SYS DONE.TXT > NUL\r\n'
 } > "$B/AUTOEXEC.BAT"
 
-build/picosim -l 127.0.0.1:$BRIDGE -L none -X "$R" -vv > "$WORK/picosim.log" 2>&1 & pids+=($!)
+"$PICOSIM" -l 127.0.0.1:$BRIDGE -L none -X "$R" -vv > "$WORK/picosim.log" 2>&1 & pids+=($!)
+PSPID=$!
 sleep 1
 "$JAVA" -javaagent:"$AGENT=$WORK/tmp/agent.cmd" -Dpicosim=127.0.0.1:$BRIDGE -Dpicosim.ids=6 -Djava.io.tmpdir="$WORK/tmp" \
   -jar "$XEIJ/XEiJ.jar" -config=default -saveonexit=off -model=SUPER -boot="$B" -flrinformed=on -usecanvas=off \
@@ -66,6 +70,7 @@ for t in $(seq 1 ${TIMEOUT:-180}); do
   sleep 1
 done
 sleep 1
+kill -TERM $PSPID 2>/dev/null; wait $PSPID 2>/dev/null
 fails=0
 ok() { if eval "$2"; then echo "PASS $1"; else echo "FAIL $1"; fails=$((fails + 1)); fi; }
 txt() { iconv -f CP932 -t UTF-8 "$B/$1" 2>/dev/null | tr -d '\r'; }
