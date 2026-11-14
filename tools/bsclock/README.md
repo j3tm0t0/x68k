@@ -18,15 +18,15 @@ bsclock -i ID    BlueSCSI の netpipe の装置の SCSI ID (既定 6)
 ```
 WiFiSSID=...
 WiFiPassword=...
-X68kStage=1              ; Wi-Fi の受け取り (lwIP) を動かす。時刻の取得もこの上で動く
+X68kStage=1              ; Wi-Fi の受信処理 (lwIP) を有効にする。時刻の取得もこの処理を使う
 X68kNetpipe=1            ; SCSI ID 6 に netpipe の装置を出す (bsclock はここに聞く)
-X68kNTP=pool.ntp.org     ; SNTP サーバー (名前か IP アドレス)。off で取らない。省くと pool.ntp.org
+X68kNTP=pool.ntp.org     ; SNTP サーバーのホスト名か IP アドレス。off で時刻を取らない。省くと pool.ntp.org
 X68kTZ=+9                ; UTC との差。+9、-5、+5:30 など。省くと +9
 ```
 
-- BlueSCSI は DHCP でアドレスを得たあとに SNTP サーバーに聞き、その後は 6 時間ごとに聞き直す。起動から数秒は時刻が無く、`bsclock` は終了コード 2 で終わる。
+- BlueSCSI は DHCP で IP アドレスを得たあと SNTP サーバーから時刻を取り、その後は 6 時間ごとに取り直す。起動から数秒は時刻が無く、`bsclock` は終了コード 2 で終わる。
 - 固定 IP (`X68kStageIP=`) のときは、名前の解決に `X68kStageDNS=` (省くとゲートウェイ) を使う。
-- DaynaPORT (ネットワークの機器) をどこかの SCSI ID に置いていると、Wi-Fi の受け取りが動かないので時刻も無い。
+- どこかの SCSI ID に DaynaPORT (ネットワークの機器) を割り当てていると、Wi-Fi の受信処理が動かないので、時刻も取れない。
 
 ## しくみ
 
@@ -36,9 +36,9 @@ netpipe の装置 (INQUIRY の製品名が `X68NP` で始まる SCSI ID) に、�
 [0xA8][4][status][年 2][月][日][時][分][秒][曜日 0=日][UTC との差 (15 分単位、符号付き)][1970 年からの秒 4 (UTC)]
 ```
 
-で、日時は `X68kTZ` の時差の地方時。status 7 は「まだ時刻が無い」。INQUIRY が `X68NP` でない ID には書かない (普通のディスクなら LBA 0x100000 の中身を壊すため)。
+で、日時は `X68kTZ` で指定した UTC との差を足した時刻。status 7 は「まだ時刻が無い」。INQUIRY が `X68NP` でない ID には書かない (普通のディスクなら LBA 0x100000 の中身を壊すため)。
 
-時計に書く BCD は ROM の `_DATEBCD` / `_TIMEBCD` で作ってから `_DATESET` / `_TIMESET` に渡す。日付の BCD には曜日とうるう年の数え (年 % 4)、時刻の BCD には 24 時間制の指定が入る。自分で組んだ BCD を渡したところ、XEiJ では次に読んだ時刻が 8 時間ずれた (12 時が 20 時になった)。
+時計に書く BCD は ROM の `_DATEBCD` / `_TIMEBCD` で作ってから `_DATESET` / `_TIMESET` に渡す。日付の BCD には曜日と、うるう年の判定に使う値 (年を 4 で割った余り) が入り、時刻の BCD には 24 時間制の指定が入る。自分で組んだ BCD を渡したところ、XEiJ では次に読んだ時刻が 8 時間ずれた (12 時が 20 時になった)。
 
 ## 試験
 
