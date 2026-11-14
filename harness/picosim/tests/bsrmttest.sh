@@ -37,6 +37,7 @@ for i in $(seq 1 50); do printf 'file %d\r\n' "$i" > "$R/MANY/F$i.TXT"; done   #
 printf 'deep\r\n' > "$R/SUB/DEEP/D.TXT"
 printf 'old\r\n' > "$R/OLD.TXT"
 printf 'gone\r\n' > "$R/GONE.TXT"
+printf 'nihongo\r\n' > "$R/日本語.TXT"                     # 名前は UTF-8 (カードの上) と Shift_JIS (X68000) で変わる
 
 # ---- 起動ディスク
 cp "$XEIJ/data/HUMAN.SYS" "$XEIJ/data/COMMAND.X" "$B/"
@@ -54,8 +55,9 @@ D=${DRV:-D:}
   printf 'TYPE %s\\SUB\\DEEP\\D.TXT > DEEP.TXT\r\n' "$D"
   printf 'MKDIR %s\\NEWDIR\r\nCOPY CONFIG.SYS %s\\NEWDIR\\C.SYS > NUL\r\n' "$D" "$D"
   printf 'REN %s\\OLD.TXT NEW.TXT\r\nDEL %s\\GONE.TXT\r\n' "$D" "$D"
+  printf 'TYPE %s\\日本語.TXT > JP.TXT\r\nCOPY CONFIG.SYS %s\\漢字.SYS > NUL\r\n' "$D" "$D"
   printf 'COPY CONFIG.SYS DONE.TXT > NUL\r\n'
-} > "$B/AUTOEXEC.BAT"
+} | iconv -f UTF-8 -t CP932 > "$B/AUTOEXEC.BAT"
 
 "$PICOSIM" -l 127.0.0.1:$BRIDGE -L none -X "$R" -vv > "$WORK/picosim.log" 2>&1 & pids+=($!)
 PSPID=$!
@@ -85,6 +87,8 @@ ok "TYPE in a subdirectory" 'txt DEEP.TXT | grep -q deep'
 ok "MKDIR and COPY into it" 'cmp -s "$B/CONFIG.SYS" "$R/NEWDIR/C.SYS"'
 ok "REN" '[ -f "$R/NEW.TXT" ] && [ ! -f "$R/OLD.TXT" ]'
 ok "DEL" '[ ! -f "$R/GONE.TXT" ]'
+ok "TYPE of a Japanese name" 'txt JP.TXT | grep -q nihongo'
+ok "COPY to a Japanese name" 'cmp -s "$B/CONFIG.SYS" "$R/漢字.SYS"'
 grep -q "x68rd: seq" "$WORK/picosim.log" && echo "(retries seen in $WORK/picosim.log)"
 echo "$fails failure(s)"
 exit $((fails > 0))
