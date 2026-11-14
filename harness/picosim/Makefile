@@ -20,7 +20,7 @@ ACCEL = ../../net/accel
 # B: (リモートドライブ): フォークの x68kserremote (サブモジュール) の remoteserv.c をそこからコンパイルする (写さない)。
 # 無ければ B: 無しでビルドする
 RS ?= $(HOME)/src/github.com/yunkya2/x68kzremotedrv-hid/x68kserremote
-REMOTE_SRC = $(if $(wildcard $(RS)/service/remoteserv.c),build/remote.o build/remoteserv.o)
+REMOTE_SRC = $(if $(wildcard $(RS)/service/remoteserv.c),build/remote.o build/remoteserv.o build/x68rd.o)
 # TSP (tis.x -p の相手): net/tistack の tsp_svc + lwIP (pico-sdk の lib/lwip)。lwIP があれば既定で入れる (TSP= で切る)。
 # lwIP は libslirp と名前がぶつかるので、net/tistack/pico/picosim が 1 個の .o にまとめたものをリンクする。
 # lwIP の口は最初の 0xA6 が来てから LAN に出る (それまでは npd.x + xip.x の Z と同じに動く)
@@ -36,9 +36,9 @@ SVCFLAGS ?=
 
 all: build/picosim
 
-build/picosim: picosim.c netpipe.c lan_slirp.c bootwait.c x68rd.c ../../net/bsrmt/x68rd_proto.h ../../net/npd/zss.h picosim.h build/libslirp.a $(SVC) $(REMOTE_SRC) $(TSP)
+build/picosim: picosim.c netpipe.c lan_slirp.c bootwait.c ../../net/npd/zss.h picosim.h build/libslirp.a $(SVC) $(REMOTE_SRC) $(TSP)
 	cc $(CFLAGS) -I$(SLIRP_DIR)/src -I$(ACCEL) -I$(ACCEL)/monocypher $(GLIB_CFLAGS) $(SVCFLAGS) -o $@ \
-	  picosim.c netpipe.c lan_slirp.c bootwait.c x68rd.c $(SVC) $(REMOTE_SRC) $(TSP) $(ACCEL)/accel_ops.c $(ACCEL)/monocypher/monocypher.c \
+	  picosim.c netpipe.c lan_slirp.c bootwait.c $(SVC) $(REMOTE_SRC) $(TSP) $(ACCEL)/accel_ops.c $(ACCEL)/monocypher/monocypher.c \
 	  $(ACCEL)/monocypher/monocypher-ed25519.c build/libslirp.a $(GLIB_LIBS) -lresolv $(LIBICONV)
 
 $(TSPDIR)/build/tsp_all.o: $(TSPDIR)/tsp_glue.c $(wildcard $(TSPDIR)/../tsp_svc.c $(TSPDIR)/../tsp_svc.h)
@@ -47,6 +47,8 @@ $(TSPDIR)/build/tsp_all.o: $(TSPDIR)/tsp_glue.c $(wildcard $(TSPDIR)/../tsp_svc.
 REMOTE_CFLAGS = -O2 -g -Iremote -I$(RS)/include -I$(RS)/service -I.
 build/remote.o: remote.c remote/config.h picosim.h
 	mkdir -p build && cc $(REMOTE_CFLAGS) -Wall -c -o $@ remote.c
+build/x68rd.o: x68rd.c remote/config.h picosim.h ../../net/bsrmt/x68rd_proto.h
+	mkdir -p build && cc $(REMOTE_CFLAGS) -Wall -c -o $@ x68rd.c
 build/remoteserv.o: $(RS)/service/remoteserv.c remote/config.h
 	mkdir -p build && cc $(REMOTE_CFLAGS) -w -c -o $@ $<
 
@@ -55,14 +57,14 @@ PZLREPO ?= $(HOME)/Dropbox/src/github.com/j3tm0t0/x68k-zos-pzl
 build/picosim-pzl: picosim.c netpipe.c lan_slirp.c bootwait.c picosim.h build/libslirp.a $(REMOTE_SRC) FORCE
 	$(MAKE) -C pzl PZLREPO=$(PZLREPO) $(if $(PZLREV),PZLREV=$(PZLREV)) $(if $(PZLSRC),PZLSRC=$(PZLSRC))
 	cc $(CFLAGS) -I$(SLIRP_DIR)/src -I$(ACCEL) -I$(ACCEL)/monocypher $(GLIB_CFLAGS) -o $@ \
-	  picosim.c netpipe.c lan_slirp.c bootwait.c x68rd.c $(REMOTE_SRC) pzl/build/pzl_all.o $(ACCEL)/accel_ops.c $(ACCEL)/monocypher/monocypher.c \
+	  picosim.c netpipe.c lan_slirp.c bootwait.c $(REMOTE_SRC) pzl/build/pzl_all.o $(ACCEL)/accel_ops.c $(ACCEL)/monocypher/monocypher.c \
 	  $(ACCEL)/monocypher/monocypher-ed25519.c build/libslirp.a $(GLIB_LIBS) -lresolv $(LIBICONV)
 FORCE:
 
 # 試験用: 0xA6 をそのまま返すサービス入り
 build/picosim-echo: picosim.c netpipe.c lan_slirp.c bootwait.c picosim.h build/libslirp.a tests/echosvc.c
 	cc $(CFLAGS) -I$(SLIRP_DIR)/src -I$(ACCEL) -I$(ACCEL)/monocypher $(GLIB_CFLAGS) -o $@ \
-	  picosim.c netpipe.c lan_slirp.c bootwait.c x68rd.c tests/echosvc.c $(ACCEL)/accel_ops.c $(ACCEL)/monocypher/monocypher.c \
+	  picosim.c netpipe.c lan_slirp.c bootwait.c tests/echosvc.c $(ACCEL)/accel_ops.c $(ACCEL)/monocypher/monocypher.c \
 	  $(ACCEL)/monocypher/monocypher-ed25519.c build/libslirp.a $(GLIB_LIBS) -lresolv
 
 build/libslirp.tar.gz:
@@ -100,6 +102,7 @@ test-host: build/picosim build/picosim-echo
 	python3 -I tests/zsstest.py build/picosim
 	python3 -I tests/bootwaittest.py build/picosim $(FW)
 	python3 -I tests/remotetest.py build/picosim $(FW)
+	@if [ -n "$(REMOTE_SRC)" ]; then python3 -I tests/x68rdtest.py build/picosim; else echo "SKIP x68rdtest: no remoteserv.c (RS=)"; fi
 	@if [ -d "$(PZLREPO)" ] || [ -n "$(PZLSRC)" ]; then $(MAKE) build/picosim-pzl PZLREPO=$(PZLREPO) PZLSRC=$(PZLSRC) && \
 	  python3 -I tests/pzltest.py build/picosim-pzl; else echo "SKIP pzltest: no PZL repo ($(PZLREPO))"; fi
 

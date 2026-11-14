@@ -41,10 +41,11 @@ extern int pz_vd_page_by_lba;
 extern int pz_face_id;
 int pz_face_read(uint32_t lba, uint8_t *buf);
 void remote_add(const char *dir);
-int x68rd_read(uint32_t lba, uint8_t *buf);
-int x68rd_write(uint32_t lba, const uint8_t *buf);
-int x68rd_range(uint32_t lba);
-extern int x68rd_on;
+/* x68rd.c (BlueSCSI のリモートドライブ、-X) は remoteserv.c と一緒にだけリンクする。無いときはこの弱い定義 */
+__attribute__((weak)) int x68rd_read(uint32_t lba, uint8_t *buf) { (void)lba; (void)buf; return -1; }
+__attribute__((weak)) int x68rd_write(uint32_t lba, const uint8_t *buf) { (void)lba; (void)buf; return -1; }
+__attribute__((weak)) int x68rd_range(uint32_t lba) { (void)lba; return 0; }
+int x68rd_on;
 int picosim_verbose;
 static uint64_t t0_us;
 
