@@ -21,7 +21,11 @@ fails = []
 REAL = bool(os.environ.get("REAL"))
 CON = bool(os.environ.get("CON"))                  # CTTY AUX にしない (画面が CON のまま。Z-OS の下と同じ)
 SMALL = REAL or bool(os.environ.get("SMALL"))     # 空きの少ないフロッピーへ小さいファイルを写す場面
-BAUD = os.environ.get("BAUD", "19200")              # 78125 で実機 XVI の rc と同じ (RX -B78125 -K1、zmuxd --baud 78125)
+ZL = bool(os.environ.get("ZL"))                    # 線を RS-232C ではなく SCSI ID6 (picosim -Z、BlueSCSI のまね) に: zmux.sys /S
+ZPORT = int(os.environ.get("ZPORT", "26874"))
+BRIDGE = int(os.environ.get("BRIDGE", "26975"))
+PICOSIM = os.environ.get("PICOSIM", os.path.join(top, "harness", "picosim", "build", "picosim"))
+BAUD = os.environ.get("BAUD", "1000000" if ZL else "19200")              # 78125 で実機 XVI の rc と同じ (RX -B78125 -K1、zmuxd --baud 78125)
 
 
 def check(name, cond, extra=""):
@@ -67,9 +71,10 @@ def mkfloppy():
     else:
         open(os.path.join(t, "CONFIG.SYS"), "wb").write(
             b"FILES     = 30\r\nBUFFERS   = 20 1024\r\nPROCESS   = 8 10 20\r\n"
-            b"DEVICE    = \\SYS\\RSDRV.SYS\r\nDEVICE    = \\SYS\\ZMUX.SYS\r\nDEVICE    = \\SYS\\ZRMT.SYS\r\n")
+            b"DEVICE    = \\SYS\\RSDRV.SYS\r\nDEVICE    = \\SYS\\ZMUX.SYS" + (b" /S" if ZL else b"") + b"\r\nDEVICE    = \\SYS\\ZRMT.SYS\r\n")
+        rx = b"" if ZL else b"RX -B" + BAUD.encode() + (b" -K1" if BAUD != "19200" else b"") + b"\r\n"
         open(os.path.join(t, "AUTOEXEC.BAT"), "wb").write(
-            b"ECHO OFF\r\nPATH A:\\\r\nRX -B" + BAUD.encode() + (b" -K1" if BAUD != "19200" else b"") + b"\r\n" + (b"ZMUX -c\r\n" if CON else b"ZMUX\r\nCTTY AUX\r\n"))
+            b"ECHO OFF\r\nPATH A:\\\r\n" + rx + (b"ZMUX -c\r\n" if CON else b"ZMUX\r\nCTTY AUX\r\n"))
     out = os.path.join(run, "zmuxrd.xdf")
     free = subprocess.run([sys.executable, os.path.join(serial, "floppy", "mkxdf.py"), out, xdf, t],
                           capture_output=True, text=True, check=True).stdout.strip()
@@ -140,7 +145,14 @@ for f in ("fd0.xdf", "cgrom.bin"):
     if os.path.exists(os.path.join(run, f)):
         os.remove(os.path.join(run, f))
 sh("cp", xdf, os.path.join(run, "fd0.xdf"))
-xe = subprocess.Popen([os.path.join(serial, "test", "xeij-fd.sh"), run], env=dict(env, XEIJ_RSBUF="64"), stdin=subprocess.DEVNULL)
+ps = None
+xenv = dict(env, XEIJ_RSBUF="64")
+if ZL:
+    ps = subprocess.Popen([PICOSIM, "-l", "127.0.0.1:%d" % BRIDGE, "-L", "none", "-Z", str(ZPORT), "-v"],
+                          stderr=open(os.path.join(run, "picosim.log"), "w"))
+    time.sleep(1)
+    xenv["XEIJ_JOPTS"] = "-Dpicosim=127.0.0.1:%d -Dpicosim.ids=6" % BRIDGE
+xe = subprocess.Popen([os.path.join(serial, "test", "xeij-fd.sh"), run], env=xenv, stdin=subprocess.DEVNULL)
 zd = None
 try:
     t0 = time.time()
@@ -155,7 +167,7 @@ try:
     m = re.search(r"zrmt\.sys[^\n]*?([A-Z]): ", s)
     dl = m.group(1) if m else "C"
     check("zrmt.sys installed (drive %s:)" % dl, "zrmt.sys" in s and "組み込みません" not in s, "\n".join(l for l in s.splitlines() if "zrmt" in l))
-    zd = subprocess.Popen([ZBIN, "daemon", "--tcp", "127.0.0.1:%d" % XPORT, "--drive", drive, "--baud", BAUD, "-v"], env=env,
+    zd = subprocess.Popen([ZBIN, "daemon", "--tcp", "127.0.0.1:%d" % (ZPORT if ZL else XPORT), "--drive", drive, "--baud", BAUD, "-v"], env=env,
                           stderr=open(os.path.join(run, "zmuxd.log"), "w"))
     for _ in range(100):
         time.sleep(0.2)
@@ -285,4 +297,6 @@ finally:
         zd.terminate()
     xe.terminate()
     subprocess.run(["pkill", "-f", run + "/agent.cmd"])
+    if ps:
+        ps.terminate()
 sys.exit(1 if fails else 0)

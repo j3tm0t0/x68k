@@ -46,6 +46,15 @@ __attribute__((weak)) int x68rd_read(uint32_t lba, uint8_t *buf) { (void)lba; (v
 __attribute__((weak)) int x68rd_write(uint32_t lba, const uint8_t *buf) { (void)lba; (void)buf; return -1; }
 __attribute__((weak)) int x68rd_range(uint32_t lba) { (void)lba; return 0; }
 int x68rd_on;
+/* zl.c (zmux の線を SCSI ID6 に、-Z PORT)。リンクしない picosim (pzl) ではこの弱い定義 */
+__attribute__((weak)) int zl_read(uint32_t lba, uint8_t *buf) { (void)lba; (void)buf; return -1; }
+__attribute__((weak)) int zl_write(uint32_t lba, const uint8_t *buf) { (void)lba; (void)buf; return -1; }
+__attribute__((weak)) int zl_range(uint32_t lba) { (void)lba; return 0; }
+__attribute__((weak)) void zl_start(void) {}
+__attribute__((weak)) void zl_poll(void) {}
+__attribute__((weak)) void zl_stats(void) {}
+int zl_port;
+uint32_t picosim_xfer_n;                /* 今の READ / WRITE のセクタ数 (zl.c が最初のセクタで応答の長さを決めるのに使う) */
 int picosim_verbose;
 static uint64_t t0_us;
 
@@ -109,6 +118,8 @@ static int t_read(int id, uint32_t lba, uint8_t *buf)
     return pz_face_read(lba, buf);
   if (id == 6 && x68rd_read(lba, buf) == 0)
     return PS_OK;
+  if (id == 6 && zl_read(lba, buf) == 0)
+    return PS_OK;
   return id == 6 ? pz_id6_read(lba, buf) : id == 0 ? pz_id0_read(lba, buf) : pz_hds_read(id, lba, buf);
 }
 
@@ -118,6 +129,8 @@ static int t_write(int id, uint32_t lba, const uint8_t *buf)
   if (use_pzl)
     return pzlh_write(id, lba, buf);
   if (id == 6 && x68rd_write(lba, buf) == 0)
+    return PS_OK;
+  if (id == 6 && zl_write(lba, buf) == 0)
     return PS_OK;
   return id == 6 ? pz_id6_write(lba, buf) : id == 0 ? pz_id0_write(lba, buf) : pz_hds_write(id, lba, buf);
 }
@@ -194,7 +207,7 @@ static int z_read(int id, uint32_t lba, uint8_t *buf)
   uint64_t k = (uint64_t)id << 32 | lba;
   uint8_t *d;
   int rc = PS_OK;
-  if (!c_cap || (id == 6 && x68rd_range(lba)))   /* BlueSCSI のリモートドライブ (-X) はキャッシュを通さない */
+  if (!c_cap || (id == 6 && (x68rd_range(lba) || zl_range(lba))))   /* BlueSCSI のリモートドライブ (-X) はキャッシュを通さない */
     return t_read(id, lba, buf);
   if ((d = cache_find(k)) != NULL) {
     st_hit++;
@@ -599,6 +612,7 @@ static void scsi(int id, const uint8_t *cdb, const uint8_t *out, uint32_t outlen
     check(r, t, 5, 0x21, 0);
     return;
   }
+  picosim_xfer_n = n;
   if (op == 0x08 || op == 0x28 || op == 0xa8) {
     for (uint32_t i = 0; i < n; i++) {
       int rc = z_read(id, lba + i, in + i * 512);
@@ -747,6 +761,7 @@ static void stats(void)
 {
   fprintf(stderr, "picosim: %u commands (%u SPC, %u mailbox)  Z cache hit %u miss %u\n", st_cmds, st_spc, st_mbx, st_hit, st_miss);
   np_stats();
+  zl_stats();
   lan_stats();
 }
 
@@ -764,7 +779,7 @@ static void usage(void)
 {
   fprintf(stderr,
           "usage: picosim [--pzl[=config.txt] [--pzl-root=DIR] [--pzl-flash=F] [--pzl-ip=A] [--pzl-zip=A]] [-l 127.0.0.1:6868] [-n 192.168.1.0/24] [-g GW] [-D DNS] [-L [u]PORT:ZPORT|none]...\n"
-          "               [-0 disk.hds] [-H ID:data.hds]... [-G ID:gamedir] [-T wifi,smb,hds] [-N sec] [-B snap] [-F fwdir] [-C ctlfile] [-K config] [-R dir]... [-X dir]... [-c MB] [-r KB] [-d us] [-a scale] [-s sec] [-p lan.pcap] [-v]\n");
+          "               [-0 disk.hds] [-H ID:data.hds]... [-G ID:gamedir] [-T wifi,smb,hds] [-N sec] [-B snap] [-F fwdir] [-C ctlfile] [-K config] [-R dir]... [-X dir]... [-Z port] [-c MB] [-r KB] [-d us] [-a scale] [-s sec] [-p lan.pcap] [-v]\n");
   exit(2);
 }
 
@@ -802,7 +817,7 @@ int main(int argc, char **argv)
   lan_cfg.net = ip_arg("192.168.1.0");
   lan_cfg.gw = ip_arg("192.168.1.1");
   lan_cfg.dns = 0;
-  while ((o = getopt(argc, argv, "l:n:g:D:L:0:H:G:Q:N:T:B:F:C:K:R:X:Pc:r:d:a:s:p:vh")) != -1) {
+  while ((o = getopt(argc, argv, "l:n:g:D:L:0:H:G:Q:N:T:B:F:C:K:R:X:Z:Pc:r:d:a:s:p:vh")) != -1) {
     switch (o) {
     case 'l': listen_spec = optarg; break;
     case 'n': {
@@ -888,6 +903,7 @@ int main(int argc, char **argv)
       remote_add(optarg);
       x68rd_on = 1;
       break;
+    case 'Z': zl_port = atoi(optarg); break;   /* zmux の線を SCSI ID6 に (zl.c、zmux.sys /S の相手) */
     case 'c': cache_mb = atoi(optarg); break;
     case 'r': ra_kb = atoi(optarg); break;
     case 'd': cmd_delay_us = atoi(optarg); break;
@@ -962,6 +978,7 @@ int main(int argc, char **argv)
   } else
     pz_init();
   lfd = listen_on(listen_spec);
+  zl_start();
   for (int i = 0; i < MAXCLI; i++)
     cli[i] = -1;
 
@@ -1004,6 +1021,7 @@ int main(int argc, char **argv)
             cli[i] = -1;
           }
     np_poll();
+    zl_poll();
     if (use_pzl)
       pzlh_poll((double)picosim_now_us() / 1e6);
     else

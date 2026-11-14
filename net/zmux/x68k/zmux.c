@@ -22,10 +22,14 @@
  *
  * フレーム: DLE STX | chan seq ack flags len(2) | data | crc16(2) | DLE ETX (中の DLE は DLE DLE)
  * 送り直しは Go-Back-N (窓 4)。
+ *
+ * DEVICE = \SYS\ZMUX.SYS /S [/I6] なら、線は RS-232C ではなく BlueSCSI の SCSI ID6 (x68zl_proto.h、DESIGN.md §9)。
+ * BlueSCSI はバイトの列を TCP (Wi-Fi) に渡すだけで、フレームと送り直しはこのまま。
  */
 #define __IOCS_INLINE__
 #include <x68k/iocs.h>
 #include <stdint.h>
+#include "../x68zl_proto.h"
 
 #define DLE 0x10
 #define STX 0x02
@@ -220,7 +224,8 @@ static uint8_t rxbuf[RXBUF];
 /* 動作確認用 (メモリダンプで "ZMUXSTAT" の後ろ) */
 static struct { char tag[8]; uint32_t rxf, txf, bad, resend, rawin, rawout, ups, downs, polls, maxgap, lastpoll, gapat, outbytes, outq, refused, win, lockfail, downat, lastrx_at_down, lockat, rxbytes, rxbytes_at_lastrx, tcalls, tcfix,
   rx0, rx0rej, auxrd, c4, c5, c6, kp, kpoll, busysent, rxrcnt,
-  conrd, conwr, mirrored, mirdrop, keys0, conmode, scrreq, scrbytes; } st = { "ZMUXSTAT" };
+  conrd, conwr, mirrored, mirdrop, keys0, conmode, scrreq, scrbytes,
+  zlid, zlrd, zlwr, zlerr; } st = { "ZMUXSTAT" };
 static int rawpoll;                     /* 1 = 線が UP でなくても常駐スレッドが線を回す (画面が CON のとき: zmux.x -c) */
 
 /* 線の処理の排他。Human68k はスーパーバイザの間はスレッドを切り替えないが、Z-OS (zos.x) は自前の横取りで
@@ -298,6 +303,99 @@ static uint16_t crc(uint16_t c, const uint8_t *p, int n)
 
 static int out_free(void) { return OUTSZ - 1 - ((oh - ot) & (OUTSZ - 1)); }
 static void out_put(int c) { outq[oh] = c; oh = (oh + 1) & (OUTSZ - 1); }
+
+/* ---- 線が BlueSCSI の SCSI ID6 のとき (/S、x68zl_proto.h) */
+static void rx_byte(int c);
+static uint8_t zl_scsi;                 /* 1 = 線は SCSI */
+static int zl_id = 6;
+static uint8_t zbuf[X68ZL_SECTORS * 512] __attribute__((aligned(4)));
+static int zl_txfree;                   /* BlueSCSI が受け取れるバイトの数 (最後の READ から、書いた分を引いたもの) */
+static uint16_t zl_wflags = X68ZL_F_START;
+static long zl_t_read;                  /* 最後に READ した時刻 */
+static uint8_t zl_quiet;                /* 最後の READ で何も来なかった */
+
+static uint16_t g16(const uint8_t *p) { return p[0] << 8 | p[1]; }
+static void p16(uint8_t *p, int v) { p[0] = v >> 8; p[1] = v; }
+
+static int zl_ok(int rc)
+{
+  uint8_t sense[8];
+  if (rc == 2)                          /* CHECK CONDITION: センスを読んで次の命令に備える */
+    _iocs_s_request(8, zl_id, sense);
+  if (rc != 0)
+    st.zlerr++;
+  return rc == 0;
+}
+
+/* BlueSCSI から受ける。受けるものも送るものも無い間は、1/100 秒に 1 回だけ READ する
+   (AUX の入力ステータスは COMMAND.X から続けて呼ばれ、そのたびに zl_poll が回る) */
+static void zl_scsi_rx(void)
+{
+  int sect = 1, k;
+  long t = now();
+  if (oh == ot && zl_quiet && t == zl_t_read)
+    return;
+  zl_t_read = t;
+  for (k = 0; k < 4; k++) {
+    int len, more, i;
+    if (!zl_ok(_iocs_s_readext(X68ZL_RLBA, sect, zl_id, 1, zbuf)))
+      return;
+    st.zlrd++;
+    if (zbuf[0] != 'X' || zbuf[1] != '6' || zbuf[2] != 'Z' || zbuf[3] != 'R') {
+      st.zlerr++;
+      return;
+    }
+    len = g16(zbuf + 4);
+    if (len > sect * 512 - X68ZL_HDR)
+      len = sect * 512 - X68ZL_HDR;
+    zl_txfree = g16(zbuf + 6);
+    more = g16(zbuf + 8);
+    zl_quiet = len == 0;
+    for (i = 0; i < len; i++)
+      rx_byte(zbuf[X68ZL_HDR + i]);
+    st.rxbytes += len;
+    if (!more)
+      return;
+    sect = (more + X68ZL_HDR + 511) / 512;
+    if (sect > X68ZL_SECTORS) sect = X68ZL_SECTORS;
+  }
+}
+
+/* 待ち行列を BlueSCSI に書く (受け取れる数まで、1 回の WRITE は 8 セクタまで) */
+static void zl_scsi_tx(void)
+{
+  int n = (oh - ot) & (OUTSZ - 1), i;
+  if (n > zl_txfree) n = zl_txfree;
+  if (n > X68ZL_MAXDATA) n = X68ZL_MAXDATA;
+  if (n <= 0 && !zl_wflags)
+    return;
+  zbuf[0] = 'X'; zbuf[1] = '6'; zbuf[2] = 'Z'; zbuf[3] = 'W';
+  p16(zbuf + 4, n);
+  p16(zbuf + 6, zl_wflags);
+  for (i = 8; i < X68ZL_HDR; i++)
+    zbuf[i] = 0;
+  for (i = 0; i < n; i++)
+    zbuf[X68ZL_HDR + i] = outq[(ot + i) & (OUTSZ - 1)];
+  if (!zl_ok(_iocs_s_writeext(X68ZL_WLBA, (X68ZL_HDR + n + 511) / 512, zl_id, 1, zbuf)))
+    return;                             /* 待ち行列に残して次に書く */
+  st.zlwr++;
+  zl_wflags = 0;
+  zl_txfree -= n;
+  ot = (ot + n) & (OUTSZ - 1);
+  st.outbytes += n;
+}
+
+/* /S のとき、組み込みで ID6 が BlueSCSI の X68NP かを確かめる */
+static int zl_probe(void)
+{
+  uint8_t inq[36] __attribute__((aligned(2)));
+  int i;
+  for (i = 0; i < 36; i++)
+    inq[i] = 0;
+  if (_iocs_s_inquiry(36, zl_id, (struct iocs_inquiry *)inq) != 0)
+    return 0;
+  return inq[16] == 'X' && inq[17] == '6' && inq[18] == '8' && inq[19] == 'N' && inq[20] == 'P';
+}
 
 /* RSDRV.SYS のチャネル 0 の受信バッファを rxbuf に付け替える (slipd.x と同じ) */
 static void grow_rsdrv(void)
@@ -642,10 +740,14 @@ static void zl_poll_locked(void)
   }
   st.polls++;
   st.lastpoll = t;
-  scc_tc_guard();
-  for (n = 0; n < 512 && _iocs_isns232c(); n++) {
-    rx_byte(_iocs_inp232c() & 0xff);
-    st.rxbytes++;
+  if (zl_scsi)
+    zl_scsi_rx();
+  else {
+    scc_tc_guard();
+    for (n = 0; n < 512 && _iocs_isns232c(); n++) {
+      rx_byte(_iocs_inp232c() & 0xff);
+      st.rxbytes++;
+    }
   }
   if (up) {
     if (since(t_last_rx) > T_DEAD) {
@@ -720,11 +822,14 @@ static void zl_poll_locked(void)
   /* 線に出す。_OSNS232C が空きを示す分だけ出すと、1 回に 1 バイトほどしか出ず (RSDRV.SYS の送信は 1 バイトずつ)、
      スレッドが回ってくる間隔で速さが決まって 19200bps の半分になった。_OUT232C (空くまで待つ) で 128 バイトまで出す
      (19200bps で約 67ms。その間はほかのスレッドが止まるが、受信は割り込みで RSDRV.SYS のバッファに溜まる) */
-  for (n = 0; n < 128 && oh != ot; n++) {
-    _iocs_out232c(outq[ot]);
-    ot = (ot + 1) & (OUTSZ - 1);
-    st.outbytes++;
-  }
+  if (zl_scsi)
+    zl_scsi_tx();
+  else
+    for (n = 0; n < 128 && oh != ot; n++) {
+      _iocs_out232c(outq[ot]);
+      ot = (ot + 1) & (OUTSZ - 1);
+      st.outbytes++;
+    }
   st.outq = (oh - ot) & (OUTSZ - 1);
   st.rxrcnt = ring_count(&rxr);
   st.kp = kp_n;
@@ -818,7 +923,7 @@ long zmux_call(long cmd, long *a)
   if (cmd == 1)
     return (long)&st;
   if (cmd == 9) {                       /* 時定数 0 (78125bps) の見張りを入れ直す: 今 0 なら見張る */
-    tc0 = scc_tc_read() == 0;
+    tc0 = !zl_scsi && scc_tc_read() == 0;
     return tc0;
   }
   if (cmd == 10) {                      /* 画面が CON: 線が UP でなくても常駐スレッドが線を回す */
@@ -955,12 +1060,36 @@ long dev_interrupt(struct req_header *req)
     st.tag[0] = 'Z'; st.tag[1] = 'M'; st.tag[2] = 'U'; st.tag[3] = 'X';
     st.tag[4] = 'S'; st.tag[5] = 'T'; st.tag[6] = 'A'; st.tag[7] = 'T';
     crcinit();
-    tc0 = scc_tc_read() == 0;
-    grow_rsdrv();
+    {                                   /* 引数 (req->status はファイル名の次からの文字列の列): /S = 線を SCSI ID6 に、/In = その ID */
+      const char *p = (const char *)req->status;
+      while (*p) p++;
+      p++;
+      while (*p) {
+        if ((*p == '/' || *p == '-') && (p[1] | 0x20) == 's')
+          zl_scsi = 1;
+        if ((*p == '/' || *p == '-') && (p[1] | 0x20) == 'i' && p[2] >= '0' && p[2] <= '7')
+          zl_id = p[2] - '0';
+        while (*p) p++;
+        p++;
+      }
+    }
+    if (zl_scsi) {
+      if (!zl_probe()) {
+        static char m[] = "zmux.sys: SCSI ID 6 が BlueSCSI の X68NP ではないので組み込みません\r\n";
+        m[18] = '0' + zl_id;
+        dos_print(m);
+        return 0x1002;
+      }
+      st.zlid = 0x100 | zl_id;
+    } else {
+      tc0 = scc_tc_read() == 0;
+      grow_rsdrv();
+    }
     old_keysns = (void *)_iocs_b_intvcs(0x101, hk_keysns);   /* IOCS _B_KEYSNS */
     old_keyinp = (void *)_iocs_b_intvcs(0x100, hk_keyinp);   /* IOCS _B_KEYINP */
     t_hello = now() - T_HELLO;
-    dos_print("zmux.sys 0.3: AUX (CTTY AUX) is multiplexed on RS-232C by zmux (CON mirror, screen)\r\n");
+    dos_print(zl_scsi ? "zmux.sys 0.4: AUX (CTTY AUX) is multiplexed on SCSI ID6 (BlueSCSI) by zmux (CON mirror, screen)\r\n"
+                      : "zmux.sys 0.4: AUX (CTTY AUX) is multiplexed on RS-232C by zmux (CON mirror, screen)\r\n");
     req->addr = (uint8_t *)&_end;
     return 0;
   }

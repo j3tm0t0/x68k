@@ -2,6 +2,7 @@
 //!
 //!   zmux daemon --port /dev/ttyUSB0 [--baud 19200]   線を持つ (zmuxd)。`zmuxd` という名前で起動しても同じ
 //!   zmux daemon --tcp 127.0.0.1:54368                 XEiJ の RS-232C (TCP/IP ⇔ AUX) につなぐ
+//!   zmux daemon --tcp bluescsi:6871 --retry          BlueSCSI の SCSI ID6 の線 (DESIGN.md §9)。切れてもつなぎ直す
 //!   zmux daemon ... --drive DIR [--drive DIR2]        チャネル 2 のリモートドライブ (zrmt.sys) の中身にする Pi のディレクトリ
 //!   zmux                                              tmux のような画面 (tui.rs)。タブ 0 = COMMAND.X、ほかは zosh のセッション
 //!   zmux attach 0                                     チャネル 0 (COMMAND.X のコンソール、タブ 0) の端末
@@ -134,6 +135,7 @@ fn open_serial(path: &str, baud: u32) -> std::fs::File {
 enum Msg {
     Line(Vec<u8>),
     LineClosed,
+    LineAgain(Port),              // --retry: つなぎ直した線 (書く側)
     Client(u64, UnixStream, String),
     ClientIn(u64, Vec<u8>),
     ClientWinch(u64, u16, u16),
@@ -153,6 +155,7 @@ fn daemon(args: &[String]) {
     let mut tcp = None;
     let mut baud = 19200u32;
     let mut log = false;
+    let mut retry = false;
     let mut drives: Vec<std::path::PathBuf> = Vec::new();
     let mut i = 0;
     while i < args.len() {
@@ -162,13 +165,17 @@ fn daemon(args: &[String]) {
             "--tcp" => { tcp = args.get(i + 1).cloned(); i += 1; }
             "--baud" => { baud = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or_else(|| die("--baud")); i += 1; }
             "-v" => log = true,
+            "--retry" => retry = true,
             a => die(&format!("unknown option {}", a)),
         }
         i += 1;
     }
+    let tcp_addr = tcp.clone();
     let port = if let Some(t) = tcp {
         let mut s = None;
-        for _ in 0..60 {
+        let mut k = 0;
+        while retry || k < 60 {                 // --retry なら BlueSCSI が上がるまで待ち続ける
+            k += 1;
             if let Ok(c) = TcpStream::connect(&t) {
                 s = Some(c);
                 break;
@@ -187,11 +194,26 @@ fn daemon(args: &[String]) {
     {
         let mut rp = port.try_clone().unwrap_or_else(|e| die(&e.to_string()));
         let tx = tx.clone();
+        let again = if retry { tcp_addr.clone() } else { None };
         thread::spawn(move || {
             let mut b = [0u8; 4096];
             loop {
                 match rp.read(&mut b) {
                     Ok(0) | Err(_) => {
+                        // --retry (TCP だけ): 終わらずに 1 秒ごとにつなぎ直す。zmux の線は X68000 の HELLO で上がり直す
+                        if let Some(a) = again.as_ref() {
+                            eprintln!("zmuxd: line closed, reconnecting to {}", a);
+                            let s = loop {
+                                thread::sleep(Duration::from_secs(1));
+                                if let Ok(c) = TcpStream::connect(a) { break c; }
+                            };
+                            s.set_nodelay(true).ok();
+                            let w = match s.try_clone() { Ok(w) => w, Err(_) => continue };
+                            eprintln!("zmuxd: line reconnected");
+                            rp = Port::Tcp(s);
+                            if tx.send(Msg::LineAgain(Port::Tcp(w))).is_err() { return; }
+                            continue;
+                        }
                         let _ = tx.send(Msg::LineClosed);
                         return;
                     }
@@ -251,6 +273,7 @@ fn daemon(args: &[String]) {
         match m {
             Ok(Msg::Line(b)) => link.input(&b, &mut out, &mut ev, now),
             Ok(Msg::LineClosed) => die("line closed"),
+            Ok(Msg::LineAgain(p)) => wp = p,
             Ok(Msg::Client(id, mut s, cmd)) => {
                 let words: Vec<&str> = cmd.split_whitespace().collect();
                 let num = |k: usize, d: u16| -> u16 { words.get(k).and_then(|w| w.parse().ok()).unwrap_or(d) };
@@ -498,7 +521,9 @@ fn daemon(args: &[String]) {
         if !out.is_empty() {
             if let Some(f) = linelog.as_mut() { let _ = f.write_all(&out); }
             if let Err(e) = wp.write_all(&out) {
-                die(&format!("write: {}", e));
+                if !retry {
+                    die(&format!("write: {}", e));
+                }                               // --retry: 読む側がつなぎ直すまで捨てる (送り直しで戻る)
             }
         }
         if log && tw.elapsed() > Duration::from_millis(300) {
@@ -737,7 +762,7 @@ fn main() {
             println!("\ndefault ~/.config/zmux/keys.toml:\n{}", keys::DEFAULT_TOML);
         }
         _ => {
-            eprintln!("usage: zmux            (tmux のような画面。前置キー Ctrl+X のあと | - c n p 0-9 k d ?)\n       zmux daemon (--port DEV [--baud N] | --tcp HOST:PORT) [--drive DIR] [-v]\n       zmux attach [0 | N]   (0 = X68000 のコンソール、番号なし = 新しい zosh のセッション、N = セッション N につなぎ直す)\n       zmux kill N\n       zmux key TEXT | zmux key -n NAME...   (本体のキー入力に注入)\n       zmux kbd   (打ったキーを全部注入)\n       zmux keys  (キーの名前と keys.toml の既定)\n       zmux screen [-o FILE.png] [-t] [-p 0123]   (テキスト VRAM を PNG / 文字に)\n       zmux status");
+            eprintln!("usage: zmux            (tmux のような画面。前置キー Ctrl+X のあと | - c n p 0-9 k d ?)\n       zmux daemon (--port DEV [--baud N] | --tcp HOST:PORT [--retry]) [--drive DIR] [-v]\n       zmux attach [0 | N]   (0 = X68000 のコンソール、番号なし = 新しい zosh のセッション、N = セッション N につなぎ直す)\n       zmux kill N\n       zmux key TEXT | zmux key -n NAME...   (本体のキー入力に注入)\n       zmux kbd   (打ったキーを全部注入)\n       zmux keys  (キーの名前と keys.toml の既定)\n       zmux screen [-o FILE.png] [-t] [-p 0123]   (テキスト VRAM を PNG / 文字に)\n       zmux status");
             std::process::exit(2);
         }
     }

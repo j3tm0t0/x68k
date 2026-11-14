@@ -189,3 +189,33 @@ Pi に ssh で入るか iTerm2 のペインで `zmux` を実行すると、tmux 
 - `net/zmux/x68k/`: zmux.sys / zmux.x (elf2x68k、C とアセンブラ)。npd.x / slipd.x のコードを元にする。
 - 開発の環境: raspi5 で zmuxd を動かし、XEiJ の RS-232C の TCP をそこへつなぐ。XEiJ を raspi5 の Docker で動かせるかは別に測る
   (遅ければ Mac の XEiJ から TCP で raspi5 へ)。
+
+## 9. RS-232C の代わりに BlueSCSI の SCSI ID6 を線にする (x68k-zos の BlueSCSI 改良 5)
+
+XVI の BlueSCSI v2 (Pico 2 W 版) の ID6 を線にして、zmuxd が Wi-Fi (TCP) でつなぐ。シリアルのケーブルと Raspberry Pi が要らなくなる。
+
+**BlueSCSI はバイトの列を運ぶだけ**にする。zmux のフレーム、CRC、送り直し (§1)、チャネル (コンソール、キー、リモートドライブ、netpipe、画面) は変えない。
+zmuxd から見ると、XEiJ の RS-232C (`--tcp`) と同じ TCP の線になる。
+
+```
+X68000 zmux.sys --SCSI ID6 (READ/WRITE の LBA)--> BlueSCSI --TCP 6871 (Wi-Fi)--> zmuxd (Mac / raspi2)
+```
+
+- 形は `x68zl_proto.h`。READ `0x230000` で TCP から来たバイトと BlueSCSI の受け取れる数 (txfree) を受け、WRITE `0x220000` で txfree までのバイトを送る。
+  どちらも見出し 16 バイト + データ (最大 8 セクタ)。番号や送り直しは持たない。SCSI のエラーで落ちたバイトは zmux の送り直しで戻る。
+- **zmux.sys**: `DEVICE = \SYS\ZMUX.SYS /S` (ID は `/I6`、既定 6) で、線の読み書き (`_ISNS232C` / `_INP232C` / `_OUT232C`) を SCSI の READ / WRITE に替える。
+  組み込むときに INQUIRY で X68NP を確かめる。zl_poll ごとに READ 1 セクタ (rxmore があれば 8 セクタまで読み足す)、送るものがあれば WRITE 1 回。
+  AUX の入力ステータスなどで zl_poll が続けて呼ばれても、受けるものも送るものも無ければ SCSI は 1/100 秒に 1 回だけにする。
+  `grow_rsdrv` と 78125bps の見張りは RS-232C のときだけ。
+- **BlueSCSI**: lwIP (改良 4 の x68k-ota と同じスタック) で TCP 6871 を待ち受ける (ini `X68kZmuxPort`、0 で無効)。
+  X68000 からのバイトは 1KB の送りの輪に入れ、`tcp_write` できる分ずつ出す。TCP から来たバイトは lwIP の pbuf のまま持ち、X68000 が読んだ分だけ
+  `tcp_recved` で窓を開ける (RAM を増やさない)。zmux の窓は 4 x 1024 バイトなので、持つのは pbuf 数個。
+- **zmuxd**: 今の `--tcp HOST:PORT` のまま使う。Wi-Fi は切れることがあるので、`--retry` を足して、線が切れたら終わらずにつなぎ直す
+  (セッションと TUI の配置は残る。zmux の線は HELLO で上がり直す)。
+- **試験**: picosim に `-Z PORT` (ID6 の 0x220000 / 0x230000 を TCP に渡す) を足し、XEiJ + picosim + zmuxd で e2e_rdrive.py を `ZL=1` で流す
+  (コンソール・リモートドライブ・速さ)。BlueSCSI 側は輪と pbuf の扱いをホストの試験で確かめる。
+- **速さの見込み**: SCSI の 1 回の READ / WRITE は 1〜2ms、Wi-Fi は 1.1MB/秒 (日記 19) なので、線の速さは zmux の窓 (4KB) と往復の時間で決まる。
+  往復 10ms なら 400KB/秒ほど。19200bps (1.9KB/秒) の 100 倍以上。
+
+未決: zmux.sys の SCSI の呼び出しは Human68k のスレッド (zmux.x) からも走る。npd.x と同じ使い方なので問題ないと見ているが、
+BlueSCSI の SD のリモートドライブ (bsrmt.sys) や npd.x と同じ ID6 を交互に使うので、ファームが要求を取り違えないことを実機で確かめる。
