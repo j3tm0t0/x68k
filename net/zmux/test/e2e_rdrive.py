@@ -146,6 +146,7 @@ for f in ("fd0.xdf", "cgrom.bin"):
         os.remove(os.path.join(run, f))
 sh("cp", xdf, os.path.join(run, "fd0.xdf"))
 ps = None
+zl_errs = -1
 xenv = dict(env, XEIJ_RSBUF="64")
 if ZL:
     ps = subprocess.Popen([PICOSIM, "-l", "127.0.0.1:%d" % BRIDGE, "-L", "none", "-Z", str(ZPORT), "-v"],
@@ -225,6 +226,10 @@ try:
         check("console echo %d: %d chars arrive intact" % (i, len(word)), out is not None and out.count(word) >= 2, repr(out)[-80:])
     out, _ = a.cmd("zmux -s", 30)
     m = re.search(r"AUX read bytes (\d+)", out or "")
+    if ZL:
+        me = re.search(r"scsi errors (\d+)", out or "")
+        zl_errs = int(me.group(1)) if me else -1
+        print("e2e: zmux -s (scsi): " + " | ".join(l.strip() for l in (out or "").splitlines() if l.startswith("scsi")))
     check("zmux -s shows the console counters", m is not None and int(m.group(1)) > 300 and "ch0 rx bytes" in out and "key_peek calls" in out, repr(out)[-200:])
     out, _ = a.cmd("ver", 30)
     check("ver over the console", out is not None and "Human68k version 3.02" in out, repr(out)[-80:])
@@ -291,6 +296,20 @@ try:
     check("dir of a missing directory gives an error, not a hang", out is not None, repr(out)[-80:])
     print("e2e: " + status())
     a.close()
+    if ZL and (os.environ.get("ZL_WFAIL") or os.environ.get("ZL_DROP")):
+        ps.terminate()
+        ps.wait()
+        log = open(os.path.join(run, "picosim.log")).read()
+        m = re.findall(r"write errors on purpose (\d+), repeated writes dropped (\d+) \(mismatch (\d+)\)", log)
+        print("e2e: picosim: " + (" ".join(m[-1]) if m else "no stats"))
+        if os.environ.get("ZL_WFAIL") and zl_errs == 0:
+            # XEiJ の橋 (PicoBridge) は WRITE の CHECK CONDITION を X68000 に返さない (zmux -s の scsi errors が 0)。
+            # 送り直しは picosim の zltest.py (BlueSCSI のまね) と BlueSCSI の x68zl_test.c で確かめる
+            print("SKIP repeated WRITEs end to end: the X68000 saw no SCSI errors under XEiJ")
+        elif os.environ.get("ZL_WFAIL"):
+            check("failed WRITEs were sent again with the same number and dropped once, with the same bytes",
+                  bool(m) and int(m[-1][0]) > 0 and int(m[-1][1]) > 0 and int(m[-1][2]) == 0, str(m[-1:]))
+        ps = None
     print("ZMUX RDRIVE E2E %s (%d failures)" % ("PASS" if not fails else "FAIL", len(fails)))
 finally:
     if zd:

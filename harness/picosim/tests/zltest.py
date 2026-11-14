@@ -5,6 +5,9 @@ ID 6 の LBA 0x230000 を READ、0x220000 に WRITE し、反対側を zmuxd の
   2. つないだ後: X68000 → TCP、TCP → X68000 (1 セクタずつ、rxmore で 8 セクタ読み足し)、毎回新しい応答が読める
   3. txfree を超えた分は捨てる。F_START で送りかけを捨てる
   4. 新しい接続が古い接続を切る
+  5. 同じ番号の WRITE (送り直し) は捨てる。番号の比較は F_START より先
+  6. bsrmt.sys の交換 (0x200000 に書き 0x210000 を読む) の間に zmux の READ / WRITE が入っても、交換の応答は変わらない
+     (npd.x が交換の途中で譲った間に zmux.x が SCSI を使う場合と同じ。picosim に remoteserv.c が無ければ飛ばす)
 usage: zltest.py [picosim]"""
 import os, socket, struct, subprocess, sys, time
 
@@ -22,7 +25,9 @@ def check(name, cond, extra=""):
         fails += 1
 
 
-p = subprocess.Popen([PICOSIM, "-l", "127.0.0.1:%d" % PORT, "-L", "none", "-Z", str(ZPORT), "-v"],
+import tempfile
+RDDIR = tempfile.mkdtemp()
+p = subprocess.Popen([PICOSIM, "-l", "127.0.0.1:%d" % PORT, "-L", "none", "-Z", str(ZPORT), "-X", RDDIR, "-v"],
                      stderr=open(os.path.join(HERE, "zl.log"), "a"))
 for _ in range(50):
     try:
@@ -54,8 +59,14 @@ def zread(sect=1):
     return a[:4], a[16:16 + n], txfree, more, a[10]
 
 
-def zwrite(data, flags=0):
-    blk = b"X6ZW" + struct.pack(">HH", len(data), flags) + bytes(8) + data
+wseq = [100]
+
+
+def zwrite(data, flags=0, seq=None):
+    if seq is None:
+        wseq[0] = (wseq[0] + 1) & 0xffff
+        seq = wseq[0]
+    blk = b"X6ZW" + struct.pack(">HHH", len(data), flags, seq) + bytes(6) + data
     n = (len(blk) + 511) // 512
     scsi(struct.pack(">BBIBHB", 0x2a, 0, WLBA, 0, n, 0), blk.ljust(n * 512, b"\0"))
 
@@ -120,6 +131,39 @@ zread()
 check("a new connection closes the old one", readall(c, 1, 1) == b"")
 zwrite(b"to the new one")
 check("bytes go to the new connection", readall(c2, 14) == b"to the new one")
+
+zwrite(b"once", seq=7)
+zwrite(b"once", seq=7)
+zwrite(b"-two", seq=8)
+check("a repeated WRITE (same number) is dropped", readall(c2, 8, 1) == b"once-two")
+zwrite(b"start", flags=1, seq=9)
+zwrite(b"start", flags=1, seq=9)
+check("a repeated WRITE with F_START is dropped too", readall(c2, 10, 1) == b"start")
+
+# 6. bsrmt.sys の交換の間に zmux の READ / WRITE
+def rd_write(seq, cmd):
+    blk = (b"X6RD" + struct.pack(">IHHHH", seq, len(cmd), 0, 0, 0) + cmd).ljust(512, b"\0")
+    scsi(struct.pack(">BBIBHB", 0x2a, 0, 0x200000, 0, 1, 0), blk)
+
+
+def rd_read():
+    return scsi(struct.pack(">BBIBHB", 0x28, 0, 0x210000, 0, 1, 0))
+
+
+rd_write(1, bytes([0x00]))                      # INIT
+a1 = rd_read()
+if a1[:4] != b"X6RA":
+    print("SKIP interleaving with bsrmt.sys: picosim has no remoteserv.c")
+else:
+    rd_write(2, bytes([0x00]))
+    c2.sendall(b"while the exchange waits")
+    time.sleep(0.2)
+    zwrite(b"zmux in between")
+    m, d, txfree, more, st = zread(2)
+    a2 = rd_read()
+    check("zmux READ/WRITE between the request and the answer of an exchange: the answer is the exchange's",
+          a2[:4] == b"X6RA" and struct.unpack(">I", a2[4:8])[0] == 2 and a2[16:24] == a1[16:24], a2[:24].hex())
+    check("and the zmux bytes are not mixed into it", d == b"while the exchange waits" and readall(c2, 15, 1) == b"zmux in between")
 
 s.close()
 p.terminate()

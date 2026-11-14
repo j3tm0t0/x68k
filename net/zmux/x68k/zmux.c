@@ -313,9 +313,22 @@ static int zl_txfree;                   /* BlueSCSI が受け取れるバイト�
 static uint16_t zl_wflags = X68ZL_F_START;
 static long zl_t_read;                  /* 最後に READ した時刻 */
 static uint8_t zl_quiet;                /* 最後の READ で何も来なかった */
+static uint16_t zl_seq;                 /* WRITE の番号 (x68zl_proto.h) */
+static int zl_retry = -1;               /* >= 0: 失敗した WRITE のバイト数。同じ番号・同じ中身で送り直す */
 
 static uint16_t g16(const uint8_t *p) { return p[0] << 8 | p[1]; }
 static void p16(uint8_t *p, int v) { p[0] = v >> 8; p[1] = v; }
+
+/* SCSI を使ってよいか: 割り込みの中 (IPL が 0 でない) では使わない。スーパーバイザで呼ばれる (デバイスドライバ、
+   zmux.x と npd.x のスレッドは SR 0x2000) ので、Human68k も Z-OS もこの IOCS の途中では切り替えない
+   (Z-OS が横取りするのはユーザモードのときだけ。kernel/preempt.S)。1 回の READ / WRITE は 1 つの SCSI の命令で終わり、
+   BlueSCSI は npd.x / bsrmt.sys の LBA とは別に扱うので、npd.x が交換の途中で譲った間に入っても混ざらない */
+static int zl_can_scsi(void)
+{
+  uint16_t sr;
+  __asm__ volatile ("move.w %%sr,%0" : "=d"(sr));
+  return (sr & 0x2700) == 0x2000;
+}
 
 static int zl_ok(int rc)
 {
@@ -333,6 +346,8 @@ static void zl_scsi_rx(void)
 {
   int sect = 1, k;
   long t = now();
+  if (!zl_can_scsi())
+    return;
   if (oh == ot && zl_quiet && t == zl_t_read)
     return;
   zl_t_read = t;
@@ -365,22 +380,37 @@ static void zl_scsi_rx(void)
 static void zl_scsi_tx(void)
 {
   int n = (oh - ot) & (OUTSZ - 1), i;
-  if (n > zl_txfree) n = zl_txfree;
-  if (n > X68ZL_MAXDATA) n = X68ZL_MAXDATA;
-  if (n <= 0 && !zl_wflags)
+  if (!zl_can_scsi())
     return;
+  if (zl_retry >= 0)
+    n = zl_retry;                       /* 失敗した WRITE をそのまま (待ち行列の先頭に残っている) */
+  else {
+    if (n > zl_txfree) n = zl_txfree;
+    if (n > X68ZL_MAXDATA) n = X68ZL_MAXDATA;
+    if (n <= 0 && !zl_wflags)
+      return;
+    if (zl_wflags & X68ZL_F_START)
+      zl_seq = now();                   /* 起動し直したときに前の番号と重なりにくくする */
+    else
+      zl_seq++;
+  }
   zbuf[0] = 'X'; zbuf[1] = '6'; zbuf[2] = 'Z'; zbuf[3] = 'W';
   p16(zbuf + 4, n);
   p16(zbuf + 6, zl_wflags);
-  for (i = 8; i < X68ZL_HDR; i++)
+  p16(zbuf + 8, zl_seq);
+  for (i = 10; i < X68ZL_HDR; i++)
     zbuf[i] = 0;
   for (i = 0; i < n; i++)
     zbuf[X68ZL_HDR + i] = outq[(ot + i) & (OUTSZ - 1)];
-  if (!zl_ok(_iocs_s_writeext(X68ZL_WLBA, (X68ZL_HDR + n + 511) / 512, zl_id, 1, zbuf)))
-    return;                             /* 待ち行列に残して次に書く */
+  if (!zl_ok(_iocs_s_writeext(X68ZL_WLBA, (X68ZL_HDR + n + 511) / 512, zl_id, 1, zbuf))) {
+    zl_retry = n;                       /* 待ち行列に残し、次は同じ番号で同じ n バイトを書く (届いていたら BlueSCSI が捨てる) */
+    return;
+  }
+  zl_retry = -1;
   st.zlwr++;
   zl_wflags = 0;
   zl_txfree -= n;
+  if (zl_txfree < 0) zl_txfree = 0;
   ot = (ot + n) & (OUTSZ - 1);
   st.outbytes += n;
 }

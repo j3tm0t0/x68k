@@ -217,5 +217,14 @@ X68000 zmux.sys --SCSI ID6 (READ/WRITE の LBA)--> BlueSCSI --TCP 6871 (Wi-Fi)--
 - **速さの見込み**: SCSI の 1 回の READ / WRITE は 1〜2ms、Wi-Fi は 1.1MB/秒 (日記 19) なので、線の速さは zmux の窓 (4KB) と往復の時間で決まる。
   往復 10ms なら 400KB/秒ほど。19200bps (1.9KB/秒) の 100 倍以上。
 
-未決: zmux.sys の SCSI の呼び出しは Human68k のスレッド (zmux.x) からも走る。npd.x と同じ使い方なので問題ないと見ているが、
-BlueSCSI の SD のリモートドライブ (bsrmt.sys) や npd.x と同じ ID6 を交互に使うので、ファームが要求を取り違えないことを実機で確かめる。
+- **ほかの ID6 の使い手と混ざらないこと**: zmux.sys の SCSI はどれもスーパーバイザ (デバイスドライバ、SR 0x2000 のスレッド) から呼び、
+  割り込みの中 (IPL が 0 でない) では呼ばない。Human68k も Z-OS もスーパーバイザの間は切り替えない (Z-OS が横取りするのはユーザモードのときだけ、
+  x68k-zos kernel/preempt.S) ので、1 回の READ / WRITE (1 つの SCSI の命令) の途中にほかの SCSI が入ることはない。
+  npd.x は交換の WRITE と READ の間で譲る (_CHANGE_PR) ので、その間に zmux の READ / WRITE が入ることはある。BlueSCSI は zmux の LBA を
+  netpipe (0x100000 / 0x110000) や bsrmt.sys (0x200000 / 0x210000) とは別に扱い、互いの状態を変えないので混ざらない
+  (picosim の zltest.py で、bsrmt.sys の交換の間に zmux の READ / WRITE を入れて確かめる)。
+- **WRITE の番号**: SCSI の終わりで失敗に見えた WRITE が実は届いていた場合、そのまま送り直すと素の文字 (フレームの番号で守られない) が
+  二重になる。WRITE に番号を付け、失敗したら同じ番号・同じ中身で送り直し、BlueSCSI は直前と同じ番号なら捨てる。
+  picosim の `ZL_WFAIL=N` (N 回に 1 回、受け取ったうえでエラーを返す) で確かめる。
+- **zmuxd --retry**: つなぎ直したら読みかけのフレームと組み立て中のブロック (チャネル 2 / 3 / 4) を捨てる。X68000 が起動し直して
+  UP のまま HELLO が来たときも、組み立て中のブロックを捨てる (前の要求の続きとして新しい要求をつなげない)。

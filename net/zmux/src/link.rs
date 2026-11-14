@@ -349,8 +349,10 @@ impl Link {
                         if !self.up {
                             self.up = true;
                             self.stats.ups += 1;
-                            ev.push(Event::Up);
                         }
+                        // UP のままでも知らせる: X68000 が起動し直した (60 秒の時間切れより先の HELLO) ときも、
+                        // 組み立て中のブロック (チャネル 2 / 3 / 4) を捨てさせる (新しい要求とつながらないように)
+                        ev.push(Event::Up);
                         self.ctl(OP_HELLO_ACK, out, now);
                     }
                     OP_HELLO_ACK if !self.up && self.t_hello.is_some_and(|t| now.duration_since(t) < Duration::from_secs(5)) => {
@@ -404,6 +406,11 @@ impl Link {
         }
         self.need_ack = true;
         ev.push(Event::Data(f.chan, f.data, f.flags));
+    }
+
+    /// 線そのものをつなぎ直した (zmuxd --retry の TCP)。読みかけのフレームを捨てる。番号は HELLO で揃え直す
+    pub fn line_restarted(&mut self) {
+        self.parser = Parser::default();
     }
 
     fn go_down(&mut self, ev: &mut Vec<Event>) {
@@ -513,6 +520,47 @@ mod tests {
         }
         assert!(items.iter().any(|i| matches!(i, Item::Bad)));
         assert!(!items.iter().any(|i| matches!(i, Item::Frame(_))));
+    }
+
+    /// UP のまま HELLO が来た (X68000 が起動し直した) ときも Up を出す
+    #[test]
+    fn hello_while_up_tells_up_again() {
+        let t0 = Instant::now();
+        let mut a = Link::new(t0);
+        let mut w = Vec::new();
+        encode(CH_CTL, 0, 0xff, F_UNSEQ, &[OP_HELLO, 1, 4, 0], &mut w);
+        let mut out = Vec::new();
+        let mut ev = Vec::new();
+        a.input(&w, &mut out, &mut ev, t0);
+        assert!(matches!(ev.as_slice(), [Event::Up]));
+        let mut ev = Vec::new();
+        a.input(&w, &mut out, &mut ev, t0 + Duration::from_secs(3));
+        assert!(matches!(ev.as_slice(), [Event::Up]), "second HELLO while up");
+        assert_eq!(a.stats.ups, 1);
+    }
+
+    /// つなぎ直した線では、前の線の読みかけのフレームの続きとして読まない
+    #[test]
+    fn line_restart_drops_a_partial_frame() {
+        let t0 = Instant::now();
+        let mut a = Link::new(t0);
+        let mut w = Vec::new();
+        encode(CH_CTL, 0, 0xff, F_UNSEQ, &[OP_HELLO, 1, 4, 0], &mut w);
+        let mut out = Vec::new();
+        let mut ev = Vec::new();
+        a.input(&w, &mut out, &mut ev, t0);
+        let mut f = Vec::new();
+        encode(CH_RD, 0, 0xff, 0, b"old\x10request", &mut f);
+        // 中の DLE (DLE DLE に重ねたもの) の 1 つ目で切れた: 続きに来た DLE STX が「DLE そのもの + STX」と読まれる
+        let cut = (2..f.len() - 1).find(|&i| f[i] == DLE && f[i + 1] == DLE).unwrap() + 1;
+        a.input(&f[..cut], &mut out, &mut ev, t0);
+        a.line_restarted();
+        let mut ev = Vec::new();
+        let mut g = Vec::new();
+        encode(CH_RD, 0, 0xff, 0, b"new", &mut g);
+        a.input(&g, &mut out, &mut ev, t0);
+        let data: Vec<_> = ev.iter().filter_map(|e| if let Event::Data(c, d, _) = e { Some((*c, d.clone())) } else { None }).collect();
+        assert_eq!(data, vec![(CH_RD, b"new".to_vec())]);
     }
 
     /// 2 つの Link を 10% のバイトを壊す線でつないで、チャネル 0 のデータが順に全部届くか

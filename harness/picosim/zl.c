@@ -4,6 +4,7 @@
  * ID6 の READ 0x230000 / WRITE 0x220000 のバイトの列を、PORT で待ち受けた TCP (zmuxd --tcp 127.0.0.1:PORT) に渡す。
  * つながるのは 1 本で、新しい接続が来たら古いものを切る。送りの輪はファームと同じ 1KB。
  * 環境変数 ZL_DROP=N: N 回に 1 回、X68000 に渡す READ のデータを捨てる (SCSI で落ちたことにする。zmux の送り直しの試験)
+ *          ZL_WFAIL=N: N 回に 1 回、WRITE を受け取ったうえで SCSI のエラーを返す (X68000 は同じ番号で送り直し、ここで捨てる)
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -29,8 +30,12 @@ static int txn;                          /* tx に溜まっていて TCP にま�
 static uint8_t rx[RXBUF];
 static int rxn;
 static uint8_t ans[X68ZL_SECTORS * 512], wbuf[X68ZL_SECTORS * 512];
-static int drop_every, reads;
-static unsigned long st_in, st_out, st_dropped;
+static int drop_every, reads, wfail_every, writes;
+static unsigned long st_in, st_out, st_dropped, st_dup, st_dupbad, st_wfail;
+static int have_seq;
+static unsigned last_seq;
+static uint8_t last_blk[X68ZL_SECTORS * 512];
+static int last_len;
 
 static void p16(uint8_t *p, int v) { p[0] = v >> 8; p[1] = v; }
 static int g16(const uint8_t *p) { return p[0] << 8 | p[1]; }
@@ -53,6 +58,8 @@ void zl_start(void)
     return;
   if (getenv("ZL_DROP"))
     drop_every = atoi(getenv("ZL_DROP"));
+  if (getenv("ZL_WFAIL"))
+    wfail_every = atoi(getenv("ZL_WFAIL"));
   lfd = socket(AF_INET, SOCK_STREAM, 0);
   setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
   memset(&a, 0, sizeof a);
@@ -143,6 +150,7 @@ int zl_read(uint32_t lba, uint8_t *buf)
   return 0;
 }
 
+/* 戻り値: 0 = 受け取った、1 = 受け取ったが SCSI のエラーを返す (ZL_WFAIL)、-1 = この LBA ではない */
 int zl_write(uint32_t lba, const uint8_t *buf)
 {
   uint32_t k;
@@ -154,16 +162,34 @@ int zl_write(uint32_t lba, const uint8_t *buf)
   memcpy(wbuf + k * 512, buf, 512);
   if (k + 1 == (picosim_xfer_n ? picosim_xfer_n : 1)) {   /* 最後のセクタで中身を渡す */
     int len = g16(wbuf + 4), room;
+    unsigned seq = g16(wbuf + 8);
+    int fail = wfail_every && ++writes % wfail_every == 0;
     if (memcmp(wbuf, "X6ZW", 4) != 0)
       return 0;
     if (len > (int)((k + 1) * 512 - X68ZL_HDR))
       len = (k + 1) * 512 - X68ZL_HDR;
+    if (have_seq && seq == last_seq) {  /* 届いていたのに失敗に見えた WRITE の送り直し: 捨てる */
+      st_dup++;
+      if (len != last_len || memcmp(wbuf + X68ZL_HDR, last_blk, len) != 0) {
+        st_dupbad++;
+        picosim_log("zl: DUP MISMATCH seq %u (%d bytes, was %d)\n", seq, len, last_len);
+      }
+      return fail ? (st_wfail++, 1) : 0;   /* 送り直しにもエラーを返すことがある (また送り直してくる) */
+    }
+    have_seq = 1;
+    last_seq = seq;
+    last_len = len;
+    memcpy(last_blk, wbuf + X68ZL_HDR, len);
+    if (fail && ++st_wfail <= 3)
+      picosim_log("zl: WRITE seq %u (%d bytes) answered with an error on purpose\n", seq, len);
+    else if (st_wfail && st_wfail <= 3 && picosim_verbose)
+      picosim_log("zl: next WRITE seq %u (%d bytes)\n", seq, len);
     if (g16(wbuf + 6) & X68ZL_F_START) {
       picosim_log("zl: X68000 started (drops %d bytes not sent)\n", txn);
       txn = 0;
     }
     if (cfd < 0)
-      return 0;                         /* 線の先に誰もいない: 捨てる */
+      return fail;                      /* 線の先に誰もいない: 捨てる */
     room = TXRING - txn;
     if (len > room) {
       picosim_log("zl: X68000 wrote %d bytes over txfree (%d)\n", len - room, room);
@@ -172,6 +198,7 @@ int zl_write(uint32_t lba, const uint8_t *buf)
     memcpy(tx + txn, wbuf + X68ZL_HDR, len);
     txn += len;
     zl_poll();
+    return fail;
   }
   return 0;
 }
@@ -179,5 +206,6 @@ int zl_write(uint32_t lba, const uint8_t *buf)
 void zl_stats(void)
 {
   if (lfd >= 0)
-    picosim_log("zl: %s, from zmuxd %lu, to zmuxd %lu, dropped on purpose %lu\n", cfd >= 0 ? "connected" : "no zmuxd", st_in, st_out, st_dropped);
+    picosim_log("zl: %s, from zmuxd %lu, to zmuxd %lu, dropped on purpose %lu, write errors on purpose %lu, repeated writes dropped %lu (mismatch %lu)\n",
+                cfd >= 0 ? "connected" : "no zmuxd", st_in, st_out, st_dropped, st_wfail, st_dup, st_dupbad);
 }

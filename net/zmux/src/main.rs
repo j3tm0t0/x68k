@@ -273,7 +273,12 @@ fn daemon(args: &[String]) {
         match m {
             Ok(Msg::Line(b)) => link.input(&b, &mut out, &mut ev, now),
             Ok(Msg::LineClosed) => die("line closed"),
-            Ok(Msg::LineAgain(p)) => wp = p,
+            Ok(Msg::LineAgain(p)) => {
+                // 新しい TCP の線: 前の線の読みかけのフレームと組み立て中のブロックを捨てる (X68000 の HELLO で上がり直す)
+                wp = p;
+                link.line_restarted();
+                npblk.clear(); rdblk.clear(); scrblk.clear();
+            }
             Ok(Msg::Client(id, mut s, cmd)) => {
                 let words: Vec<&str> = cmd.split_whitespace().collect();
                 let num = |k: usize, d: u16| -> u16 { words.get(k).and_then(|w| w.parse().ok()).unwrap_or(d) };
@@ -490,7 +495,7 @@ fn daemon(args: &[String]) {
                 link::Event::Data(ch, d, _) => (ch, d),
                 link::Event::Up => {
                     if log { eprintln!("zmuxd: line up"); }
-                    rdblk.clear(); scrblk.clear();
+                    npblk.clear(); rdblk.clear(); scrblk.clear();
                     // 線を作り直すと X68000 は送りかけの画面の写しを捨てる
                     for (mut w, _) in scr_wait.drain(..) { let _ = writeln!(w, "err line was reset"); }
                     continue;
