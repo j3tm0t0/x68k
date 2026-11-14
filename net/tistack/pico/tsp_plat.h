@@ -19,6 +19,13 @@
 #define TSP_UNLOCK()    do { } while (0)
 extern int tsp_log_on;
 #define TSP_LOG(...)    do { if (tsp_log_on) printf(__VA_ARGS__); } while (0)
+#elif defined(TSP_PLAT_BLUESCSI)
+/* BlueSCSI v2 (Pico 2 W): lwIP は NO_SYS で、SCSI の命令も lwIP のフレームの処理もメインループ。ログは BlueSCSI のログへ
+   (x68tsp_log は BlueSCSI-v2 の lib/X68kTsp/x68tsp_glue.c) */
+#define TSP_LOCK()      do { } while (0)
+#define TSP_UNLOCK()    do { } while (0)
+void x68tsp_log(const char *fmt, ...);
+#define TSP_LOG(...)    x68tsp_log(__VA_ARGS__)
 #elif defined(PICO_CYW43_ARCH_THREADSAFE_BACKGROUND) || defined(PICO_CYW43_ARCH_FREERTOS)
 #include "pico/cyw43_arch.h"
 #include <stdio.h>

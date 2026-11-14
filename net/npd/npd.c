@@ -17,8 +17,9 @@
  *                         RS-232C)。zmux.sys と zmux.x が要る。送るものが無いときは交換せず、Pi の KICK で交換する
  *   npd.x -s [a.b.c.d]  : 本物の X68000 で、SCSI ID 6 の BlueSCSI (x68k-bootsel の版、bluescsi.ini の X68kNetpipe=1) と
  *                         SCSI IOCS (_S_WRITEEXT / _S_READEXT) で交換する。Z の疑似 SCSI のメールボックスは使わない。
- *                         今の BlueSCSI は 0xA5 (暗号アクセラレータ) だけを計算し、IP などは捨てる。WRITE の間に計算を
- *                         済ませるので答えは同じ交換で返る。送るものが無いときは交換しない
+ *                         BlueSCSI は 0xA5 (暗号アクセラレータ) と 0xA6 (tis.x -p のソケット、Pico 2 W 版の Wi-Fi) に
+ *                         答え、IP のレコードは捨てる。WRITE の間に答えを作るので同じ交換で返る。送るものが無いときは
+ *                         交換しない (tis.x が居るときは普段の間隔で問い合わせる)。a.b.c.d は要らない
  *   npd.x [-iN] a.b.c.d : 常駐してスレッド "npd" を作る (2 回目以降は受信の受け入れを再開するだけ)。a.b.c.d は Z の
  *                         IP アドレス。xip.x の設定 (ifconfig / inetdconf) が済んでから起動する
  *   必要: CONFIG.SYS の DEVICE = \SYS\npd.sys と PROCESS 指定、netpipe 入りの Pico W のファーム
@@ -438,9 +439,11 @@ static void zthread(void)
     now = ticks();
     /* -m: 線を空回りさせない。送るものも急ぎも無ければ、Pi の KICK か 2 秒に 1 回だけ交換する */
     /* -s: 送るものが無ければ交換しない。ただし送った直後の 1 秒は、答えが後の交換に回る相手 (Pico の模倣など) の
-       ために、ふだんの間隔で問い合わせる */
+       ために、ふだんの間隔で問い合わせる。tis.x -p が居るときは Z と同じ間隔で問い合わせ続ける (BlueSCSI に届いた
+       データや接続は、問い合わせないと X68000 に渡らない) */
     if (sdrv && n == 0 && hot == 0 && !turg && !zurg &&
-        (unsigned)(now - last) < ((unsigned)(now - act) < 100 ? (unsigned)zidle : 200u)) {
+        (unsigned)(now - last) < (tis ? ((unsigned)(now - act) < 200 ? (unsigned)zidle : (unsigned)ZIDLE2)
+                                      : ((unsigned)(now - act) < 100 ? (unsigned)zidle : 200u))) {
       _dos_change_pr();
       continue;
     }

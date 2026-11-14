@@ -16,6 +16,10 @@ void tsp_init(uint32_t epoch);
    *more = 1: Z に送るものがまだある (netpipe の応答見出しの more に足す)。resmax は TSP_RES_MAX まで */
 int tsp_exchange(const uint8_t *req, int reqlen, uint8_t *res, int resmax, int *more);
 
+/* 最後の応答の置き場 (TSP_LAST_SIZE バイト)。tsp_exchange の res にこれを渡すと、応答をここに直接作る (写しを
+   持たずに済む。呼び出し側は次の tsp_exchange までこの中身を Z に返せばよい) */
+uint8_t *tsp_last_buf(void);
+
 /* 全部のソケットを捨てる (Wi-Fi が切れた / 再起動の前)。そのあと別の epoch で tsp_init する */
 void tsp_shutdown(void);
 
