@@ -125,6 +125,8 @@ jobs:
         run: make -s -C net/zmux/x68k clean all && ls -l net/zmux/x68k/zmux.sys net/zmux/x68k/zmux.x net/zmux/x68k/zrmt.sys
       - name: test/zrmt_host_test.c (zrmt.sys の書き込みのキャッシュ、ホストの cc)
         run: make -s -C net/zmux/x68k hosttest
+      - name: bsrmt.sys (BlueSCSI の SD カードのリモートドライブ、elf2x68k)
+        run: make -s -C net/bsrmt clean all && ls -l net/bsrmt/bsrmt.sys
       - name: test/e2e_fake.py (XEiJ なし)
         run: $RUNNER_TEMP/venv/bin/python net/zmux/test/e2e_fake.py
 
@@ -235,11 +237,25 @@ jobs:
             SSH_X=$PWD/net/ssh/dropbear/ssh.x RCMD_X=/nonexistent | tee "$RUNNER_TEMP/test-tsp.out"
           ! grep -q '^SKIP' "$RUNNER_TEMP/test-tsp.out" || { echo "test-tsp が SKIP した"; exit 1; }
           ! grep -q '^FAIL' "$RUNNER_TEMP/test-tsp.out"
+      - name: make test-bsrmt (bsrmt.sys と picosim -X)
+        if: env.HAS_AWS == 'true'
+        env:
+          DISPLAY: ":99"
+          XEIJLOCK_NAME: ci
+        run: |
+          set -o pipefail
+          export TMPDIR=$RUNNER_TEMP/tmp/ && mkdir -p "$TMPDIR"
+          make -C harness/picosim test-bsrmt \
+            FW=$RUNNER_TEMP/y2/x68kzremotedrv/driver RS=$RUNNER_TEMP/y2/x68kzremotedrv/x68kserremote LWIP=$RUNNER_TEMP/y2/lwip \
+            | tee "$RUNNER_TEMP/test-bsrmt.out"
+          ! grep -q '^SKIP' "$RUNNER_TEMP/test-bsrmt.out" || { echo "test-bsrmt が SKIP した"; exit 1; }
+          ! grep -q '^FAIL' "$RUNNER_TEMP/test-bsrmt.out"
       - name: 落ちたときの記録 (ログと試験の出力 .TXT だけ。XEiJ の中身は載せない)
         if: failure() && env.HAS_AWS == 'true'
         run: |
           o=$RUNNER_TEMP/tsp-logs; mkdir -p "$o"
           t=$RUNNER_TEMP/tmp/picosim-tsptest
+          cp "$RUNNER_TEMP/tmp/picosim-bsrmttest"/*.log "$o/" 2>/dev/null || true
           cp "$t.log" "$o/" 2>/dev/null || true
           cp "$t"/*.log "$o/" 2>/dev/null || true
           cp "$t"/boot/*.TXT "$o/" 2>/dev/null || true

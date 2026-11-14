@@ -3,7 +3,7 @@
  *            XEiJ (harness/xeij/agent/PicoBridge.java) が SCSI の命令を TCP で渡してくる
  *
  *   picosim [-l 127.0.0.1:6868] [-n 192.168.1.0/24] [-g 192.168.1.1] [-D DNS] [-L [u]PORT:ZPORT]...
- *           [-0 disk.hds] [-H ID:データの HDS]... [-G ID:ゲームの DIR] [-T Wi-Fi,SMB,HDS の秒] [-N 秒] [-B 控え] [-F ファームの driver/] [-C 制御] [-K 設定] [-R B: の中身]... [-c MB] [-r KB] [-d µs] [-a 倍率] [-s 秒] [-p lan.pcap] [-v]
+ *           [-0 disk.hds] [-H ID:データの HDS]... [-G ID:ゲームの DIR] [-T Wi-Fi,SMB,HDS の秒] [-N 秒] [-B 控え] [-F ファームの driver/] [-C 制御] [-K 設定] [-R B: の中身]... [-X BlueSCSI のリモートドライブの中身]... [-c MB] [-r KB] [-d µs] [-a 倍率] [-s 秒] [-p lan.pcap] [-v]
  *
  * 受け持つ SCSI ID:
  *   ID 6 = netpipe (netpipe.c)。LBA 0x100000 の要求と 0x110000〜0x1ffff7 の応答。ほかの LBA は 0 を返し、書き込みは捨てる
@@ -41,6 +41,10 @@ extern int pz_vd_page_by_lba;
 extern int pz_face_id;
 int pz_face_read(uint32_t lba, uint8_t *buf);
 void remote_add(const char *dir);
+int x68rd_read(uint32_t lba, uint8_t *buf);
+int x68rd_write(uint32_t lba, const uint8_t *buf);
+int x68rd_range(uint32_t lba);
+extern int x68rd_on;
 int picosim_verbose;
 static uint64_t t0_us;
 
@@ -102,6 +106,8 @@ static int t_read(int id, uint32_t lba, uint8_t *buf)
     return pzlh_read(id, lba, buf);
   if (id == pz_face_id && id != 6)
     return pz_face_read(lba, buf);
+  if (id == 6 && x68rd_read(lba, buf) == 0)
+    return PS_OK;
   return id == 6 ? pz_id6_read(lba, buf) : id == 0 ? pz_id0_read(lba, buf) : pz_hds_read(id, lba, buf);
 }
 
@@ -110,6 +116,8 @@ static int t_write(int id, uint32_t lba, const uint8_t *buf)
   tg[id].writes++;
   if (use_pzl)
     return pzlh_write(id, lba, buf);
+  if (id == 6 && x68rd_write(lba, buf) == 0)
+    return PS_OK;
   return id == 6 ? pz_id6_write(lba, buf) : id == 0 ? pz_id0_write(lba, buf) : pz_hds_write(id, lba, buf);
 }
 
@@ -185,7 +193,7 @@ static int z_read(int id, uint32_t lba, uint8_t *buf)
   uint64_t k = (uint64_t)id << 32 | lba;
   uint8_t *d;
   int rc = PS_OK;
-  if (!c_cap)
+  if (!c_cap || (id == 6 && x68rd_range(lba)))   /* BlueSCSI のリモートドライブ (-X) はキャッシュを通さない */
     return t_read(id, lba, buf);
   if ((d = cache_find(k)) != NULL) {
     st_hit++;
@@ -719,7 +727,7 @@ static void usage(void)
 {
   fprintf(stderr,
           "usage: picosim [--pzl[=config.txt] [--pzl-root=DIR] [--pzl-flash=F] [--pzl-ip=A] [--pzl-zip=A]] [-l 127.0.0.1:6868] [-n 192.168.1.0/24] [-g GW] [-D DNS] [-L [u]PORT:ZPORT|none]...\n"
-          "               [-0 disk.hds] [-H ID:data.hds]... [-G ID:gamedir] [-T wifi,smb,hds] [-N sec] [-B snap] [-F fwdir] [-C ctlfile] [-K config] [-R dir]... [-c MB] [-r KB] [-d us] [-a scale] [-s sec] [-p lan.pcap] [-v]\n");
+          "               [-0 disk.hds] [-H ID:data.hds]... [-G ID:gamedir] [-T wifi,smb,hds] [-N sec] [-B snap] [-F fwdir] [-C ctlfile] [-K config] [-R dir]... [-X dir]... [-c MB] [-r KB] [-d us] [-a scale] [-s sec] [-p lan.pcap] [-v]\n");
   exit(2);
 }
 
@@ -757,7 +765,7 @@ int main(int argc, char **argv)
   lan_cfg.net = ip_arg("192.168.1.0");
   lan_cfg.gw = ip_arg("192.168.1.1");
   lan_cfg.dns = 0;
-  while ((o = getopt(argc, argv, "l:n:g:D:L:0:H:G:Q:N:T:B:F:C:K:R:Pc:r:d:a:s:p:vh")) != -1) {
+  while ((o = getopt(argc, argv, "l:n:g:D:L:0:H:G:Q:N:T:B:F:C:K:R:X:Pc:r:d:a:s:p:vh")) != -1) {
     switch (o) {
     case 'l': listen_spec = optarg; break;
     case 'n': {
@@ -838,6 +846,10 @@ int main(int argc, char **argv)
       break;
     case 'R':
       remote_add(optarg);
+      break;
+    case 'X':                           /* BlueSCSI のリモートドライブ (x68rd.c、bsrmt.sys の相手) */
+      remote_add(optarg);
+      x68rd_on = 1;
       break;
     case 'c': cache_mb = atoi(optarg); break;
     case 'r': ra_kb = atoi(optarg); break;

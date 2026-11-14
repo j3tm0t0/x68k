@@ -36,9 +36,9 @@ SVCFLAGS ?=
 
 all: build/picosim
 
-build/picosim: picosim.c netpipe.c lan_slirp.c bootwait.c ../../net/npd/zss.h picosim.h build/libslirp.a $(SVC) $(REMOTE_SRC) $(TSP)
+build/picosim: picosim.c netpipe.c lan_slirp.c bootwait.c x68rd.c ../../net/bsrmt/x68rd_proto.h ../../net/npd/zss.h picosim.h build/libslirp.a $(SVC) $(REMOTE_SRC) $(TSP)
 	cc $(CFLAGS) -I$(SLIRP_DIR)/src -I$(ACCEL) -I$(ACCEL)/monocypher $(GLIB_CFLAGS) $(SVCFLAGS) -o $@ \
-	  picosim.c netpipe.c lan_slirp.c bootwait.c $(SVC) $(REMOTE_SRC) $(TSP) $(ACCEL)/accel_ops.c $(ACCEL)/monocypher/monocypher.c \
+	  picosim.c netpipe.c lan_slirp.c bootwait.c x68rd.c $(SVC) $(REMOTE_SRC) $(TSP) $(ACCEL)/accel_ops.c $(ACCEL)/monocypher/monocypher.c \
 	  $(ACCEL)/monocypher/monocypher-ed25519.c build/libslirp.a $(GLIB_LIBS) -lresolv $(LIBICONV)
 
 $(TSPDIR)/build/tsp_all.o: $(TSPDIR)/tsp_glue.c $(wildcard $(TSPDIR)/../tsp_svc.c $(TSPDIR)/../tsp_svc.h)
@@ -55,14 +55,14 @@ PZLREPO ?= $(HOME)/Dropbox/src/github.com/j3tm0t0/x68k-zos-pzl
 build/picosim-pzl: picosim.c netpipe.c lan_slirp.c bootwait.c picosim.h build/libslirp.a $(REMOTE_SRC) FORCE
 	$(MAKE) -C pzl PZLREPO=$(PZLREPO) $(if $(PZLREV),PZLREV=$(PZLREV)) $(if $(PZLSRC),PZLSRC=$(PZLSRC))
 	cc $(CFLAGS) -I$(SLIRP_DIR)/src -I$(ACCEL) -I$(ACCEL)/monocypher $(GLIB_CFLAGS) -o $@ \
-	  picosim.c netpipe.c lan_slirp.c bootwait.c $(REMOTE_SRC) pzl/build/pzl_all.o $(ACCEL)/accel_ops.c $(ACCEL)/monocypher/monocypher.c \
+	  picosim.c netpipe.c lan_slirp.c bootwait.c x68rd.c $(REMOTE_SRC) pzl/build/pzl_all.o $(ACCEL)/accel_ops.c $(ACCEL)/monocypher/monocypher.c \
 	  $(ACCEL)/monocypher/monocypher-ed25519.c build/libslirp.a $(GLIB_LIBS) -lresolv $(LIBICONV)
 FORCE:
 
 # 試験用: 0xA6 をそのまま返すサービス入り
 build/picosim-echo: picosim.c netpipe.c lan_slirp.c bootwait.c picosim.h build/libslirp.a tests/echosvc.c
 	cc $(CFLAGS) -I$(SLIRP_DIR)/src -I$(ACCEL) -I$(ACCEL)/monocypher $(GLIB_CFLAGS) -o $@ \
-	  picosim.c netpipe.c lan_slirp.c bootwait.c tests/echosvc.c $(ACCEL)/accel_ops.c $(ACCEL)/monocypher/monocypher.c \
+	  picosim.c netpipe.c lan_slirp.c bootwait.c x68rd.c tests/echosvc.c $(ACCEL)/accel_ops.c $(ACCEL)/monocypher/monocypher.c \
 	  $(ACCEL)/monocypher/monocypher-ed25519.c build/libslirp.a $(GLIB_LIBS) -lresolv
 
 build/libslirp.tar.gz:
@@ -103,7 +103,7 @@ test-host: build/picosim build/picosim-echo
 	@if [ -d "$(PZLREPO)" ] || [ -n "$(PZLSRC)" ]; then $(MAKE) build/picosim-pzl PZLREPO=$(PZLREPO) PZLSRC=$(PZLSRC) && \
 	  python3 -I tests/pzltest.py build/picosim-pzl; else echo "SKIP pzltest: no PZL repo ($(PZLREPO))"; fi
 
-test-xeij: test-tsp test-zos test-tsppzl
+test-xeij: test-tsp test-zos test-tsppzl test-bsrmt
 test-tsp: build/picosim
 	tests/tsptest.sh
 # 同じ tis.x -p の試験を Pico Z Loader の TSP (x68k-zos pzl の src/tsp) で
@@ -112,6 +112,9 @@ test-tsppzl: build/picosim
 	  else echo "SKIP tsptest (PZL): no PZL repo"; fi
 test-zos: build/picosim
 	tests/zostest.sh
+# bsrmt.sys (net/bsrmt、BlueSCSI の SD カードのリモートドライブ) を picosim -X の相手に
+test-bsrmt: build/picosim
+	tests/bsrmttest.sh
 
 # Docker の中で流す (docker/README.md)。SUITES="host tsp zos tsppzl" JOBS=2
 docker-test:
@@ -120,4 +123,4 @@ docker-test:
 clean:
 	rm -f build/picosim build/picosim-echo
 
-.PHONY: all test test-host test-xeij test-tsp test-tsppzl test-zos docker-test pzl-latest clean
+.PHONY: all test test-host test-xeij test-tsp test-tsppzl test-zos test-bsrmt docker-test pzl-latest clean
