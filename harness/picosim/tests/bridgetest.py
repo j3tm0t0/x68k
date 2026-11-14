@@ -28,7 +28,8 @@ for name, size, mark in (("Bravo.HDS", 4, b"BRAVO"), ("alpha.hds", 2, b"ALPHA"),
     with open(os.path.join(GAMES, name), "wb") as f: f.write(mark.ljust(512 * size, b"\0"))
 with open(os.path.join(GAMES, "alpha.txt"), "wb") as f: f.write("Alpha の題名\r\n2 行目\r\n".encode("cp932"))
 with open(os.path.join(GAMES, "lastgame.txt"), "wb") as f: f.write(b"Bravo.HDS\r\n")
-p = subprocess.Popen([PICOSIM] + (["-vvv", "-p", "/tmp/bt.pcap"] if os.environ.get("DBG") else []) + ["-l", "127.0.0.1:%d" % PORT, "-L", "%d:2323" % FWD, "-G", "5:" + GAMES], stderr=open(os.path.join(HERE, "picosim.log"), "w"))
+p = subprocess.Popen([PICOSIM] + (["-vvv", "-p", "/tmp/bt.pcap"] if os.environ.get("DBG") else []) + ["-l", "127.0.0.1:%d" % PORT, "-L", "%d:2323" % FWD, "-G", "5:" + GAMES], stderr=open(os.path.join(HERE, "picosim.log"), "w"),
+                     env=dict(os.environ, PICOSIM_TIME="1794629106", PICOSIM_TZ="+9"))   # 0xA8 TIME: 2026-11-14 04:05:06 UTC
 for _ in range(50):
     try:
         s = socket.create_connection(("127.0.0.1", PORT)); break
@@ -211,6 +212,10 @@ check("bus reset (path 3)", cmd(0, bytes(6), path=3)[0] == 0)
 _, data = xchg(zrec(bytes([0xa8, 0])))
 r = [x for x in recs(data) if x and x[0] == 0xa8]
 check("hidden ids are back after the bus reset", r == [bytes([0xa8, 0, 0, 1, 0])], repr(r))
+# ---- 時刻 (0xA8 op 4 TIME、BlueSCSI の x68k-ota の SNTP の代わり): PICOSIM_TIME / PICOSIM_TZ の値 ----
+_, data = xchg(zrec(bytes([0xa8, 4])))
+r = [x for x in recs(data) if x and x[0] == 0xa8]
+check("0xA8 TIME: 2026-11-14 (Sat) 13:05:06 +9:00", r == [bytes([0xa8, 4, 0, 0x07, 0xea, 11, 14, 13, 5, 6, 6, 36, 0x6a, 0xf7, 0xdd, 0xf2])], repr(r))
 # ---- ゲーム用の ID (0xA8 の LIST / SELECT): 一覧、イメージの切り替え、選んだ名前の保存 ----
 def boot(*b):
     _, data = xchg(zrec(bytes([0xa8]) + bytes(b)))
