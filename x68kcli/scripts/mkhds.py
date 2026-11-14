@@ -23,8 +23,16 @@ if min(menu, pboot, drv) < 0:
     sys.exit("mkhds: boot code markers not found in %s (FORMAT.X v2.31 expected)" % fmt_path)
 disk_ipl = fmt[fmt.rfind(b"\x60\x00", 0, menu):pboot]
 part_ipl = fmt[pboot:drv]
-driver = fmt[drv:drv + 12771]
+# デバイスドライバの終わり: FORMAT.X の中ではドライバの直後に 0 が 3 バイトあり、続いて
+# XC のライブラリの文字列が始まる (v2.31 ではドライバは 13141 バイト)。以前は固定の 12771 バイトを
+# 取り出していて、IOCS $41/$43 の横取りの後ろ 370 バイトが欠けていた (x68k-zos #175)。
+CLIB = b"C library for X68000"
+clib = fmt.find(CLIB, drv)
+if clib < 0 or fmt[clib - 3:clib] != b"\0\0\0" or fmt[clib - 4] == 0:
+    sys.exit("mkhds: end of SCSI driver (3 zero bytes + %r) not found in %s" % (CLIB.decode(), fmt_path))
+driver = fmt[drv:clib - 3]
 assert 0x380 <= len(disk_ipl) <= 0x400 and 0x280 <= len(part_ipl) <= 0x400
+assert 0xC00 + len(driver) <= 0x4000, "SCSI driver too long (%d bytes)" % len(driver)   # 0x4000 からは空き (x68k-zos のブートメニュー)
 
 BPR = 512                     # SCSI レコード長
 BPS = 1024                    # Human68k 論理セクタ長
