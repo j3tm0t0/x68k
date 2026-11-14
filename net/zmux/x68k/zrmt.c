@@ -147,6 +147,10 @@ static long send_read(uint32_t fcb, uint8_t *buf, uint32_t pos, long len)
       return r.res_read.len;
     if (r.res_read.len == 0)
       break;
+    if (r.res_read.len > size) {        /* 頼んだより長い応答は壊れている: 交換の失敗と同じに扱う */
+      failed = 1;
+      return -1;
+    }
     memcpy_(buf, r.res_read.data, r.res_read.len);
     buf += r.res_read.len;
     total += r.res_read.len;
@@ -399,7 +403,8 @@ long rd_interrupt(struct req_header *req)
         goto ok_write;
       }
     }
-    if ((len = dcache_flush((uint32_t)req->fcb, 0)) < 0)
+    /* 直接書く (と切り詰める) 前に、溜めた書き込みを送り、読み込みのキャッシュも捨てる (古い中身を後で返さない) */
+    if ((len = dcache_flush((uint32_t)req->fcb, 1)) < 0)
       goto ok_write;
     len = send_write((uint32_t)req->fcb, req->addr, *pp, req->status);
     if (req->status == 0)

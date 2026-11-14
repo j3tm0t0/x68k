@@ -27,6 +27,7 @@
 
 #define _DOSE_DISKFULL  -23
 #define _DOSE_CANTSEEK  -25
+#define _DOSE_NOMORE    -18
 
 struct req_header {
   uint8_t magic, unit, command, errl, errh, reserved[8], attr;
@@ -39,6 +40,9 @@ struct req_header {
 #define fcb_fpos(fcb)  (*(uint32_t *)(&((uint8_t *)(fcb))[6]))
 #define fcb_size(fcb)  (*(uint32_t *)(&((uint8_t *)(fcb))[64]))
 #define FILBUF_ATR 21                   /* dos_filbuf の atr の位置 */
+#ifndef FILBUF
+#define FILBUF(filep) ((uint8_t *)(filep))      /* test/bsrmt_host_test.c は 64 ビットのホストで差し替える */
+#endif
 
 extern void dos_print(const char *);
 extern void dos_putchar(int);
@@ -147,6 +151,11 @@ static long send_read(uint32_t fcb, uint8_t *buf, uint32_t pos, long len)
       return n;
     if (n == 0)
       break;
+    if (n > size) {                     /* 頼んだより長い応答は壊れている: 交換の失敗と同じに扱う */
+      st.fail++;
+      failed = 1;
+      return -1;
+    }
     memcpy_(buf, an + X68RD_DATA_OFF, n);
     buf += n;
     total += n;
@@ -242,12 +251,22 @@ static struct fcache *fcache_alloc(uint32_t filep, int new)
   return 0;
 }
 
-/* FILES / NFILES の応答 (RES) を FILBUF とキャッシュに入れる。戻り値は結果 */
-static int files_result(uint32_t filep, struct fcache *fc)
+/* FILES / NFILES の応答 (RES) を FILBUF とキャッシュに入れる。asked は頼んだ件数。戻り値は結果 */
+static int files_result(uint32_t filep, struct fcache *fc, int asked)
 {
-  int res = (int8_t)RES[0], num = RES[1];
+  int res = (int8_t)RES[0], num = RES[1], room = (get16(an + 8) - 2) / X68RD_FILESINFO;
   if (failed)
     return res;
+  /* 件数は頼んだ数、X68RD_NFILES、応答の長さのどれも超えない。0 件の成功は「もう無い」 */
+  if (res == 0) {
+    if (num > asked) num = asked;
+    if (num > X68RD_NFILES) num = X68RD_NFILES;
+    if (num > room) num = room;
+    if (num <= 0) {
+      res = _DOSE_NOMORE;
+      num = 0;
+    }
+  }
   if (fc) {
     if (res == 0 && num > 1) {
       fc->filep = filep;
@@ -258,7 +277,7 @@ static int files_result(uint32_t filep, struct fcache *fc)
       fc->filep = 0;
   }
   if (res == 0)
-    memcpy_((uint8_t *)filep + FILBUF_ATR, RES + 2, X68RD_FILESINFO);
+    memcpy_(FILBUF(filep) + FILBUF_ATR, RES + 2, X68RD_FILESINFO);
   return res;
 }
 
@@ -369,14 +388,14 @@ long rd_interrupt(struct req_header *req)
     put32(CMD + 3, filep);
     namebuf(CMD + 7, req->addr);
     xchg(7 + X68RD_NAMEBUF, 0, X68RD_HDR + 2 + CMD[2] * X68RD_FILESINFO);
-    req->status = files_result(filep, fc);
+    req->status = files_result(filep, fc, CMD[2]);
     break;
   }
   case 0x48: {                          /* nfiles */
     uint32_t filep = req->status;
     struct fcache *fc = fcache_alloc(filep, 0);
     if (fc) {
-      memcpy_((uint8_t *)filep + FILBUF_ATR, fc->info + fc->cnt * X68RD_FILESINFO, X68RD_FILESINFO);
+      memcpy_(FILBUF(filep) + FILBUF_ATR, fc->info + fc->cnt * X68RD_FILESINFO, X68RD_FILESINFO);
       if (++fc->cnt >= fc->num)
         fc->filep = 0;
       st.cachehit++;
@@ -388,7 +407,7 @@ long rd_interrupt(struct req_header *req)
     CMD[1] = fc ? nfiles : 1;
     put32(CMD + 2, filep);
     xchg(6, 0, X68RD_HDR + 2 + CMD[1] * X68RD_FILESINFO);
-    req->status = files_result(filep, fc);
+    req->status = files_result(filep, fc, CMD[1]);
     break;
   }
   case 0x49:                            /* create */
@@ -479,7 +498,8 @@ long rd_interrupt(struct req_header *req)
         goto ok_write;
       }
     }
-    if ((len = dcache_flush((uint32_t)req->fcb, 0)) < 0)
+    /* 直接書く (と切り詰める) 前に、溜めた書き込みを送り、読み込みのキャッシュも捨てる (古い中身を後で返さない) */
+    if ((len = dcache_flush((uint32_t)req->fcb, 1)) < 0)
       goto ok_write;
     len = send_write((uint32_t)req->fcb, req->addr, *pp, req->status);
     if (req->status == 0)

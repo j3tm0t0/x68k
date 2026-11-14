@@ -28,6 +28,7 @@ static int log_ops[64], nlog;           /* 届いた命令の順番 */
 static int open_files;                  /* 開いているファイルの数 (CLOSE が届いたか) */
 static int write_zero;                  /* 1: WRITE に 0 バイト書けたと答える (進まない応答) */
 static int write_calls;
+static int read_extra;                  /* READ の応答の長さに足す (壊れた応答) */
 
 static void logop(int op) { if (nlog < 64) log_ops[nlog++] = op; }
 
@@ -63,7 +64,7 @@ long call_entry(void *e, long cmd, long *a)
     long n = cr->pos >= disk_len ? 0 : disk_len - cr->pos;
     if (n > cr->len) n = cr->len;
     memcpy(rr->data, disk + cr->pos, n);
-    rr->len = n;
+    rr->len = n + read_extra;
     return 2 + n;
   }
   case 0x4f: {                          /* filedate */
@@ -105,7 +106,7 @@ static void reset(long capacity)
   memset(dcache, 0, sizeof dcache);
   memset(fcb, 0, sizeof fcb);
   memset(disk, 0, sizeof disk);
-  disk_len = 0; cap = capacity; nlog = 0; open_files = 0; write_zero = 0; write_calls = 0;
+  disk_len = 0; cap = capacity; nlog = 0; open_files = 0; write_zero = 0; write_calls = 0; read_extra = 0;
   call(0x09, namebuf, 0, 0x20);         /* create */
 }
 
@@ -195,6 +196,34 @@ int main(void)
   write_small(100);
   check("close when the cache makes no progress", call(0x0b, 0, 0, 0), _DOSE_DISKFULL);
   check("one request for the cache", write_calls, 1);
+
+  /* 11. 読み込みでキャッシュに入った範囲を、大きな WRITE で直接書き換えた後の READ は新しい中身を返す */
+  reset(sizeof disk);
+  memset(disk, 'o', 20000);
+  disk_len = 20000;
+  check("small read fills the cache", call(0x0c, rbuf, sizeof rbuf, 0), sizeof rbuf);
+  fcb_fpos(fcb) = 0;
+  {
+    static uint8_t big[CONFIG_DATASIZE];
+    memset(big, 'n', sizeof big);
+    check("large write goes straight to the Pi", call(0x0d, big, sizeof big, 0), sizeof big);
+  }
+  fcb_fpos(fcb) = 0;
+  memset(rbuf, 0, sizeof rbuf);
+  check("read after it", call(0x0c, rbuf, sizeof rbuf, 0), sizeof rbuf);
+  check("gets the new bytes, not the old cache", rbuf[0] == 'n' && rbuf[15] == 'n', 1);
+
+  /* 12. 頼んだより長い READ の応答は写さず、交換の失敗 (-15) にする */
+  reset(sizeof disk);
+  memset(disk, 'o', 100);
+  disk_len = 100;
+  read_extra = 5000;
+  {
+    static uint8_t big[CONFIG_DATASIZE + 16];
+    big[CONFIG_DATASIZE] = 0x5a;
+    check("read with a too long answer", call(0x0c, big, CONFIG_DATASIZE, 0), -15);
+    check("nothing written past the buffer", big[CONFIG_DATASIZE], 0x5a);
+  }
 
   printf(fails ? "%d failure(s)\n" : "all passed\n", fails);
   return fails != 0;

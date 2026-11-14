@@ -127,6 +127,8 @@ jobs:
         run: make -s -C net/zmux/x68k hosttest
       - name: bsrmt.sys (BlueSCSI の SD カードのリモートドライブ、elf2x68k)
         run: make -s -C net/bsrmt clean all && ls -l net/bsrmt/bsrmt.sys
+      - name: bsrmt.c のホスト試験 (キャッシュと壊れた応答)
+        run: make -s -C net/bsrmt hosttest
       - name: test/e2e_fake.py (XEiJ なし)
         run: $RUNNER_TEMP/venv/bin/python net/zmux/test/e2e_fake.py
 

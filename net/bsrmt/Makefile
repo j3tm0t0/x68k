@@ -13,6 +13,12 @@ bsrmt.sys: bsrmthead.o bsrmt.o
 %.o: %.S
 	$(CC) -m68000 -c $<
 
+# キャッシュと応答の確かめをホストの cc で (test/bsrmt_host_test.c)
+HOSTCC ?= cc
+hosttest:
+	$(HOSTCC) -O1 -Wall -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -Wno-unused-function \
+	  -I test/stub -o $${TMPDIR:-/tmp}/bsrmt_host_test test/bsrmt_host_test.c && $${TMPDIR:-/tmp}/bsrmt_host_test
+
 clean:
 	rm -f *.o *.sys
-.PHONY: all clean
+.PHONY: all clean hosttest
