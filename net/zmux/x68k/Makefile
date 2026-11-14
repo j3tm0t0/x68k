@@ -27,4 +27,10 @@ tcset.x: start.o tcset.o
 
 clean:
 	rm -f *.o *.sys *.x *.elf
-.PHONY: all clean
+.PHONY: all clean hosttest
+
+# zrmt.c の書き込みのキャッシュの試験をホストの cc で (../test/zrmt_host_test.c)
+HOSTCC ?= cc
+hosttest:
+	$(HOSTCC) -O1 -Wall -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -Wno-unused-function \
+	  -I ../test/stub -o $${TMPDIR:-/tmp}/zrmt_host_test ../test/zrmt_host_test.c && $${TMPDIR:-/tmp}/zrmt_host_test

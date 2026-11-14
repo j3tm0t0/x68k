@@ -14,6 +14,7 @@ tmux のような画面 (`zmux`、下の「zmux の画面」)、リモートド�
 | `x68k/` | X68000 側 (elf2x68k): `zmux.sys` (線の処理と、CTTY AUX をチャネル 0 にする AUX デバイス)、`zmux.x` (線を回すスレッド)、`zrmt.sys` (リモートドライブ) |
 | `test/fakex68k.py` | XEiJ の代わりの「にせの X68000」: 線の約束を TCP で話し、COMMAND.X・zos.x の 0xA7・zrmt.sys・キーの受け口のふりをする。19200bps の速さの真似もする |
 | `test/e2e_fake.py` | にせの X68000 で、線、`zmux attach 0`、リモートドライブの全命令と速さ、画面 (pty で `zmux` を動かし pyte で読む) を試す。XEiJ も elf2x68k も要らない |
+| `test/zrmt_host_test.c` | zrmt.c をホストの cc で組み、にせの Pi と組み合わせて書き込みのキャッシュを試す (ディスクフルのときに CLOSE / SEEK / READ / WRITE / FILEDATE がエラーを返すか、失敗した中身を後で返したり送り直したりしないか、FILEDATE の前に書き込みが届くか、0 バイトしか書けない応答で止まらないか)。`make -C x68k hosttest` |
 | `test/e2e_tui.py` | XEiJ で画面を試す (ZOS_X / ZOSH_X があれば zosh のタブも)。**まだ通していない** |
 | `test/e2e_rdrive.py` | XEiJ で zrmt.sys を試す (dir / type / copy の往復と照合 / md / del / rd / ren、copy の速さ)。`BAUD=78125` で実機 XVI と同じ速さ |
 | `test/e2e.py` | XEiJ で、素の文字 → zmux → 素の文字の切り替えと、バイトを壊す線での再送を試す |

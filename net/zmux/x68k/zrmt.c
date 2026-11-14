@@ -26,6 +26,7 @@
 #define ZMUX_RD_XCHG    6               /* zmux.sys の入口の命令 */
 
 /* ---- Human68k のエラー */
+#define _DOSE_DISKFULL  -23
 #define _DOSE_CANTSEEK  -25
 
 struct req_header {
@@ -170,6 +171,8 @@ static long send_write(uint32_t fcb, const uint8_t *buf, uint32_t pos, long len)
       return -1;
     if (r.res_write.len < 0)
       return r.res_write.len;
+    if (r.res_write.len == 0)           /* 1 バイトも書けなかった: 同じ要求を繰り返さず、書けた分を返す (呼んだ側がディスクフルにする) */
+      break;
     buf += r.res_write.len;
     total += r.res_write.len;
     pos += r.res_write.len;
@@ -194,15 +197,25 @@ static struct dcache *dcache_alloc(uint32_t fcb)
   return 0;
 }
 
-static int dcache_flush(uint32_t fcb, int clean)
+/* キャッシュに溜めた書き込みを送る。0 = 成功、負 = Human68k のエラー (Pi が返したもの。全部書けなかったらディスクフル)。
+ * 小さな WRITE は送る前に成功を返しているので、ここでの失敗は CLOSE などの結果として必ず呼んだ側に返す */
+static long dcache_flush(uint32_t fcb, int clean)
 {
-  int i, res = 0;
+  int i;
+  long res = 0, n;
   for (i = 0; i < CONFIG_NDCACHE; i++) {
     if (dcache[i].fcb == fcb) {
       if (dcache[i].dirty) {
-        if (send_write(dcache[i].fcb, dcache[i].cache, dcache[i].pos, dcache[i].len) < 0)
-          res = -1;
+        n = send_write(dcache[i].fcb, dcache[i].cache, dcache[i].pos, dcache[i].len);
+        if (n < 0)
+          res = n;
+        else if (n < dcache[i].len)
+          res = _DOSE_DISKFULL;
         dcache[i].dirty = 0;
+        if (res < 0) {                  /* Pi が受け取らなかった中身を、後の READ で返したり WRITE で送り直したりしない */
+          dcache[i].fcb = 0;
+          continue;
+        }
       }
       if (clean)
         dcache[i].fcb = 0;
@@ -317,19 +330,20 @@ long rd_interrupt(struct req_header *req)
     fcb_size(req->fcb) = r.res_open.size;
     req->status = r.res_open.res;
     break;
-  case 0x4b:                            /* close */
-    dcache_flush((uint32_t)req->fcb, 1);
+  case 0x4b: {                          /* close */
+    long err = dcache_flush((uint32_t)req->fcb, 1);
     c.cmd_close.command = req->command;
     c.cmd_close.fcb = (uint32_t)req->fcb;
-    cmdres(&c.cmd_close, sizeof c.cmd_close, &r.res, 1);
-    req->status = r.res;
+    cmdres(&c.cmd_close, sizeof c.cmd_close, &r.res, 1);   /* 書き込みに失敗しても Pi のファイルは閉じる */
+    req->status = err < 0 ? err : r.res;
     break;
+  }
   case 0x4c: {                          /* read */
     uint32_t *pp = &fcb_fpos(req->fcb);
     uint8_t *buf = req->addr;
     long len = req->status, size = 0, rlen;
     struct dcache *d;
-    dcache_flush((uint32_t)req->fcb, 0);
+    if ((rlen = dcache_flush((uint32_t)req->fcb, 0)) < 0) { size = rlen; goto out_read; }
     if ((d = dcache_alloc((uint32_t)req->fcb))) {
       do {
         if (d->fcb == (uint32_t)req->fcb && *pp >= d->pos && *pp < d->pos + d->len) {
@@ -341,7 +355,7 @@ long rd_interrupt(struct req_header *req)
         }
         if (len == 0 || len >= (long)sizeof d->cache)
           break;
-        dcache_flush((uint32_t)req->fcb, 1);
+        if ((rlen = dcache_flush((uint32_t)req->fcb, 1)) < 0) { size = rlen; goto out_read; }
         d->len = send_read((uint32_t)req->fcb, d->cache, *pp, sizeof d->cache);
         if (d->len < 0) { size = -1; goto out_read; }
         d->fcb = (uint32_t)req->fcb;
@@ -373,7 +387,9 @@ long rd_interrupt(struct req_header *req)
             d->dirty = 1;
             goto ok_write;
           }
-          dcache_flush((uint32_t)req->fcb, 1);
+          if ((len = dcache_flush((uint32_t)req->fcb, 1)) < 0)
+            goto ok_write;
+          len = req->status;
         }
         d->fcb = (uint32_t)req->fcb;
         d->pos = *pp;
@@ -383,10 +399,11 @@ long rd_interrupt(struct req_header *req)
         goto ok_write;
       }
     }
-    dcache_flush((uint32_t)req->fcb, 0);
+    if ((len = dcache_flush((uint32_t)req->fcb, 0)) < 0)
+      goto ok_write;
     len = send_write((uint32_t)req->fcb, req->addr, *pp, req->status);
-    if (len == 0)
-      *sp = *pp;                        /* 0 バイトの書き込みは切り詰め */
+    if (req->status == 0)
+      *sp = *pp;                        /* 0 バイトの書き込みは切り詰め (書けずに 0 が返った WRITE ではない) */
   ok_write:
     if (len > 0) {
       *pp += len;
@@ -399,7 +416,11 @@ long rd_interrupt(struct req_header *req)
     int whence = req->attr;
     int32_t off = req->status;
     uint32_t pos = fcb_fpos(req->fcb), size = fcb_size(req->fcb);
-    dcache_flush((uint32_t)req->fcb, 0);
+    long err = dcache_flush((uint32_t)req->fcb, 0);
+    if (err < 0) {
+      req->status = err;
+      break;
+    }
     pos = (whence == 0 ? 0 : whence == 1 ? pos : size) + off;
     if (pos > size)
       req->status = _DOSE_CANTSEEK;
@@ -407,7 +428,13 @@ long rd_interrupt(struct req_header *req)
       req->status = fcb_fpos(req->fcb) = pos;
     break;
   }
-  case 0x4f:                            /* filedate */
+  case 0x4f: {                          /* filedate */
+    /* 溜めた書き込みを先に送る。後で送ると、Pi がその書き込みでファイルの時刻を今に戻す (COPY した小さなファイルの時刻が元のものにならない) */
+    long err = dcache_flush((uint32_t)req->fcb, 0);
+    if (err < 0) {
+      req->status = err;
+      break;
+    }
     c.cmd_filedate.command = req->command;
     c.cmd_filedate.fcb = (uint32_t)req->fcb;
     c.cmd_filedate.time = req->status & 0xffff;
@@ -415,6 +442,7 @@ long rd_interrupt(struct req_header *req)
     cmdres(&c.cmd_filedate, sizeof c.cmd_filedate, &r.res_filedate, sizeof r.res_filedate);
     req->status = r.res_filedate.time + ((uint32_t)r.res_filedate.date << 16);
     break;
+  }
   case 0x50: {                          /* dskfre */
     uint16_t *p = (uint16_t *)req->addr;
     c.raw[0] = req->command;
