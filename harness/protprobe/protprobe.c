@@ -285,8 +285,8 @@ int main(void)
 
   /* 6. jsr (An) で守られた所へ飛ぶ。命令の先読みでバスエラーになるとき、戻り番地を USP に積んだ後か前か。
    *    積んだ後: USP = 前 - 4、[USP] = jsr の次の番地。積む前: USP = 前のまま。どちらでも NG にはしない (どちらかでなければ NG)。
-   *    Z-OS の prot_ti_fault は、フレームの PC の 2 / 4 バイト前が jsr (An) (0x4E90-0x4E97) ならそこから戻り番地を決め、
-   *    [USP] がそれと同じときだけ積んだとみなす。その判定が実機で合うかもここで見る */
+   *    Z-OS の prot_ti_fault (x68k-zos #189) はフレームの PC だけで決める: PC = 飛び先なら積んだ、PC の 2 バイト前が jsr (An)
+   *    (0x4E90-0x4E97) なら積んでいない (戻り番地 = PC)、どちらでもなければ積んだ。その判定が実機で合うかもここで見る */
   printf("\n[6] ユーザーモードから守られた所へ jsr (a1)\n");
   {
     static const struct { unsigned long a; const char *name; } tg[] = {
@@ -311,15 +311,14 @@ int main(void)
       printf("    → %s\n", pushed ? "戻り番地を積んでからバスエラー" : notpushed ? "戻り番地を積む前にバスエラー" : "どちらでもない  <== 期待と違う");
       if (!pushed && !notpushed) ng++;
       /* prot_ti_fault の判定をまねる */
-      unsigned long z = 0;
-      if (!(fpc & 1) && fpc >= 4) {
+      int zpushed = 1;
+      if (fpc != fa && !(fpc & 1) && fpc >= 2) {
         int ssp = _dos_super(0);
-        unsigned short w2 = *(volatile unsigned short *)(fpc - 2), w4 = *(volatile unsigned short *)(fpc - 4);
+        unsigned short w2 = *(volatile unsigned short *)(fpc - 2);
         _dos_super(ssp);
-        if ((w2 & 0xfff8) == 0x4e90) z = fpc; else if ((w4 & 0xfff8) == 0x4e90) z = fpc - 2;
+        if ((w2 & 0xfff8) == 0x4e90) zpushed = 0;
       }
-      int zpushed = z ? f_usptop == z : 1;
-      unsigned long zret = z && !zpushed ? z : f_usptop;
+      unsigned long zret = zpushed ? f_usptop : fpc;
       printf("    Z-OS の判定: %s、戻り番地=%06lx %s\n", zpushed ? "積んだ" : "積んでいない", zret,
              zret == ret && zpushed == pushed ? "(合っている)" : "  <== 合わない");
       if (zret != ret || zpushed != pushed) ng++;
