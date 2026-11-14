@@ -191,13 +191,16 @@ static void cb_err(void *arg, err_t err)
   s->ev |= EV_ERROR;
 }
 
+static void set_wnd(struct tcp_pcb *pcb);
+
 static err_t cb_connected(void *arg, struct tcp_pcb *pcb, err_t err)
 {
   struct psock *s = arg;
-  (void)pcb; (void)err;
+  (void)err;
   if (s && s->state == P_CONNECTING) {
     s->state = P_EST;
     s->ev |= EV_CONNECTED;
+    set_wnd(pcb);                       /* lwIP はこのあと SYN-ACK への ACK を出す (そこで窓を知らせる) */
   }
   return ERR_OK;
 }
@@ -205,8 +208,14 @@ static err_t cb_connected(void *arg, struct tcp_pcb *pcb, err_t err)
 static void set_wnd(struct tcp_pcb *pcb)
 {
 #ifdef TSP_PCB_WND
+  /* 知らせる窓 (右端) も一緒に縮める。rcv_wnd だけ縮めると、lwIP は前に知らせた右端までの窓を出し続け、相手が送る
+     そこまでのデータを捨てて、相手の再送待ちで受信がほとんど止まった (XEiJ + picosim、BlueSCSI の大きさ) */
   if (pcb->rcv_wnd > TSP_PCB_WND)
     pcb->rcv_wnd = TSP_PCB_WND;
+  if (pcb->rcv_ann_wnd > pcb->rcv_wnd) {
+    pcb->rcv_ann_wnd = pcb->rcv_wnd;
+    pcb->rcv_ann_right_edge = pcb->rcv_nxt + pcb->rcv_wnd;
+  }
 #else
   (void)pcb;
 #endif
@@ -391,8 +400,6 @@ static void start_connect(struct psock *s, const ip_addr_t *ip)
   set_tcp(s, pcb);
   s->state = P_CONNECTING;
   e = tcp_connect(pcb, ip, s->rport, cb_connected);
-  if (e == ERR_OK)
-    set_wnd(pcb);
   if (e != ERR_OK)
     fail(s, e == ERR_RTE ? TSP_ERR_UNREACH : TSP_ERR_NOMEM);
   tsp_stat.connects++;
@@ -855,8 +862,17 @@ static int build(uint8_t *res, int max)
           continue;
         pbuf_copy_partial(s->rxq, b, n, 0);
         s->rxq = pbuf_free_header(s->rxq, n);
-        if (s->tcp)
+        if (s->tcp) {
           tcp_recved(s->tcp, n);
+#ifdef TSP_PCB_WND
+          /* 窓が小さいと lwIP の窓の知らせ (TCP_WND_UPDATE_THRESHOLD、TCP_WND から決まる) を待つ間に相手が止まる。
+             1 MSS 以上空けたらすぐ知らせる */
+          if (n >= TCP_MSS) {
+            tcp_set_flags(s->tcp, TF_ACK_NOW);
+            tcp_output(s->tcp);
+          }
+#endif
+        }
         s->zwin -= n;
         tsp_stat.rx_bytes += n;
       }
