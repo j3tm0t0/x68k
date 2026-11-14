@@ -20,7 +20,7 @@ ACCEL = ../../net/accel
 # B: (リモートドライブ): フォークの x68kserremote (サブモジュール) の remoteserv.c をそこからコンパイルする (写さない)。
 # 無ければ B: 無しでビルドする
 RS ?= $(HOME)/src/github.com/yunkya2/x68kzremotedrv-hid/x68kserremote
-REMOTE_SRC = $(if $(wildcard $(RS)/service/remoteserv.c),build/remote.o build/remoteserv.o)
+REMOTE_SRC = $(if $(wildcard $(RS)/service/remoteserv.c),build/remote.o build/remoteserv.o build/x68rd.o)
 # TSP (tis.x -p の相手): net/tistack の tsp_svc + lwIP (pico-sdk の lib/lwip)。lwIP があれば既定で入れる (TSP= で切る)。
 # lwIP は libslirp と名前がぶつかるので、net/tistack/pico/picosim が 1 個の .o にまとめたものをリンクする。
 # lwIP の口は最初の 0xA6 が来てから LAN に出る (それまでは npd.x + xip.x の Z と同じに動く)
@@ -47,6 +47,8 @@ $(TSPDIR)/build/tsp_all.o: $(TSPDIR)/tsp_glue.c $(wildcard $(TSPDIR)/../tsp_svc.
 REMOTE_CFLAGS = -O2 -g -Iremote -I$(RS)/include -I$(RS)/service -I.
 build/remote.o: remote.c remote/config.h picosim.h
 	mkdir -p build && cc $(REMOTE_CFLAGS) -Wall -c -o $@ remote.c
+build/x68rd.o: x68rd.c remote/config.h picosim.h ../../net/bsrmt/x68rd_proto.h
+	mkdir -p build && cc $(REMOTE_CFLAGS) -Wall -c -o $@ x68rd.c
 build/remoteserv.o: $(RS)/service/remoteserv.c remote/config.h
 	mkdir -p build && cc $(REMOTE_CFLAGS) -w -c -o $@ $<
 
@@ -100,10 +102,11 @@ test-host: build/picosim build/picosim-echo
 	python3 -I tests/zsstest.py build/picosim
 	python3 -I tests/bootwaittest.py build/picosim $(FW)
 	python3 -I tests/remotetest.py build/picosim $(FW)
+	@if [ -n "$(REMOTE_SRC)" ]; then python3 -I tests/x68rdtest.py build/picosim; else echo "SKIP x68rdtest: no remoteserv.c (RS=)"; fi
 	@if [ -d "$(PZLREPO)" ] || [ -n "$(PZLSRC)" ]; then $(MAKE) build/picosim-pzl PZLREPO=$(PZLREPO) PZLSRC=$(PZLSRC) && \
 	  python3 -I tests/pzltest.py build/picosim-pzl; else echo "SKIP pzltest: no PZL repo ($(PZLREPO))"; fi
 
-test-xeij: test-tsp test-zos test-tsppzl
+test-xeij: test-tsp test-zos test-tsppzl test-bsrmt
 test-tsp: build/picosim
 	tests/tsptest.sh
 # 同じ tis.x -p の試験を Pico Z Loader の TSP (x68k-zos pzl の src/tsp) で
@@ -112,6 +115,9 @@ test-tsppzl: build/picosim
 	  else echo "SKIP tsptest (PZL): no PZL repo"; fi
 test-zos: build/picosim
 	tests/zostest.sh
+# bsrmt.sys (net/bsrmt、BlueSCSI の SD カードのリモートドライブ) を picosim -X の相手に
+test-bsrmt: build/picosim
+	tests/bsrmttest.sh
 
 # Docker の中で流す (docker/README.md)。SUITES="host tsp zos tsppzl" JOBS=2
 docker-test:
@@ -120,4 +126,4 @@ docker-test:
 clean:
 	rm -f build/picosim build/picosim-echo
 
-.PHONY: all test test-host test-xeij test-tsp test-tsppzl test-zos docker-test pzl-latest clean
+.PHONY: all test test-host test-xeij test-tsp test-tsppzl test-zos test-bsrmt docker-test pzl-latest clean
