@@ -9,7 +9,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
-exec python3 -I - "$T" "${FORMAT_X:-stage/BIN/FORMAT.X}" <<'PY'
+python3 -I - "$T" "${FORMAT_X:-stage/BIN/FORMAT.X}" <<'PY'
 import os, subprocess, sys
 tmp, real = sys.argv[1], sys.argv[2]
 DRV_MARK = b"\xff\xff\xff\xff\x40\x00\x00\x00\x00\x6e\x00\x00\x00\x80\x01SCHDISK"
