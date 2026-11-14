@@ -123,6 +123,8 @@ jobs:
           cargo test --release --locked
       - name: zmux.sys / zmux.x / zrmt.sys (elf2x68k)
         run: make -s -C net/zmux/x68k clean all && ls -l net/zmux/x68k/zmux.sys net/zmux/x68k/zmux.x net/zmux/x68k/zrmt.sys
+      - name: test/zrmt_host_test.c (zrmt.sys の書き込みのキャッシュ、ホストの cc)
+        run: make -s -C net/zmux/x68k hosttest
       - name: test/e2e_fake.py (XEiJ なし)
         run: $RUNNER_TEMP/venv/bin/python net/zmux/test/e2e_fake.py
 
