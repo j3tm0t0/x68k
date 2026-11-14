@@ -130,8 +130,11 @@ static int t_write(int id, uint32_t lba, const uint8_t *buf)
     return pzlh_write(id, lba, buf);
   if (id == 6 && x68rd_write(lba, buf) == 0)
     return PS_OK;
-  if (id == 6 && zl_write(lba, buf) == 0)
-    return PS_OK;
+  if (id == 6) {
+    int r = zl_write(lba, buf);         /* 0: 受け取った、1: 受け取ったがエラーを返す (ZL_WFAIL)、-1: zmux の LBA ではない */
+    if (r >= 0)
+      return r ? PS_IOERR : PS_OK;
+  }
   return id == 6 ? pz_id6_write(lba, buf) : id == 0 ? pz_id0_write(lba, buf) : pz_hds_write(id, lba, buf);
 }
 
