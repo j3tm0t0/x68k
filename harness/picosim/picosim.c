@@ -239,6 +239,10 @@ static int z_write(int id, uint32_t lba, const uint8_t *buf)
  *                        (ID 6 自身は隠さない)。BlueSCSI の x68k-bootsel のファーム (BlueSCSI_x68np.cpp) と同じ決まり。
  *   op 1 LIST [ID][番号]   -> [数][今の番号][長さ][表示名]。ゲーム用の ID (-G ID:DIR) に見せられるイメージの番号番目
  *   op 2 SELECT [ID][番号] -> [番号]。その ID のイメージを番号番目のファイルに替える (下の「ゲーム用の ID」)
+ *   op 4 TIME        -> [年 2][月][日][時][分][秒][曜日 0=日][UTC との差 (15 分単位、符号付き)][1970 年からの秒 4]。
+ *                        BlueSCSI の x68k-ota のファームが SNTP で得た時刻 (lib/X68kAccel/x68clock.h) の代わりに Mac の時計。
+ *                        環境変数 PICOSIM_TZ (既定 +9、時間単位。+5:30 も可)、PICOSIM_TIME (1970 年からの秒で固定)、
+ *                        PICOSIM_NOTIME=1 で「まだ時刻が無い」(status 7)
  * XEiJ はバスリセット (SPC の RST 出力) をまねないので、橋 (PicoBridge) が XEiJ のリセットのたびに path 3 で知らせる */
 #define BOOT_MARK 0xa8
 static uint8_t hidden_ids;
@@ -402,6 +406,34 @@ static int game_exchange(const uint8_t *req, int reqlen, uint8_t *res)
   return 4;
 }
 
+/* op 4 TIME の答え (res[3] から)。BlueSCSI の x68clock_answer() と同じ並び */
+static int time_answer(uint8_t *res)
+{
+  const char *tz = getenv("PICOSIM_TZ"), *fix = getenv("PICOSIM_TIME");
+  int q = 36, sign = 1, h = 0, m = 0;
+  if (getenv("PICOSIM_NOTIME")) {
+    res[2] = 7;
+    return 3;
+  }
+  if (tz && *tz) {
+    if (*tz == '+' || *tz == '-')
+      sign = *tz++ == '-' ? -1 : 1;
+    if (sscanf(tz, "%d:%d", &h, &m) >= 1)
+      q = sign * (h * 4 + m / 15);
+  }
+  uint32_t utc = fix ? (uint32_t)strtoul(fix, NULL, 10) : (uint32_t)time(NULL);
+  time_t local = (time_t)utc + q * 900;
+  struct tm t;
+  gmtime_r(&local, &t);
+  int y = t.tm_year + 1900;
+  res[3] = y >> 8; res[4] = y; res[5] = t.tm_mon + 1; res[6] = t.tm_mday;
+  res[7] = t.tm_hour; res[8] = t.tm_min; res[9] = t.tm_sec; res[10] = t.tm_wday; res[11] = (uint8_t)(int8_t)q;
+  res[12] = utc >> 24; res[13] = utc >> 16; res[14] = utc >> 8; res[15] = utc;
+  picosim_log("bootctl: TIME %04d-%02d-%02d %02d:%02d:%02d offset %d/4 h\n", y, t.tm_mon + 1, t.tm_mday, t.tm_hour,
+              t.tm_min, t.tm_sec, q);
+  return 16;
+}
+
 static int bootctl_exchange(const uint8_t *req, int reqlen, uint8_t *res, int resmax, int *more)
 {
   if (reqlen < 2 || resmax < 5)
@@ -431,6 +463,10 @@ static int bootctl_exchange(const uint8_t *req, int reqlen, uint8_t *res, int re
       return 3;
     }
     return 4;
+  case 4:
+    if (resmax < 16)
+      return 0;
+    return time_answer(res);
   }
   res[2] = 3;
   return 3;
