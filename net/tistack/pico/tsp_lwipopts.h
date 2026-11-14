@@ -3,9 +3,15 @@
 #ifndef TSP_LWIPOPTS_H
 #define TSP_LWIPOPTS_H
 #define TCP_MSS                 1460
+#ifndef TCP_WND
 #define TCP_WND                 (4 * TCP_MSS)       /* ソケットあたり Pico が持つ受信の上限 (Z に渡すまで) */
+#endif
+#ifndef TCP_SND_BUF
 #define TCP_SND_BUF             (8 * TCP_MSS)       /* 1 交換分 (約 4KB) を書いた直後でも次の交換に CREDIT が残る */
+#endif
+#ifndef TCP_SND_QUEUELEN
 #define TCP_SND_QUEUELEN        24
+#endif
 #ifndef MEMP_NUM_TCP_SEG
 #define MEMP_NUM_TCP_SEG        48
 #endif

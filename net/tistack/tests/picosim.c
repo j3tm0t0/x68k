@@ -213,6 +213,10 @@ static void x_name_connect(void)
   settle("name connect");
 }
 
+#ifndef TSP_NPS
+#define TSP_NPS 40                      /* ../pico/tsp_svc.c と同じ既定 */
+#endif
+
 static uint8_t big[1 << 20];
 
 static void x_bulk(int report)
@@ -770,9 +774,13 @@ int main(int argc, char **argv)
   x_bulk(1);
   settle("bulk");
   {
-    int bad = x_many(16, 32768);
-    CHECK("16 sockets at once, 32KB echo each (nonblocking, poll by socklen): intact", bad == 0);
-    printf("  16 x 32KB echo: %.2f s virtual\n", secs());
+    /* Pico 側のソケットが少ないファーム (BlueSCSI の TSP_NPS 8) では、その数より 2 本少なく */
+    int nmany = TSP_NPS - 2 < 16 ? TSP_NPS - 2 : 16;
+    char name[96];
+    int bad = x_many(nmany, 32768);
+    snprintf(name, sizeof name, "%d sockets at once, 32KB echo each (nonblocking, poll by socklen): intact", nmany);
+    CHECK(name, bad == 0);
+    printf("  %d x 32KB echo: %.2f s virtual\n", nmany, secs());
     settle("many");
   }
   x_fair();

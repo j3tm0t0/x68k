@@ -21,6 +21,11 @@
 #include "tsp.h"
 #include "tsp_svc.h"
 #include "tsp_plat.h"
+#if TSP_MDNS
+#include "tsp_mdns.h"                   /* ".local" は mDNS で引く (Z の Pico のファーム) */
+#else
+#define tsp_gethostbyname dns_gethostbyname
+#endif
 
 #ifndef TSP_NPS
 #define TSP_NPS         40
@@ -32,6 +37,20 @@
 #define TSP_TXPOOL      (12 * 1024)     /* lwIP の送信キューに入れてよい合計 (CREDIT の上限)。MEM_SIZE に収める */
 #endif
 #define CREDIT_FLOOR    1024            /* 送るものを申告していないソケットにも渡しておく量 (打鍵がすぐ出るように) */
+#ifndef TSP_LAST_SIZE
+#define TSP_LAST_SIZE   TSP_RES_MAX     /* 最後の応答の置き場 (応答の最大)。RAM の少ないファームは小さくする */
+#endif
+/* TSP_PCB_WND: ソケット 1 本の受信窓 (定義しなければ lwIP の TCP_WND)。ほかの用途のために TCP_WND が大きいファーム
+   (BlueSCSI) で、Z に渡すまで持つ量を絞る。lwIP は SYN / SYN-ACK を TCP_WND で出すので、つないだ直後に絞る。
+   相手は最初だけ広い窓で送ってきて、はみ出した分は lwIP が捨てる (相手が送り直す)。
+   TSP_RX_COPY: これ以下の大きさの受信は PBUF_RAM (MEM_SIZE のヒープ) に写して、受信のフレーム (PBUF_POOL) を
+   すぐ返す。小さいセグメントを持ち続けて pool を使い切らないように (0 = 写さない) */
+#ifndef TSP_RX_COPY
+#define TSP_RX_COPY     0
+#endif
+#if defined(TSP_PCB_WND) && LWIP_WND_SCALE
+#error "TSP_PCB_WND は窓の拡大 (LWIP_WND_SCALE) を考えていない"
+#endif
 
 enum { P_FREE, P_DNS, P_CONNECTING, P_EST, P_LISTEN, P_UDP, P_DEAD };
 
@@ -69,7 +88,7 @@ static uint8_t qserial;
 static uint32_t zepoch, pepoch;
 static uint16_t last_zseq;
 static uint8_t have_last;
-static uint8_t last[TSP_RES_MAX];       /* 最後の応答 (Z が同じ要求を送り直したら、これをそのまま返す) */
+static uint8_t last[TSP_LAST_SIZE];     /* 最後の応答 (Z が同じ要求を送り直したら、これをそのまま返す) */
 static int lastlen, lastmore;
 static uint8_t rr;
 
@@ -138,6 +157,16 @@ static err_t cb_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
     s->ev |= EV_EOF;
     return ERR_OK;
   }
+#if TSP_RX_COPY
+  if (p->tot_len <= TSP_RX_COPY && p->type_internal == PBUF_POOL) {
+    struct pbuf *c = pbuf_alloc(PBUF_RAW, p->tot_len, PBUF_RAM);
+    if (c) {
+      pbuf_copy(c, p);
+      pbuf_free(p);
+      p = c;
+    }
+  }
+#endif
   if (s->rxq)
     pbuf_cat(s->rxq, p);
   else
@@ -162,15 +191,34 @@ static void cb_err(void *arg, err_t err)
   s->ev |= EV_ERROR;
 }
 
+static void set_wnd(struct tcp_pcb *pcb);
+
 static err_t cb_connected(void *arg, struct tcp_pcb *pcb, err_t err)
 {
   struct psock *s = arg;
-  (void)pcb; (void)err;
+  (void)err;
   if (s && s->state == P_CONNECTING) {
     s->state = P_EST;
     s->ev |= EV_CONNECTED;
+    set_wnd(pcb);                       /* lwIP はこのあと SYN-ACK への ACK を出す (そこで窓を知らせる) */
   }
   return ERR_OK;
+}
+
+static void set_wnd(struct tcp_pcb *pcb)
+{
+#ifdef TSP_PCB_WND
+  /* 知らせる窓 (右端) も一緒に縮める。rcv_wnd だけ縮めると、lwIP は前に知らせた右端までの窓を出し続け、相手が送る
+     そこまでのデータを捨てて、相手の再送待ちで受信がほとんど止まった (XEiJ + picosim、BlueSCSI の大きさ) */
+  if (pcb->rcv_wnd > TSP_PCB_WND)
+    pcb->rcv_wnd = TSP_PCB_WND;
+  if (pcb->rcv_ann_wnd > pcb->rcv_wnd) {
+    pcb->rcv_ann_wnd = pcb->rcv_wnd;
+    pcb->rcv_ann_right_edge = pcb->rcv_nxt + pcb->rcv_wnd;
+  }
+#else
+  (void)pcb;
+#endif
 }
 
 static void set_tcp(struct psock *s, struct tcp_pcb *pcb)
@@ -196,6 +244,7 @@ static err_t cb_accept(void *arg, struct tcp_pcb *pcb, err_t err)
   ps[c].listener = l - ps;
   ps[c].ev = EV_ANNOUNCE;
   set_tcp(&ps[c], pcb);
+  set_wnd(pcb);
   l->npend++;
   tsp_stat.accepts++;
   return ERR_OK;
@@ -293,6 +342,12 @@ static void ps_close(struct psock *s, int graceful)
     s->tcp = NULL;
   } else if (s->tcp) {
     detach(s->tcp);
+#ifdef TSP_PCB_WND
+    /* lwIP の tcp_close は、受信窓が TCP_WND に戻っていない (アプリが読んでいないデータがある) と FIN の代わりに RST を
+       送る。絞った窓のせいでそう見えないように、Z に全部渡してあれば元に戻す */
+    if (!s->rxq)
+      s->tcp->rcv_wnd = (tcpwnd_size_t)LWIP_MIN(TCP_WND, 0xffff);
+#endif
     if (!graceful || tcp_close(s->tcp) != ERR_OK)
       tcp_abort(s->tcp);
     s->tcp = NULL;
@@ -392,7 +447,7 @@ static void c_connect(int slot, int gen, const uint8_t *b, unsigned n)
     name[nl] = 0;
     s->state = P_DNS;
     tsp_stat.dns++;
-    e = dns_gethostbyname(name, &ip, cb_dns_connect, (void *)(uintptr_t)((s - ps) | (s->serial << 8)));
+    e = tsp_gethostbyname(name, &ip, cb_dns_connect, (void *)(uintptr_t)((s - ps) | (s->serial << 8)));
     if (e == ERR_OK)
       start_connect(s, &ip);
     else if (e != ERR_INPROGRESS)
@@ -547,7 +602,7 @@ static void c_resolve(int k, const uint8_t *b, unsigned n)
   q[k].serial = ++qserial;
   q[k].state = 1;
   tsp_stat.dns++;
-  e = dns_gethostbyname(name, &ip, cb_dns_query, (void *)(uintptr_t)(k | (q[k].serial << 8)));
+  e = tsp_gethostbyname(name, &ip, cb_dns_query, (void *)(uintptr_t)(k | (q[k].serial << 8)));
   if (e == ERR_OK) {
     q[k].state = 2;
     q[k].code = TSP_OK;
@@ -807,8 +862,17 @@ static int build(uint8_t *res, int max)
           continue;
         pbuf_copy_partial(s->rxq, b, n, 0);
         s->rxq = pbuf_free_header(s->rxq, n);
-        if (s->tcp)
+        if (s->tcp) {
           tcp_recved(s->tcp, n);
+#ifdef TSP_PCB_WND
+          /* 窓が小さいと lwIP の窓の知らせ (TCP_WND_UPDATE_THRESHOLD、TCP_WND から決まる) を待つ間に相手が止まる。
+             1 MSS 以上空けたらすぐ知らせる */
+          if (n >= TCP_MSS) {
+            tcp_set_flags(s->tcp, TF_ACK_NOW);
+            tcp_output(s->tcp);
+          }
+#endif
+        }
         s->zwin -= n;
         tsp_stat.rx_bytes += n;
       }
@@ -904,14 +968,15 @@ int tsp_exchange(const uint8_t *req, int reqlen, uint8_t *res, int resmax, int *
     tsp_stat.badreq++;
     return 0;
   }
-  if (resmax > TSP_RES_MAX)
-    resmax = TSP_RES_MAX;
+  if (resmax > TSP_LAST_SIZE)
+    resmax = TSP_LAST_SIZE;
   zs = tsp_get16(req + 4);
   ze = tsp_get32(req + 8);
   TSP_LOCK();
   if (have_last && ze == zepoch && zs == last_zseq && lastlen <= resmax) {
     /* Z が同じ要求を送り直した (前の応答を受け取れなかった): 適用せずに同じ応答を返す */
-    memcpy(res, last, lastlen);
+    if (res != last)
+      memcpy(res, last, lastlen);
     *more = lastmore;
     tsp_stat.dup++;
     TSP_UNLOCK();
@@ -941,8 +1006,14 @@ int tsp_exchange(const uint8_t *req, int reqlen, uint8_t *res, int resmax, int *
   lastlen = build(last, resmax);
   lastmore = (last[2] & TSP_PF_MORE) != 0;
   have_last = 1;
-  memcpy(res, last, lastlen);
+  if (res != last)
+    memcpy(res, last, lastlen);
   *more = lastmore;
   TSP_UNLOCK();
   return lastlen;
+}
+
+uint8_t *tsp_last_buf(void)
+{
+  return last;
 }

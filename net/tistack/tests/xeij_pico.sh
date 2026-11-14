@@ -11,6 +11,8 @@
 #   4. rcmd.x が終わると tis.x -s を書いて DONE.TXT
 # 使い方: tests/xeij_pico.sh     環境変数: PICOSIM / PICOSIM_ARGS (picosim を替える。--pzl なら PZL の TSP)、TIS_OUT (既定 $TMPDIR/tispico)、SSH_X、RCMD_X、PUTSIZE、GETSIZE、NET=xip (下)
 # NET=xip: 同じ XEiJ / picosim で xip.x の道 (比べる用)。tis.x の代わりに XIP_X / ifconfig 類を使う (XIPDIR)
+# BLUESCSI=1: 本物の X68000 + BlueSCSI v2 (Pico 2 W) の形。npd.x -s (SCSI IOCS、メールボックスなし)、picosim は
+#   build/picosim-bs (tsp_svc と lwIP の表がファームと同じ大きさ) を読み込みキャッシュなし (-c 0) で
 set -euo pipefail
 cd "$(dirname "$0")/.."
 TOP=$PWD/../..
@@ -31,7 +33,17 @@ JAVA=java; [ -x /opt/homebrew/opt/openjdk/bin/java ] && JAVA=/opt/homebrew/opt/o
 make -s
 make -s -C ../npd
 make -s -C tests tisnet.x tisrun.x
-[ -n "${NOBUILD:-}" ] || make -s -C pico/picosim
+if [ -n "${BLUESCSI:-}" ]; then
+  [ -n "${NOBUILD:-}" ] || make -s -C "$TOP/harness/picosim" build/picosim-bs
+  PICOSIM=${PICOSIM:-$TOP/harness/picosim/build/picosim-bs}
+  PICOSIM_ARGS=${PICOSIM_ARGS:--c 0}
+  NPD_ARGS=${NPD_ARGS:--s 192.168.1.68}   # picosim は見出しの stat (IP) が 0 の交換を捨てる。BlueSCSI は見ない
+  MAILBOX=off
+else
+  [ -n "${NOBUILD:-}" ] || make -s -C pico/picosim
+fi
+. "$TOP/harness/picosim/tests/benchlock.sh"
+benchlock_take xeij_pico || { echo "SKIP: bench locked by $(cat "$XEIJLOCK")"; exit 0; }
 
 rm -rf "$B" "$OUT/tmp"; mkdir -p "$B/TMP" "$OUT/tmp"
 [ -d "$B/tmp" ] || mkdir "$B/tmp"     # rcmd.x は A:\tmp に書く (Linux では大文字小文字を区別するので TMP とは別)
@@ -43,7 +55,7 @@ cp tests/tisnet.x "$B/TISNET.X"; cp tests/tisrun.x "$B/TISRUN.X"
 printf 'FILES = 30\r\nBUFFERS = 20 1024\r\nLASTDRIVE = Z:\r\nPROCESS = 16 10 19\r\nSHELL = A:\\COMMAND.X\r\nDEVICE = \\NPD.SYS\r\n' > "$B/CONFIG.SYS"
 {
   printf 'ECHO OFF\r\nPATH A:\\\r\n'
-  printf 'TIS.X -p > TIS.TXT\r\nNPD.X 192.168.1.68 > NPD.TXT\r\n'
+  printf 'TIS.X -p > TIS.TXT\r\nNPD.X %s > NPD.TXT\r\n' "${NPD_ARGS:-192.168.1.68}"
   printf 'TISNET.X resolve mac.test %s > RES.TXT\r\n' "${RESOLVE:-example.com}"
   if [ -n "${TSP_OFF:-}" ]; then
     # TSP を知らない Pico の真似: 名前も接続も固まらずに失敗し、tis.x は残る
@@ -68,14 +80,14 @@ printf 'FILES = 30\r\nBUFFERS = 20 1024\r\nLASTDRIVE = Z:\r\nPROCESS = 16 10 19\
 } > "$B/AUTOEXEC.BAT"
 
 pids=()
-cleanup() { for p in "${pids[@]}"; do kill -9 "$p" 2>/dev/null || true; done; }
+cleanup() { for p in "${pids[@]}"; do kill -9 "$p" 2>/dev/null || true; done; benchlock_release; }
 trap cleanup EXIT
 # Pico (lwIP) の DNS: picosim の DNS の口 (picosim が Mac の resolver で答える。bacb837 から lan_attach の口にも)
 export TSP_DNS=${TSP_DNS:-192.168.1.3}
 python3 -I tests/tisnet_peer.py "$PEERPORT" > "$OUT/peer.log" 2>&1 & pids+=($!)
 ${PICOSIM:-$TOP/harness/picosim/build/picosim} ${PICOSIM_ARGS:-} -l 127.0.0.1:$BRIDGE -L $RPORT:2323 -s 10 > "$OUT/picosim.log" 2>&1 & pids+=($!)
 sleep 1
-"$JAVA" -javaagent:"$AGENT=$OUT/tmp/agent.cmd" -Dpicosim=127.0.0.1:$BRIDGE -Dpicosim.ids=6 -Djava.io.tmpdir="$OUT/tmp" \
+"$JAVA" -javaagent:"$AGENT=$OUT/tmp/agent.cmd" -Dpicosim=127.0.0.1:$BRIDGE -Dpicosim.ids=6 -Dpicosim.mailbox=${MAILBOX:-on} -Djava.io.tmpdir="$OUT/tmp" \
   -jar "$XEIJ/XEiJ.jar" -config=default -saveonexit=off -model=SUPER -boot="$B" -flrinformed=on -usecanvas=off \
   > "$OUT/xeij.log" 2>&1 & pids+=($!)
 XPID=$!

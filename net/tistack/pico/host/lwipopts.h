@@ -33,5 +33,14 @@
 #define MEMP_NUM_PBUF           64
 #define MEMP_NUM_SYS_TIMEOUT    16
 #define LWIP_NETIF_LOOPBACK_MULTITHREADING 0
+#ifdef TSP_BS
+/* BlueSCSI v2 (Pico 2 W) の値 (BlueSCSI-v2 の src/x68stage_lwip/lwipopts.h): 窓は bsstage の受け取りのために 22 フレーム、
+   送信のバッファは 4 フレーム。TSP の側は tsp_svc の TSP_NPS / TSP_LAST_SIZE / TSP_TXPOOL / TSP_PCB_WND / TSP_RX_COPY
+   (tests/Makefile の picosim-bs) */
+#define TCP_MSS                 1460
+#define TCP_WND                 (22 * TCP_MSS)
+#define TCP_SND_BUF             (4 * TCP_MSS)
+#define TCP_SND_QUEUELEN        ((4 * (TCP_SND_BUF) + (TCP_MSS - 1)) / (TCP_MSS))
+#endif
 #include "../tsp_lwipopts.h"
 #endif

@@ -15,6 +15,11 @@
  *
  *   npd.x -m a.b.c.d    : SCSI ID 6 の代わりに zmux (net/zmux) の線のチャネル 3 で交換する (実機 X68000 と Raspberry Pi の
  *                         RS-232C)。zmux.sys と zmux.x が要る。送るものが無いときは交換せず、Pi の KICK で交換する
+ *   npd.x -s [a.b.c.d]  : 本物の X68000 で、SCSI ID 6 の BlueSCSI (x68k-bootsel の版、bluescsi.ini の X68kNetpipe=1) と
+ *                         SCSI IOCS (_S_WRITEEXT / _S_READEXT) で交換する。Z の疑似 SCSI のメールボックスは使わない。
+ *                         BlueSCSI は 0xA5 (暗号アクセラレータ) と 0xA6 (tis.x -p のソケット、Pico 2 W 版の Wi-Fi) に
+ *                         答え、IP のレコードは捨てる。WRITE の間に答えを作るので同じ交換で返る。送るものが無いときは
+ *                         交換しない (tis.x が居るときは普段の間隔で問い合わせる)。a.b.c.d は要らない
  *   npd.x [-iN] a.b.c.d : 常駐してスレッド "npd" を作る (2 回目以降は受信の受け入れを再開するだけ)。a.b.c.d は Z の
  *                         IP アドレス。xip.x の設定 (ifconfig / inetdconf) が済んでから起動する
  *   必要: CONFIG.SYS の DEVICE = \SYS\npd.sys と PROCESS 指定、netpipe 入りの Pico W のファーム
@@ -37,6 +42,7 @@ extern unsigned char *cmd_line;
 
 static void *etd;                       /* npd.sys の ETD 入口 */
 static void *mux;                       /* -m: zmux.sys の入口 (d0 = 命令, a0 = 引数。call_etd で呼べる) */
+static int sdrv;                        /* -s: SCSI IOCS で交換する (本物の X68000 と BlueSCSI) */
 static void *tis;                       /* tis.x -p の入口 (交換のたびに npd.sys から取り直す)、0 = 居ない */
 static int tsp_more;                    /* Pico の TSP 応答に続きがある */
 static void *zss;                       /* zos.x の 0xA7 の入口 (交換のたびに取り直す)、0 = 居ない */
@@ -179,6 +185,12 @@ extern volatile uint8_t scsi_zown;      /* npd.x の命令が終わって段階 
 static int zio(int op, int lba, int nsect, void *buf)
 {
   int sr, r;
+  if (sdrv) {
+    /* このスレッドはスーパーバイザで動くので、IOCS の途中でほかのプロセスに切り替わらない。ほかのプロセスも
+       SCSI IOCS の途中では譲らないので、ここで呼んでも互いの命令は重ならない */
+    r = op == 0x2a ? _iocs_s_writeext(lba, nsect, ZID, 1, buf) : _iocs_s_readext(lba, nsect, ZID, 1, buf);
+    return r ? -1 : 0;
+  }
   for (;;) {
     __asm__ volatile("move.w %%sr,%0\n\tori.w #0x0700,%%sr" : "=d"(sr));
     /* B: の scsiremote.sys などは、選択・命令・データ・状態を別々の IOCS で呼ぶ。その合間 (ROM の外) でも
@@ -426,6 +438,15 @@ static void zthread(void)
     }
     now = ticks();
     /* -m: 線を空回りさせない。送るものも急ぎも無ければ、Pi の KICK か 2 秒に 1 回だけ交換する */
+    /* -s: 送るものが無ければ交換しない。ただし送った直後の 1 秒は、答えが後の交換に回る相手 (Pico の模倣など) の
+       ために、ふだんの間隔で問い合わせる。tis.x -p が居るときは Z と同じ間隔で問い合わせ続ける (BlueSCSI に届いた
+       データや接続は、問い合わせないと X68000 に渡らない) */
+    if (sdrv && n == 0 && hot == 0 && !turg && !zurg &&
+        (unsigned)(now - last) < (tis ? ((unsigned)(now - act) < 200 ? (unsigned)zidle : (unsigned)ZIDLE2)
+                                      : ((unsigned)(now - act) < 100 ? (unsigned)zidle : 200u))) {
+      _dos_change_pr();
+      continue;
+    }
     if (mux && n == 0 && hot == 0 && !turg && !zurg && !call_etd(mux, 4, 0) && (unsigned)(now - last) < 200) {
       _dos_sleep_pr(1);                  /* 10ms 眠る (譲るだけだと空回りして CPU の大半を使う) */
       continue;
@@ -518,7 +539,10 @@ int npd_main(void)
   {
     unsigned char *p = cmd_line + 1;     /* 先頭 1 バイトは長さ */
     for (; *p; p++)
-      if (p[0] == '-' && (p[1] | 0x20) == 'm') {
+      if (p[0] == '-' && (p[1] | 0x20) == 's') {
+        sdrv = 1;
+        p++;
+      } else if (p[0] == '-' && (p[1] | 0x20) == 'm') {
         mux = (void *)1;                 /* 下で zmux.sys を探す */
         p++;
       } else if (p[0] == '-' && (p[1] | 0x20) == 'i' && p[2] >= '0' && p[2] <= '9') {
@@ -546,8 +570,12 @@ int npd_main(void)
           zmyip = (ip << 8) | v;
       }
   }
-  if (!zmyip) {
-    _dos_print("usage: npd.x [-m] [-iN] a.b.c.d   (a.b.c.d = Z の IP アドレス、-m = zmux の線で)\r\n");
+  if (sdrv && mux) {
+    _dos_print("npd: -s と -m は一緒に使えません\r\n");
+    return 1;
+  }
+  if (!zmyip && !sdrv) {
+    _dos_print("usage: npd.x [-m|-s] [-iN] a.b.c.d   (a.b.c.d = Z の IP アドレス、-m = zmux の線で、-s = BlueSCSI と SCSI IOCS で)\r\n");
     return 1;
   }
   ssp = _dos_super(0);
@@ -575,7 +603,7 @@ int npd_main(void)
     zseq = h;
     zsect = ZRLBA + (h >> 8) % (ZRSPAN / 8) * 8;
   }
-  if (!mux) {
+  if (!mux && !sdrv) {
     /* SCSI の入口にフックを挟む (zio を参照)。スレッドを作る前に、スーパーバイザで */
     extern void scsi_hook(void);
     extern uint32_t scsi_old;
@@ -584,7 +612,7 @@ int npd_main(void)
     *vec = (uint32_t)scsi_hook;
   }
   if (ssp > 0) _dos_super(ssp);
-  if (!mux) {
+  if (!mux && !sdrv) {
     /* 簡易プロファイラ (start.S の prof_vdisp、zprof.x で使う)。垂直同期の割り込みが空いていなければ使わない */
     extern void prof_vdisp(void);
     _iocs_vdispst(prof_vdisp, 0, 1);
@@ -610,7 +638,9 @@ int npd_main(void)
     if (r < 0)
       _dos_print("npd: スレッドを起こせません\r\n");
   }
-  _dos_print(mux ? "npd: netpipe thread started (zmux line, channel 3)\r\n" : "npd: netpipe thread started (Pico W, SCSI ID 6, bridge)\r\n");
+  _dos_print(mux ? "npd: netpipe thread started (zmux line, channel 3)\r\n" :
+             sdrv ? "npd: netpipe thread started (BlueSCSI, SCSI ID 6, SCSI IOCS)\r\n" :
+             "npd: netpipe thread started (Pico W, SCSI ID 6, bridge)\r\n");
   {
     /* 常駐する大きさは BSS (スレッドのスタック) まで含める */
     extern char _end;

@@ -26,6 +26,16 @@ picosim: ../pico/host/lwipopts.h ../pico/tsp_lwipopts.h picosim.c picoworld.c pi
 	cc $(SAN) -o $@ *.o
 	rm -f *.o
 
+# BlueSCSI v2 (Pico 2 W) の値で同じ試験: make picosim-bs && ./picosim-bs
+BSDEFS = -DTSP_BS -DTSP_NPS=8 -DTSP_LAST_SIZE=1504 -DTSP_TXPOOL=2048 -DTSP_PCB_WND=5840 -DTSP_RX_COPY=256
+picosim-bs: ../pico/host/lwipopts.h ../pico/tsp_lwipopts.h picosim.c picoworld.c picoworld.h ../tis.c ../lo.c ../pico.c ../be.h ../tsp.h ../pico/tsp_svc.c ../pico/tsp_svc.h
+	mkdir -p bsobj
+	cd bsobj && cc $(SAN) -O1 -g -Wall -Wno-unused-function $(BSDEFS) -I ../hostinc ../picosim.c ../../lo.c ../../pico.c -c
+	cd bsobj && cc $(SAN) -O1 -g -Wall -DTSP_PLAT_HOST $(BSDEFS) $(subst -I ..,-I ../..,$(LWIPINC)) ../picoworld.c ../../pico/tsp_svc.c -c
+	cd bsobj && cc -O1 -w -DTSP_PLAT_HOST $(BSDEFS) $(subst -I ..,-I ../..,$(LWIPINC)) $(LWIPSRC) -c
+	cc $(SAN) -o $@ bsobj/*.o
+	rm -rf bsobj
+
 clean:
-	rm -f *.x *.o *.elf* hostsim picosim
+	rm -f *.x *.o *.elf* hostsim picosim picosim-bs
 .PHONY: all clean
